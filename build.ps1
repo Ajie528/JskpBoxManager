@@ -1,4 +1,4 @@
-# 打包：生成 dist\JskpBoxManager-<版本>\JskpBoxManager.exe 和同名 zip
+﻿# 打包：生成 dist\JskpBoxManager-<版本>\JskpBoxManager.exe 和同名 zip
 # 用法：powershell -ExecutionPolicy Bypass -File build.ps1
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot

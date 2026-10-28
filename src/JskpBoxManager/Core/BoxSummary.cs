@@ -23,10 +23,11 @@ public sealed class BoxSummary
     public string Warning = "";
     public IlinkState Live = new();
     public IlinkState Vault = new();
+    public RoleInfo Role;
 
     public static BoxSummary Build(string box, Dictionary<string, string> notes, KeepConfig keep, Dictionary<string, JsonObject> lastRefresh)
     {
-        var s = new BoxSummary { Box = box, Note = notes.GetValueOrDefault(box, "") };
+        var s = new BoxSummary { Box = box, Note = notes.GetValueOrDefault(box, ""), Role = Roles.Load(box) };
         s.Live = Ilink.Live(box);
         s.Vault = Ilink.VaultState(box);
         var best = s.Live.Valid && s.Live.WriteUtc >= s.Vault.WriteUtc ? s.Live : s.Vault;
@@ -34,7 +35,7 @@ public sealed class BoxSummary
         s.LastRenewUtc = best.Valid ? best.WriteUtc : DateTime.MinValue;
 
         bool revoked = s.Vault.Valid && Ilink.IsRevoked(box, s.Vault.KeyHash) && !(s.Live.Valid && s.Live.KeyHash != s.Vault.KeyHash);
-        if (NeedScan.Pending(box) || revoked)
+        if ((NeedScan.Pending(box) && !NeedScan.Superseded(box, s.Live)) || revoked)
         {
             s.Login = LoginLevel.NeedScan;
             s.LoginText = revoked ? "需要扫码（已被顶掉）" : "需要扫码";

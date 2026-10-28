@@ -9,6 +9,7 @@
             <TextBlock x:Name="TxtInfo" Foreground="#4B5563" Margin="0,6,0,0" LineHeight="20" TextWrapping="Wrap"/>
         </StackPanel>
         <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+            <Button x:Name="BtnCheck" Content="检查更新" Style="{StaticResource PrimaryBtn}" Margin="0,0,8,0" Click="Check_Click"/>
             <Button Content="复制版本信息" Style="{StaticResource Btn}" Margin="0,0,8,0" Click="Copy_Click"/>
             <Button Content="打开程序目录" Style="{StaticResource Btn}" Margin="0,0,8,0" Click="OpenDir_Click"/>
             <Button Content="关闭" Style="{StaticResource Btn}" Margin="0" IsCancel="True" Click="Close_Click"/>

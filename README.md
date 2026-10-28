@@ -47,6 +47,14 @@
 - **释放浏览器内存**：游戏开久了 QQ 浏览器会占很多内存，点一下即可回收，不影响游戏。
 - **换号 / 登录出错**：「清除登录 / 换号重新扫码」，下次启动重新扫码。游戏包和备注保留。
 - **新建沙箱**：点「＋ 新建沙箱」，第一次启动扫码登录即可。
+- **角色和攻击力**：进游戏后自动从游戏里读出来，显示在列表的「角色」「攻击力」两列。攻击力要在游戏界面上显示过才读得到；
+  没读到时，在游戏里打开能看到攻击力的界面，再点右侧「游戏角色」的「重新读取」。
+
+### 更新程序
+
+打开管理界面时会自动检查新版本，顶栏出现「● 有新版本」时点一下，看完更新内容点「立即更新」即可，
+程序会自己下载、校验、替换并重启。金库、备注、保活设置都不会动，正在玩的游戏也不受影响。
+也可以在「版本与更新记录」里点「检查更新」，或到 [Releases](https://github.com/Ajie528/JskpBoxManager/releases) 手动下载。
 
 ### 登录状态说明
 
@@ -87,6 +95,7 @@ JskpBoxManager.exe refresh qb1      静默保活一次
 JskpBoxManager.exe stop qb1         保存登录并停止
 JskpBoxManager.exe clear qb1        清除登录
 JskpBoxManager.exe status qb1       输出状态（可重定向到文件）
+JskpBoxManager.exe role qb1         读一次角色和攻击力（加 --dry 只显示不写入）
 JskpBoxManager.exe version          输出版本号
 ```
 
@@ -96,5 +105,8 @@ JskpBoxManager.exe version          输出版本号
 - 调试：`dotnet build`；打包：`powershell -ExecutionPolicy Bypass -File build.ps1`，产物在 `dist\`。
 - 发新版：
   1. 修改 `Directory.Build.props` 里的 `<Version>`；
-  2. 在 `CHANGELOG.md` 最上面新增一节，写清楚新增 / 变化 / 修复；
-  3. 提交后运行 `build.ps1`（版本号后会自动带上 git 提交号，如 `v1.0.1+a1b2c3d`）。
+  2. 在 `CHANGELOG.md` 最上面新增一节 `## [版本号] - 日期`，写清楚新增 / 变化 / 修复；
+  3. 提交并推送，然后运行 `powershell -ExecutionPolicy Bypass -File release.ps1`。
+     它会打包、打 `v版本号` 标签，并在 GitHub 创建 Release（更新说明取自 CHANGELOG 对应一节），
+     上传 `JskpBoxManager.exe`、`JskpBoxManager.exe.sha256` 和 zip。各电脑上的程序就会提示更新。
+  4. 发版需要 GitHub CLI：`winget install GitHub.cli`，然后 `gh auth login` 登录一次。

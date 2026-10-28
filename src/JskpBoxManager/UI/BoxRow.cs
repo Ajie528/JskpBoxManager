@@ -23,6 +23,12 @@ public sealed class BoxRow : INotifyPropertyChanged
     public string Warning => Summary?.Warning ?? "";
     public Visibility WarningVisibility => Warning.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
 
+    public string RoleText => Summary?.Role is { HasName: true } r ? r.Name : "—";
+    public string RoleTip => Summary?.Role is { HasName: true } r
+        ? $"{r.Name}  等级 {r.Level}  {r.ServerName}\n读取于 {r.CapturedAt:MM-dd HH:mm}"
+        : "进游戏后自动读取";
+    public string AttackText => Summary?.Role is { HasAttack: true } r ? r.Attack : "—";
+
     public string RenewText => Summary == null || Summary.LastRenewUtc == DateTime.MinValue ? "—" : Ago(Summary.LastRenewUtc);
 
     public Brush PhaseBrush => Summary?.Phase switch

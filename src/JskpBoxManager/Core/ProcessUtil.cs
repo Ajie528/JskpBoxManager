@@ -96,6 +96,27 @@ public static class ProcessUtil
         return result;
     }
 
+    public static Dictionary<int, int> ParentPids(IEnumerable<int> pids)
+    {
+        var set = new HashSet<int>(pids);
+        var result = new Dictionary<int, int>();
+        if (set.Count == 0) return result;
+        try
+        {
+            using var searcher = new ManagementObjectSearcher("SELECT ProcessId, ParentProcessId FROM Win32_Process");
+            foreach (ManagementObject mo in searcher.Get())
+            {
+                using (mo)
+                {
+                    int id = Convert.ToInt32(mo["ProcessId"]);
+                    if (set.Contains(id)) result[id] = Convert.ToInt32(mo["ParentProcessId"]);
+                }
+            }
+        }
+        catch { }
+        return result;
+    }
+
     /// <summary>找命令行匹配的进程（用于清理旧版 PowerShell 启动脚本）。</summary>
     public static List<(int Pid, string Cmd)> FindByCommandLine(string processName, Func<string, bool> match)
     {

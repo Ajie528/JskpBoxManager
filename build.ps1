@@ -25,5 +25,9 @@ $zip = "$out.zip"
 if (Test-Path $zip) { Remove-Item $zip -Force }
 Compress-Archive -Path (Join-Path $out '*') -DestinationPath $zip
 $exe = Get-Item (Join-Path $out 'JskpBoxManager.exe')
+$sha = (Get-FileHash $exe.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+$shaFile = Join-Path $root 'dist\JskpBoxManager.exe.sha256'
+[IO.File]::WriteAllText($shaFile, "$sha  JskpBoxManager.exe`n", (New-Object Text.UTF8Encoding $false))
 "{0}  {1:N1} MB" -f $exe.FullName, ($exe.Length / 1MB)
 "{0}" -f $zip
+"sha256 {0}" -f $sha

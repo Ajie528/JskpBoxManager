@@ -22,6 +22,33 @@ public partial class AboutWindow : Window
         TxtLog.Text = AppInfo.ReadChangelog();
     }
 
+    async void Check_Click(object sender, RoutedEventArgs e)
+    {
+        BtnCheck.IsEnabled = false;
+        BtnCheck.Content = "正在检查…";
+        try
+        {
+            var info = await Updater.CheckAsync();
+            if (info == null)
+            {
+                MessageBox.Show(this, $"已经是最新版本（{AppInfo.VersionLabel}）。", "检查更新", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+            (Owner as MainWindow)?.ShowNewVersion(info);
+            new UpdateWindow(info) { Owner = this }.ShowDialog();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, "连不上 GitHub：" + ex.Message + "\n\n可以稍后再试，或直接打开 " + Updater.ReleasesPage + " 下载。",
+                "检查更新", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            BtnCheck.IsEnabled = true;
+            BtnCheck.Content = "检查更新";
+        }
+    }
+
     void Copy_Click(object sender, RoutedEventArgs e) => Clipboard.SetText($"{AppInfo.ProductName}\n{_info}");
     void OpenDir_Click(object sender, RoutedEventArgs e) => Process.Start("explorer.exe", $"\"{AppPaths.AppDir}\"");
     void Close_Click(object sender, RoutedEventArgs e) => Close();

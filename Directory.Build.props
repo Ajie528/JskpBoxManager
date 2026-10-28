@@ -1,8 +1,8 @@
-<Project>
-  <!-- 发版只改这里，并在 CHANGELOG.md 顶部补一节同版本号的记录 -->
+﻿<Project>
+  <!-- 鍙戠増鍙敼杩欓噷锛屽苟鍦?CHANGELOG.md 椤堕儴琛ヤ竴鑺傚悓鐗堟湰鍙风殑璁板綍 -->
   <PropertyGroup>
-    <Version>1.0.0</Version>
-    <Product>向僵多开管家</Product>
+    <Version>1.1.0</Version>
+    <Product>鍚戝兊澶氬紑绠″</Product>
     <Company>jskp</Company>
     <Copyright>jskp</Copyright>
   </PropertyGroup>

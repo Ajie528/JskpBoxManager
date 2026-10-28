@@ -42,6 +42,28 @@ public static class NeedScan
         catch { }
     }
 
+    /// <summary>标记之后沙箱里又出现了有效的新凭证（扫码 / 电脑微信授权成功），标记就过时了。</summary>
+    public static bool Superseded(string box, IlinkState live)
+    {
+        try
+        {
+            if (!Pending(box) || live == null || !live.Valid) return false;
+            if (live.WriteUtc <= File.GetLastWriteTimeUtc(BoxPaths.NeedScanFile(box))) return false;
+            return !Ilink.IsRevoked(box, live.KeyHash);
+        }
+        catch { return false; }
+    }
+
+    public static bool ClearIfRenewed(string box)
+    {
+        var live = Ilink.Live(box);
+        if (!Superseded(box, live)) return false;
+        Clear(box);
+        ClearQrStreak(box);
+        Log.Box(box, $"need-scan cleared: new credential at {live.WriteLocal}");
+        return true;
+    }
+
     public static void Clear(string box)
     {
         foreach (var p in new[] { BoxPaths.NeedScanFile(box), BoxPaths.NeedScanStamp(box) })

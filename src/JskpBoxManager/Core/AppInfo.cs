@@ -42,6 +42,8 @@ public static class AppInfo
     {
         get
         {
+            var v = Asm.GetCustomAttributes<AssemblyMetadataAttribute>().FirstOrDefault(a => a.Key == "BuildTime")?.Value;
+            if (DateTime.TryParse(v, out var t)) return t;
             try { return File.GetLastWriteTime(ExePath); } catch { return DateTime.MinValue; }
         }
     }

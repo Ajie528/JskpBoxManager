@@ -71,6 +71,13 @@ public static class Migration
                 copied.Add(name);
             }
         }
+        var rolesSrc = Path.Combine(from, "roles");
+        if (Directory.Exists(rolesSrc))
+        {
+            progress?.Report("正在导入角色档案…");
+            Robo.Run(rolesSrc, Roles.Dir, "/E", "/XO", "/R:1", "/W:1");
+            copied.Add("roles");
+        }
         var evSrc = Path.Combine(from, "logs", "ilink-events.jsonl");
         if (File.Exists(evSrc))
         {

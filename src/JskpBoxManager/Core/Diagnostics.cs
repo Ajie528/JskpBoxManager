@@ -23,7 +23,9 @@ public static class Diagnostics
             sb.AppendLine($"[{b.Box}] {b.Note}  {b.PhaseText}  {b.LoginText}  保活={b.Keepalive}  上次保活={b.LastRefresh}");
             sb.AppendLine($"    live  {b.Live}");
             sb.AppendLine($"    vault {b.Vault}");
-            if (NeedScan.Pending(b.Box)) sb.AppendLine($"    need-scan {NeedScan.Reason(b.Box)}");
+            if (b.Role != null && b.Role.HasName)
+                sb.AppendLine($"    role  {b.Role.Name} 等级={b.Role.Level} 区服={b.Role.ServerName} 攻击={b.Role.Attack} 读取于={b.Role.CapturedAt:MM-dd HH:mm}");
+            if (NeedScan.Pending(b.Box)) sb.AppendLine($"    need-scan {NeedScan.Reason(b.Box)}{(NeedScan.Superseded(b.Box, b.Live) ? "（已被新凭证取代）" : "")}");
             var task = Keepalive.TaskCommand(b.Box);
             sb.AppendLine($"    task  {(task == null ? "(无)" : task)}");
             if (b.Warning.Length > 0) sb.AppendLine($"    ! {b.Warning}");
@@ -67,8 +69,10 @@ public static class Diagnostics
             }
         foreach (var n in new[] { "keepalive.json", "box-notes.json", "paths.json", "migrated.json" })
             AddFile(Path.Combine(AppPaths.AppDir, n), n);
+        AddFile(Path.Combine(Roles.Dir, "index.json"), "roles/index.json");
         foreach (var b in boxes)
         {
+            AddFile(Path.Combine(Roles.Dir, b.Box + ".json"), $"roles/{b.Box}.json");
             AddFile(Path.Combine(BoxPaths.CredentialDir(b.Box), "credential.json"), $"profiles/{b.Box}/credential.json");
             AddFile(BoxPaths.RevokedFile(b.Box), $"profiles/{b.Box}/revoked.txt");
             AddFile(BoxPaths.NeedScanFile(b.Box), $"profiles/{b.Box}/refresh-need-scan.txt");

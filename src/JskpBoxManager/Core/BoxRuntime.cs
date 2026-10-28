@@ -327,6 +327,7 @@ public static class BoxRuntime
         var prof = BoxPaths.Vault(box);
         Directory.CreateDirectory(prof);
         Ilink.ClearVault(box);
+        Roles.Clear(box);
         foreach (var rel in new[] { "browser", "backups", "userdata" })
             try { var p = Path.Combine(prof, rel); if (Directory.Exists(p)) Directory.Delete(p, true); } catch { }
         foreach (var rel in new[]

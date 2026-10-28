@@ -11,3 +11,6 @@ paths.json
 keepalive.json
 box-notes.json
 migrated.json
+roles/
+update/
+update.json

@@ -164,6 +164,7 @@ public sealed class LaunchSession
                 if (i < 2) Thread.Sleep(400);
             }
             try { Ilink.Save(_box, "game-ok"); } catch { }
+            try { NeedScan.ClearIfRenewed(_box); } catch { }
             EnsureKeepaliveTask();
             Watch();
         }
@@ -489,6 +490,52 @@ public sealed class LaunchSession
 
     void Watch()
     {
+        using var cts = new CancellationTokenSource();
+        var roles = Task.Run(() => RoleLoop(cts.Token));
+        try { WatchLoop(); }
+        finally
+        {
+            cts.Cancel();
+            try { roles.Wait(5000); } catch { }
+        }
+    }
+
+    /// <summary>
+    /// 后台读角色名和攻击力：进游戏后每 10 秒试一次，读全了改为每 30 分钟更新一次攻击力；
+    /// 20 分钟还没读全就放慢到每 5 分钟（避免一直扫游戏内存）。
+    /// </summary>
+    void RoleLoop(CancellationToken ct)
+    {
+        var started = DateTime.MinValue;
+        var lastTry = DateTime.MinValue;
+        bool name = false, attack = false, gaveUpLogged = false;
+        while (!ct.WaitHandle.WaitOne(3000))
+        {
+            try
+            {
+                if (!new BoxView(_box).HasGameWindow) continue;
+                if (started == DateTime.MinValue) { started = DateTime.Now; lastTry = DateTime.Now.AddSeconds(-5); }
+                var interval = name && attack ? TimeSpan.FromMinutes(30)
+                    : DateTime.Now - started > TimeSpan.FromMinutes(20) ? TimeSpan.FromMinutes(5)
+                    : TimeSpan.FromSeconds(10);
+                if (!name || !attack)
+                    if (DateTime.Now - started > TimeSpan.FromMinutes(20) && !gaveUpLogged)
+                    {
+                        gaveUpLogged = true;
+                        L($"role read incomplete after 20 min (name={name} attack={attack}) -> retry every 5 min");
+                    }
+                if (DateTime.Now - lastTry < interval) continue;
+                lastTry = DateTime.Now;
+                var r = RoleCapture.ReadOnce(_box);
+                name |= r.NameFound;
+                attack |= r.AttackFound;
+            }
+            catch (Exception ex) { L("role read error: " + ex.Message); lastTry = DateTime.Now; }
+        }
+    }
+
+    void WatchLoop()
+    {
         L("watch start");
         bool hadGame = false, sawQr = false, qrResumed = false, wxNudged = false;
         int goneTicks = 0, uiGoneTicks = 0;
@@ -518,6 +565,7 @@ public sealed class LaunchSession
             if ((DateTime.Now - lastCred).TotalSeconds >= 30)
             {
                 try { Ilink.Save(_box, "watch"); } catch { }
+                try { NeedScan.ClearIfRenewed(_box); } catch { }
                 lastCred = DateTime.Now;
             }
 

@@ -35,8 +35,13 @@ public partial class App : Application
             return;
         }
 
+        int wait = Array.IndexOf(args, "--wait-pid");
+        if (wait >= 0 && wait + 1 < args.Length && int.TryParse(args[wait + 1], out var oldPid))
+            try { using var p = System.Diagnostics.Process.GetProcessById(oldPid); p.WaitForExit(15000); } catch { }
+        Updater.Cleanup();
+
         _guiMutex = new Mutex(true, @"Local\JskpBoxManager.Gui", out bool first);
-        if (!first)
+        if (!first && !args.Contains("--snapshot"))
         {
             MessageBox.Show("管理界面已经打开了（看看任务栏）。", AppInfo.ProductName, MessageBoxButton.OK, MessageBoxImage.Information);
             Shutdown(0);
@@ -47,6 +52,8 @@ public partial class App : Application
         var w = new MainWindow();
         MainWindow = w;
         w.Show();
+        int from = Array.IndexOf(args, "--updated-from");
+        if (from >= 0 && from + 1 < args.Length) w.ShowUpdatedNotice(args[from + 1]);
         int snap = Array.IndexOf(args, "--snapshot");
         if (snap >= 0 && snap + 1 < args.Length) w.SnapshotAfterLoad(args[snap + 1]);
     }
@@ -64,7 +71,7 @@ public partial class App : Application
             }
             if (!Sandboxie.IsBoxName(box))
             {
-                Console($"用法：JskpBoxManager.exe launch|refresh|stop|clear|status qbN");
+                Console($"用法：JskpBoxManager.exe launch|refresh|stop|clear|status|role qbN");
                 return 2;
             }
             switch (cmd)
@@ -73,6 +80,10 @@ public partial class App : Application
                 case "refresh": return new RefreshSession(box).Run();
                 case "stop": BoxRuntime.StopForce(box, true); return 0;
                 case "clear": BoxRuntime.ClearLogin(box); return 0;
+                case "role":
+                    var r = RoleCapture.ReadOnce(box, true, !args.Contains("--dry"));
+                    Console($"{box}  {r.Message}");
+                    return r.NameFound ? 0 : 1;
                 case "status":
                     var keep = Keepalive.Load();
                     var s = BoxSummary.Build(box, Notes.Load(), keep, BoxSummary.LastRefreshEvents());

@@ -36,10 +36,17 @@ public partial class MainWindow : Window
         SetStatus("正在识别 Sandboxie 和 QQ 浏览器…");
         await Task.Run(EnvDetect.Reload);
         UpdateEnvText();
+        _ = CheckUpdateAsync();
         if (!CheckEnvBanner()) { _timer.Start(); SetStatus("缺少必要软件，见上方提示"); return; }
 
         await RefreshAsync();
         _timer.Start();
+        if (_updatedFrom != null)
+        {
+            SetStatus($"已从 v{_updatedFrom} 更新到 {AppInfo.VersionLabel}");
+            ShowBanner($"已从 v{_updatedFrom} 更新到 {AppInfo.VersionLabel}。", "看看更新了什么", () => { HideBanner(); About_Click(null, null); });
+            return;
+        }
 
         if (!Migration.AlreadyMigrated && !Migration.HasOwnData)
         {
@@ -237,6 +244,8 @@ public partial class MainWindow : Window
             Sched_Changed(null, null);
         }
         TxtCred.Text = s == null ? "" : CredentialText(s);
+        TxtRole.Text = s == null ? "" : RoleDetail(s);
+        BtnRole.IsEnabled = sel.Count == 1 && s != null && s.InGame && _busy == 0;
         var lines = Log.Tail(AppPaths.BoxLog(cur.Box), 40);
         var text = string.Join("\n", lines.Select(l => l.Length > 20 ? l[11..] : l));
         if (TxtLog.Text != text)
@@ -244,6 +253,32 @@ public partial class MainWindow : Window
             TxtLog.Text = text;
             TxtLog.ScrollToEnd();
         }
+    }
+
+    static string RoleDetail(BoxSummary s)
+    {
+        var r = s.Role;
+        if (r == null || !r.HasName)
+            return s.InGame ? "正在从游戏里读取角色名和攻击力…（进入主界面后一般 1 分钟内出来）" : "还没读到。进一次游戏后自动读取。";
+        var lines = new List<string> { $"{r.Name}" };
+        var meta = new List<string>();
+        if (r.Level.Length > 0) meta.Add($"等级 {r.Level}");
+        if (r.ServerName.Length > 0) meta.Add(r.ServerName);
+        if (meta.Count > 0) lines.Add(string.Join("  ·  ", meta));
+        lines.Add(r.HasAttack ? $"攻击力 {r.Attack}（{r.AttackAt:MM-dd HH:mm} 读取）" : "攻击力：还没读到（要在游戏界面上显示过）");
+        return string.Join("\n", lines);
+    }
+
+    async void Role_Click(object sender, RoutedEventArgs e)
+    {
+        var cur = Current;
+        if (cur == null) return;
+        var msg = await RunBusy($"正在从 {cur.Box} 的游戏里读取角色和攻击力…", () =>
+        {
+            try { return RoleCapture.ReadOnce(cur.Box).Message; }
+            catch (Exception ex) { return "读取失败：" + ex.Message; }
+        });
+        SetStatus($"{cur.Box}：{msg}");
     }
 
     static string CredentialText(BoxSummary s)
@@ -490,6 +525,36 @@ public partial class MainWindow : Window
     }
 
     void About_Click(object sender, RoutedEventArgs e) => new AboutWindow { Owner = this }.ShowDialog();
+
+    // ---------- 自动更新 ----------
+
+    UpdateInfo _update;
+    string _updatedFrom;
+
+    public void ShowUpdatedNotice(string fromVersion) => _updatedFrom = fromVersion;
+
+    async Task CheckUpdateAsync()
+    {
+        try
+        {
+            var info = await Updater.CheckAutoAsync();
+            if (info != null) ShowNewVersion(info);
+        }
+        catch (Exception ex) { Log.App("update check failed: " + ex.Message); }
+    }
+
+    public void ShowNewVersion(UpdateInfo info)
+    {
+        _update = info;
+        BtnNewVersion.Content = $"● 有新版本 v{info.Version}";
+        BtnNewVersion.Visibility = Visibility.Visible;
+    }
+
+    void NewVersion_Click(object sender, RoutedEventArgs e)
+    {
+        if (_update == null) return;
+        new UpdateWindow(_update) { Owner = this }.ShowDialog();
+    }
 
     /// <summary>--snapshot 参数：界面加载并刷新一轮后把窗口存成 png（写说明文档、远程排查用）。</summary>
     public async void SnapshotAfterLoad(string png)

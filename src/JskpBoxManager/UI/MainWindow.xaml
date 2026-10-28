@@ -1,7 +1,7 @@
 <Window x:Class="JskpBoxManager.UI.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="向僵多开管家" Width="1180" Height="720" MinWidth="980" MinHeight="560"
+        Title="向僵多开管家" Width="1280" Height="760" MinWidth="1040" MinHeight="580"
         WindowStartupLocation="CenterScreen" FontFamily="Microsoft YaHei UI" FontSize="13"
         Background="White" Icon="/app.ico">
     <Grid>
@@ -20,6 +20,7 @@
                     <TextBlock x:Name="TxtVersion" Foreground="#94A3B8" Margin="10,5,0,0" Text="v1.0.0"/>
                 </StackPanel>
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                    <Button x:Name="BtnNewVersion" Visibility="Collapsed" Style="{StaticResource LinkBtn}" Foreground="#4ADE80" FontWeight="SemiBold" Margin="0,0,20,0" Click="NewVersion_Click"/>
                     <TextBlock x:Name="TxtEnv" Foreground="#CBD5E1" Margin="0,0,20,0" VerticalAlignment="Center"/>
                     <Button Content="导入旧版数据" Style="{StaticResource LinkBtn}" Foreground="#93C5FD" Click="Import_Click"/>
                     <Button Content="路径设置" Style="{StaticResource LinkBtn}" Foreground="#93C5FD" Click="Paths_Click"/>
@@ -41,7 +42,7 @@
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="16"/>
-                <ColumnDefinition Width="340"/>
+                <ColumnDefinition Width="320"/>
             </Grid.ColumnDefinitions>
 
             <!-- 沙箱列表 -->
@@ -94,9 +95,17 @@
                         </Style>
                     </DataGrid.CellStyle>
                     <DataGrid.Columns>
-                        <DataGridTextColumn Header="沙箱" Binding="{Binding Box}" Width="60"/>
-                        <DataGridTextColumn Header="账号备注" Binding="{Binding Note}" Width="*" MinWidth="110"/>
-                        <DataGridTemplateColumn Header="运行状态" Width="170">
+                        <DataGridTextColumn Header="沙箱" Binding="{Binding Box}" Width="66"/>
+                        <DataGridTextColumn Header="账号备注" Binding="{Binding Note}" Width="*" MinWidth="100"/>
+                        <DataGridTemplateColumn Header="角色" Width="120">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding RoleText}" ToolTip="{Binding RoleTip}" TextTrimming="CharacterEllipsis"/>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+                        <DataGridTextColumn Header="攻击力" Binding="{Binding AttackText}" Width="80"/>
+                        <DataGridTemplateColumn Header="运行状态" Width="140">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <StackPanel Orientation="Horizontal">
@@ -106,7 +115,7 @@
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTemplateColumn Header="登录" Width="150">
+                        <DataGridTemplateColumn Header="登录" Width="130">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <Border Background="{Binding LoginBg}" CornerRadius="10" Padding="8,2" HorizontalAlignment="Left">
@@ -115,9 +124,9 @@
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTextColumn Header="最近免扫换新" Binding="{Binding RenewText}" Width="110"/>
+                        <DataGridTextColumn Header="最近免扫换新" Binding="{Binding RenewText}" Width="100"/>
                         <DataGridTextColumn Header="保活计划" Binding="{Binding Keepalive}" Width="100"/>
-                        <DataGridTextColumn Header="上次保活" Binding="{Binding LastRefresh}" Width="130"/>
+                        <DataGridTextColumn Header="上次保活" Binding="{Binding LastRefresh}" Width="120"/>
                         <DataGridTemplateColumn Header="" Width="28">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
@@ -155,6 +164,14 @@
                         </DockPanel>
                         <TextBlock Foreground="{StaticResource Muted}" FontSize="12" Margin="0,4,0,0" TextWrapping="Wrap"
                                    Text="桌面快捷方式会改名为「jskp-备注」。"/>
+
+                        <Separator Margin="0,12"/>
+                        <DockPanel Margin="0,0,0,8">
+                            <Button x:Name="BtnRole" DockPanel.Dock="Right" Content="重新读取" Style="{StaticResource LinkBtn}" Margin="0" Click="Role_Click"
+                                    ToolTip="游戏开着时，从游戏里重新读一次角色名和攻击力（几秒到十几秒）"/>
+                            <TextBlock Text="游戏角色" Style="{StaticResource SectionTitle}" Margin="0"/>
+                        </DockPanel>
+                        <TextBlock x:Name="TxtRole" TextWrapping="Wrap" LineHeight="20"/>
 
                         <Separator Margin="0,12"/>
                         <TextBlock Text="登录凭证" Style="{StaticResource SectionTitle}"/>

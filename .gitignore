@@ -1,0 +1,13 @@
+bin/
+obj/
+dist/
+.vs/
+*.user
+
+# 运行数据（含登录凭证，绝不能提交）
+profiles/
+logs/
+paths.json
+keepalive.json
+box-notes.json
+migrated.json

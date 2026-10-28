@@ -97,6 +97,7 @@ JskpBoxManager.exe clear qb1        清除登录
 JskpBoxManager.exe status qb1       输出状态（可重定向到文件）
 JskpBoxManager.exe role qb1         读一次角色和攻击力（加 --dry 只显示不写入）
 JskpBoxManager.exe version          输出版本号
+JskpBoxManager.exe update           检查并更新到最新版本（不打开界面）
 ```
 
 ## 开发与发版

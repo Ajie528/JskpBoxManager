@@ -48,7 +48,7 @@ public static class AppInfo
         }
     }
 
-    public static string ExePath => Environment.ProcessPath ?? Path.Combine(AppContext.BaseDirectory, "JskpBoxManager.exe");
+    public static string ExePath => Path.Combine(AppPaths.AppDir, "JskpBoxManager.exe");
 
     public static string ReadChangelog()
     {

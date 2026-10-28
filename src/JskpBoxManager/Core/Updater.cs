@@ -148,7 +148,7 @@ public static class Updater
     }
 
     /// <summary>替换 exe 并重启界面；失败时恢复原样并抛异常。</summary>
-    public static void ApplyAndRestart(string newExe)
+    public static void ApplyAndRestart(string newExe, bool restartGui = true)
     {
         var exe = AppInfo.ExePath;
         var old = exe + ".old";
@@ -161,6 +161,7 @@ public static class Updater
             throw;
         }
         Log.App($"update applied {AppInfo.Version} -> {exe}");
+        if (!restartGui) return;
         var psi = new ProcessStartInfo(exe) { UseShellExecute = false, WorkingDirectory = AppPaths.AppDir };
         psi.ArgumentList.Add("--wait-pid");
         psi.ArgumentList.Add(Environment.ProcessId.ToString());

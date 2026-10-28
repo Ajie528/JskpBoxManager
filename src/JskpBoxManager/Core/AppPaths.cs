@@ -8,7 +8,16 @@ namespace JskpBoxManager.Core;
 /// </summary>
 public static class AppPaths
 {
-    public static string AppDir { get; } = AppContext.BaseDirectory.TrimEnd('\\');
+    /// <summary>单文件发布会解压到临时目录运行（AppContext.BaseDirectory 指向那里），数据目录必须按 exe 的真实位置算。</summary>
+    public static string AppDir { get; } = ResolveAppDir();
+
+    static string ResolveAppDir()
+    {
+        var exe = Environment.ProcessPath;
+        if (!string.IsNullOrEmpty(exe) && !Path.GetFileNameWithoutExtension(exe).Equals("dotnet", StringComparison.OrdinalIgnoreCase))
+            return Path.GetDirectoryName(exe)!.TrimEnd('\\');
+        return AppContext.BaseDirectory.TrimEnd('\\');
+    }
 
     public static string Profiles => Path.Combine(AppDir, "profiles");
     public static string Logs => Path.Combine(AppDir, "logs");

@@ -19,15 +19,17 @@ public partial class App : Application
     {
         base.OnStartup(e);
         AppPaths.EnsureDirs();
+        var args = e.Args;
+        bool cli = args.Length >= 1 && args[0].Length > 0 && !args[0].StartsWith("-");
         DispatcherUnhandledException += (_, ex) =>
         {
-            Log.App("UI exception: " + ex.Exception);
-            MessageBox.Show("出现了一个意外错误：\n" + ex.Exception.Message + "\n\n详细信息已写入 logs\\app.log", AppInfo.ProductName, MessageBoxButton.OK, MessageBoxImage.Error);
+            Log.App((cli ? "CLI exception: " : "UI exception: ") + ex.Exception);
             ex.Handled = true;
+            if (cli) { Shutdown(1); return; }
+            MessageBox.Show("出现了一个意外错误：\n" + ex.Exception.Message + "\n\n详细信息已写入 logs\\app.log", AppInfo.ProductName, MessageBoxButton.OK, MessageBoxImage.Error);
         };
 
-        var args = e.Args;
-        if (args.Length >= 1 && args[0].Length > 0 && !args[0].StartsWith("-"))
+        if (cli)
         {
             ShutdownMode = ShutdownMode.OnExplicitShutdown;
             int code = RunCli(args);
@@ -69,6 +71,7 @@ public partial class App : Application
                 Console(AppInfo.VersionLabel);
                 return 0;
             }
+            if (cmd == "update") return RunUpdate();
             if (!Sandboxie.IsBoxName(box))
             {
                 Console($"用法：JskpBoxManager.exe launch|refresh|stop|clear|status|role qbN");
@@ -97,6 +100,25 @@ public partial class App : Application
         catch (Exception ex)
         {
             Log.Box(Sandboxie.IsBoxName(box) ? box : "app", $"{cmd} EXCEPTION: {ex}");
+            return 1;
+        }
+    }
+
+    /// <summary>命令行更新：有新版就下载、校验、替换（不打开界面）。</summary>
+    static int RunUpdate()
+    {
+        try
+        {
+            var info = Task.Run(() => Updater.CheckAsync()).GetAwaiter().GetResult();
+            if (info == null) { Console($"已经是最新版本 {AppInfo.VersionLabel}"); return 0; }
+            var file = Task.Run(() => Updater.DownloadAsync(info, null)).GetAwaiter().GetResult();
+            Updater.ApplyAndRestart(file, false);
+            Console($"已从 v{AppInfo.Version} 更新到 v{info.Version}");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console("更新失败：" + ex.Message);
             return 1;
         }
     }

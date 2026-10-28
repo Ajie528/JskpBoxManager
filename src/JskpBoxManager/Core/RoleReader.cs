@@ -5,11 +5,10 @@ using System.Text.RegularExpressions;
 namespace JskpBoxManager.Core;
 
 /// <summary>
-/// 从游戏渲染进程（沙箱里的 WeChatAppEx）的驻留内存读角色名和攻击力，只读不写。
-/// 读法与旧版 tools\game-memory\read-role-attack.ps1 相同：
-///   角色：界面上已显示的角色信息以 JSON 文本 role_name":"… 留在内存里；
-///   攻击力：前面 0x2C 是本号等级，后面 0x0C、0x14 是固定值 0x034020C0；
-///           改过攻击后旧值会残留且份数更多，取写入时间最新的一份（时间在 -0xC4 或 -0x64）。
+/// 从游戏渲染进程（沙箱里的 WeChatAppEx）读角色名和攻击力，只读不写。
+/// 角色：界面 JSON 文本里的 role_name / role_id / role_level。
+/// 攻击力：用 role_id 当锚点找「当前角色」属性块（D 型 +0xB8；找不到再用 C 型 +0x28 取最新时间戳）。
+/// 不扫历史战斗记录（A 型），那些会残留旧攻击力。
 /// </summary>
 public static class RoleReader
 {
@@ -148,69 +147,95 @@ public static class RoleReader
         finally { CloseHandle(h); }
     }
 
-    public static AttackHit ProbeAttack(int pid, int level)
+    /// <summary>
+    /// 按角色 ID 定位当前攻击力（换装备立刻变的那一格）。
+    /// D 型：角色 ID 后 +0x1C/+0x20=等级、+0xB4=1、+0xB8=攻击 —— 通常只有 1 份，优先用。
+    /// C 型：+0x1C=1、+0x20=等级、+0x28=攻击、+0x64=0x034020C0 —— 可能有旧副本，取 +0x4C 时间戳最新的。
+    /// 旧的 A 型（战斗/历史记录，+0x48）会残留旧攻击力，不再用来取当前值。
+    /// </summary>
+    public static AttackHit ProbeAttack(int pid, int level, ulong roleId)
     {
-        if (level < 1 || level > 1000) return null;
+        if (level < 1 || level > 1000 || roleId == 0) return null;
         IntPtr h = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid);
         if (h == IntPtr.Zero) return null;
         try
         {
-            var tally = new Dictionary<int, int>();
-            var where = new Dictionary<int, long>();
-            var found = new List<(int Gen, int Atk, long Addr)>();
-            ScanResident(h, 900000, 8, (page, buf, read) =>
+            AttackHit dHit = null;
+            AttackHit cHit = null;
+            int cGen = 0;
+            var needle = BitConverter.GetBytes(roleId);
+            ScanRegions(h, (baseAddr, buf, read) =>
             {
-                if (read < 0x100) return false;
-                for (int i = 0xD0; i <= read - 24; i += 4)
+                for (int i = 0; i + 0xBC <= read; i += 4)
                 {
-                    int atk = BitConverter.ToInt32(buf, i);
-                    if (atk < 100 || atk > 5000000) continue;
-                    if (BitConverter.ToInt32(buf, i + 12) != AttackMarker) continue;
-                    if (BitConverter.ToInt32(buf, i + 20) != AttackMarker) continue;
-                    if (BitConverter.ToInt32(buf, i - 44) != level) continue;
-                    long at = page + i;
-                    if (!tally.ContainsKey(atk)) { tally[atk] = 0; where[atk] = at; }
-                    tally[atk]++;
-                    if (at < where[atk]) where[atk] = at;
-                    int rear = BitConverter.ToInt32(buf, i - 0xC4);
-                    int front = BitConverter.ToInt32(buf, i - 0x64);
-                    int gen = rear is > 1600000000 and < 2100000000 ? rear : front is > 1600000000 and < 2100000000 ? front : 0;
-                    if (gen != 0) found.Add((gen, atk, at));
+                    if (buf[i] != needle[0] || buf[i + 7] != needle[7]) continue;
+                    bool eq = true;
+                    for (int q = 1; q < 7; q++) if (buf[i + q] != needle[q]) { eq = false; break; }
+                    if (!eq) continue;
+
+                    int At(int off) => BitConverter.ToInt32(buf, i + off);
+                    int lv1C = At(0x1C), lv20 = At(0x20);
+
+                    // D：唯一的「当前角色」块
+                    if (lv1C == level && lv20 == level && At(0xB4) == 1)
+                    {
+                        int atk = At(0xB8);
+                        if (atk is >= 100 and <= 5000000)
+                        {
+                            long addr = baseAddr + i + 0xB8;
+                            dHit = new AttackHit(pid, atk, addr, AllocBase(h, addr), 1);
+                            return true; // 找到 D 即可停
+                        }
+                    }
+
+                    // C：可能有一份旧的；用 +0x4C 时间戳挑最新
+                    if (lv1C == 1 && lv20 == level && At(0x64) == AttackMarker)
+                    {
+                        int atk = At(0x28);
+                        if (atk is >= 100 and <= 5000000)
+                        {
+                            int gen = At(0x4C);
+                            if (gen > cGen)
+                            {
+                                cGen = gen;
+                                long addr = baseAddr + i + 0x28;
+                                cHit = new AttackHit(pid, atk, addr, AllocBase(h, addr), 1);
+                            }
+                        }
+                    }
                 }
                 return false;
             });
-
-            int chosen = 0, chosenGen = 0, chosenNear = 0;
-            long chosenAddr = 0;
-            foreach (var g in found.GroupBy(f => f.Atk))
-            {
-                int maxGen = g.Max(f => f.Gen);
-                var near = g.Where(f => f.Gen >= maxGen - 3000).ToList();
-                if (near.Count < 3) continue;
-                if (maxGen > chosenGen || (maxGen == chosenGen && near.Count > chosenNear))
-                {
-                    chosen = g.Key;
-                    chosenGen = maxGen;
-                    chosenNear = near.Count;
-                    chosenAddr = near.Min(f => f.Addr);
-                }
-            }
-            if (chosen <= 0 && tally.Count > 0)
-            {
-                var ranked = tally.OrderByDescending(kv => kv.Value).ToList();
-                int second = ranked.Count > 1 ? ranked[1].Value : 0;
-                if (ranked[0].Value >= 8 && ranked[0].Value >= second * 5)
-                {
-                    chosen = ranked[0].Key;
-                    chosenNear = ranked[0].Value;
-                    chosenAddr = where[chosen];
-                }
-            }
-            if (chosen <= 0 || chosenAddr <= 0) return null;
-            long heap = AllocBase(h, chosenAddr);
-            if (heap <= 0 || chosenAddr <= heap) return null;
-            return new AttackHit(pid, chosen, chosenAddr, heap, chosenNear);
+            return dHit ?? cHit;
         }
         finally { CloseHandle(h); }
+    }
+
+    /// <summary>按 VirtualQueryEx 扫整个可读私有内存（角色属性块不一定全在工作集里）。</summary>
+    static void ScanRegions(IntPtr h, Func<long, byte[], int, bool> onChunk)
+    {
+        long addr = 0;
+        var buf = new byte[4 << 20];
+        while (addr < 0x7FFFFFFF0000L)
+        {
+            if (VirtualQueryEx(h, new IntPtr(addr), out var mbi, (uint)Marshal.SizeOf<MBI>()) == 0) break;
+            long b = mbi.BaseAddress.ToInt64(), size = mbi.RegionSize.ToInt64();
+            bool ok = mbi.State == 0x1000 && (mbi.Protect & 0x101) == 0 && (mbi.Protect & 0xEE) != 0;
+            if (ok)
+            {
+                for (long off = 0; off < size; )
+                {
+                    int want = (int)Math.Min(buf.Length, size - off);
+                    if (!ReadProcessMemory(h, new IntPtr(b + off), buf, want, out int read) || read <= 0) break;
+                    if (onChunk(b + off, buf, read)) return;
+                    // 块末尾可能截断一条记录，回退 0x100 再读下一段
+                    int step = read < want ? read : Math.Max(1, read - 0x100);
+                    off += step;
+                    if (read < want) break;
+                }
+            }
+            addr = b + size;
+            if (size <= 0) break;
+        }
     }
 }

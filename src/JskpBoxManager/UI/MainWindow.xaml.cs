@@ -265,7 +265,7 @@ public partial class MainWindow : Window
         if (r.Level.Length > 0) meta.Add($"等级 {r.Level}");
         if (r.ServerName.Length > 0) meta.Add(r.ServerName);
         if (meta.Count > 0) lines.Add(string.Join("  ·  ", meta));
-        lines.Add(r.HasAttack ? $"攻击力 {r.Attack}（{r.AttackAt:MM-dd HH:mm} 读取）" : "攻击力：还没读到（要在游戏界面上显示过）");
+        lines.Add(r.HasAttack ? $"攻击力 {r.Attack}（{r.AttackAt:MM-dd HH:mm} 读取）" : "攻击力：还没读到（进游戏后一般几十秒内出来）");
         return string.Join("\n", lines);
     }
 

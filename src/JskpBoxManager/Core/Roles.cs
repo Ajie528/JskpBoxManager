@@ -164,27 +164,29 @@ public static class RoleCapture
         }
         var name = text != null ? RoleReader.Field(text.Text, "role_name") : "";
         var levelText = text != null ? RoleReader.Field(text.Text, "role_level") : "";
+        var roleIdText = text != null ? RoleReader.Field(text.Text, "role_id") : "";
         if (levelText.Length == 0 && prev != null) levelText = prev.Level;
+        if (roleIdText.Length == 0 && prev != null) roleIdText = prev.RoleId;
         if (name.Length == 0) return new Result(false, false, "游戏里的角色信息还没加载出来");
 
         RoleReader.AttackHit atk = null;
-        if (wantAttack && int.TryParse(levelText, out var level) && level > 0)
+        if (wantAttack && int.TryParse(levelText, out var level) && level > 0 && ulong.TryParse(roleIdText, out var roleId) && roleId > 0)
         {
             var order = new List<int> { text.Pid };
             order.AddRange(pids.Where(p => p != text.Pid));
             foreach (var pid in order)
             {
-                try { atk = RoleReader.ProbeAttack(pid, level); } catch { }
+                try { atk = RoleReader.ProbeAttack(pid, level, roleId); } catch { }
                 if (atk != null) break;
             }
         }
         if (!write)
-            return new Result(true, atk != null, $"{name} 等级={levelText} 区服={RoleReader.Field(text.Text, "server_name")} 攻击={(atk != null ? $"{atk.Value}（{atk.Copies} 份，pid {atk.Pid}）" : "未读到")}");
+            return new Result(true, atk != null, $"{name} 等级={levelText} 区服={RoleReader.Field(text.Text, "server_name")} 攻击={(atk != null ? $"{atk.Value}（pid {atk.Pid} @0x{atk.Addr:X}）" : "未读到")}");
         Roles.Save(box, text, atk);
         Roles.SyncNote(box, name, prev?.Name ?? "");
         Log.Box(box, atk != null
-            ? $"role read name={name} level={levelText} attack={atk.Value} copies={atk.Copies} pid={atk.Pid}"
-            : $"role read name={name} level={levelText} (attack not in memory yet)");
-        return new Result(true, atk != null, atk != null ? $"{name}  攻击 {atk.Value}" : $"{name}（攻击力还没出现在游戏界面上，稍后再读）");
+            ? $"role read name={name} level={levelText} attack={atk.Value} pid={atk.Pid} @0x{atk.Addr:X}"
+            : $"role read name={name} level={levelText} role_id={roleIdText} (attack block not found)");
+        return new Result(true, atk != null, atk != null ? $"{name}  攻击 {atk.Value}" : $"{name}（攻击力结构还没出现，稍后再读）");
     }
 }

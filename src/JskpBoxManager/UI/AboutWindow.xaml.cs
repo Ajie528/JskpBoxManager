@@ -19,7 +19,7 @@ public partial class AboutWindow : Window
                 $"QQ 浏览器：{EnvDetect.QqCoreExe()}\n" +
                 $"电脑：{Environment.MachineName}";
         TxtInfo.Text = _info;
-        TxtLog.Text = AppInfo.ReadChangelog();
+        MarkdownView.Fill(TxtLog, AppInfo.ReadChangelog());
     }
 
     async void Check_Click(object sender, RoutedEventArgs e)

@@ -16,7 +16,7 @@ public partial class UpdateWindow : Window
         TxtTitle.Text = $"新版本 v{info.Version} 可以更新了";
         TxtSub.Text = $"当前 {AppInfo.VersionLabel}，新版发布于 {info.Published:yyyy-MM-dd HH:mm}，大小约 {info.ExeSize / 1024.0 / 1024.0:N0} MB。\n" +
                       "更新只替换程序本身，金库、备注、保活设置都不动；正在玩的游戏不受影响。";
-        TxtNotes.Text = string.IsNullOrWhiteSpace(info.Notes) ? "（这个版本没有写更新说明）" : info.Notes.Replace("\r\n", "\n").Replace("\n", "\r\n");
+        MarkdownView.Fill(TxtNotes, string.IsNullOrWhiteSpace(info.Notes) ? "（这个版本没有写更新说明）" : info.Notes);
     }
 
     async void Update_Click(object sender, RoutedEventArgs e)

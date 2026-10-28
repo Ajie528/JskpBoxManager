@@ -21,7 +21,9 @@
             </DockPanel>
         </StackPanel>
         <TextBlock DockPanel.Dock="Top" Text="更新内容" FontWeight="SemiBold" Margin="0,0,0,6"/>
-        <TextBox x:Name="TxtNotes" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"
-                 FontFamily="Consolas, Microsoft YaHei UI" FontSize="12" Padding="8" Background="#F9FAFB"/>
+        <Border BorderBrush="#E5E7EB" BorderThickness="1" CornerRadius="6" Background="#F9FAFB">
+            <RichTextBox x:Name="TxtNotes" IsReadOnly="True" IsDocumentEnabled="True" BorderThickness="0"
+                         VerticalScrollBarVisibility="Auto" Background="Transparent" Padding="4"/>
+        </Border>
     </DockPanel>
 </Window>

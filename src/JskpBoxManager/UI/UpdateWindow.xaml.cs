@@ -33,9 +33,12 @@ public partial class UpdateWindow : Window
         try
         {
             var file = await Updater.DownloadAsync(_info, progress, _cts.Token);
-            TxtProgress.Text = "下载完成，正在替换并重启…";
+            TxtProgress.Text = "下载完成，正在替换并打开新版…";
+            App.ReleaseGuiLock();
             Updater.ApplyAndRestart(file);
             Application.Current.Shutdown();
+            // 有后台任务拖着不退时兜底，保证新版能接手
+            _ = Task.Delay(5000).ContinueWith(_ => Environment.Exit(0));
         }
         catch (OperationCanceledException)
         {

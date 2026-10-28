@@ -13,7 +13,17 @@ namespace JskpBoxManager;
 /// </summary>
 public partial class App : Application
 {
+    const string GuiMutexName = @"Local\JskpBoxManager.Gui";
     Mutex _guiMutex;
+
+    /// <summary>自动更新重启前先放掉单实例锁，新版才能马上接手。</summary>
+    public static void ReleaseGuiLock()
+    {
+        if (Current is not App app || app._guiMutex == null) return;
+        try { app._guiMutex.ReleaseMutex(); } catch { }
+        try { app._guiMutex.Dispose(); } catch { }
+        app._guiMutex = null;
+    }
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -37,14 +47,24 @@ public partial class App : Application
             return;
         }
 
+        bool afterUpdate = args.Contains("--updated-from");
         int wait = Array.IndexOf(args, "--wait-pid");
         if (wait >= 0 && wait + 1 < args.Length && int.TryParse(args[wait + 1], out var oldPid))
-            try { using var p = System.Diagnostics.Process.GetProcessById(oldPid); p.WaitForExit(15000); } catch { }
+        {
+            Log.App($"restart after update: waiting old pid {oldPid}");
+            try
+            {
+                using var p = System.Diagnostics.Process.GetProcessById(oldPid);
+                if (!p.WaitForExit(30000)) Log.App($"old pid {oldPid} still running after 30s");
+            }
+            catch { }
+        }
         Updater.Cleanup();
 
-        _guiMutex = new Mutex(true, @"Local\JskpBoxManager.Gui", out bool first);
+        bool first = AcquireGuiLock(afterUpdate ? 30 : 0);
         if (!first && !args.Contains("--snapshot"))
         {
+            Log.App("gui already running -> exit");
             MessageBox.Show("管理界面已经打开了（看看任务栏）。", AppInfo.ProductName, MessageBoxButton.OK, MessageBoxImage.Information);
             Shutdown(0);
             return;
@@ -58,6 +78,26 @@ public partial class App : Application
         if (from >= 0 && from + 1 < args.Length) w.ShowUpdatedNotice(args[from + 1]);
         int snap = Array.IndexOf(args, "--snapshot");
         if (snap >= 0 && snap + 1 < args.Length) w.SnapshotAfterLoad(args[snap + 1]);
+    }
+
+    /// <summary>拿单实例锁；更新后重启时旧窗口可能还没退干净，最多重试 retrySeconds 秒。</summary>
+    bool AcquireGuiLock(int retrySeconds)
+    {
+        var deadline = DateTime.Now.AddSeconds(retrySeconds);
+        while (true)
+        {
+            _guiMutex = new Mutex(true, GuiMutexName, out bool created);
+            if (created) return true;
+            try
+            {
+                if (_guiMutex.WaitOne(0)) return true;
+            }
+            catch (AbandonedMutexException) { return true; }
+            _guiMutex.Dispose();
+            _guiMutex = null;
+            if (DateTime.Now >= deadline) return false;
+            Thread.Sleep(500);
+        }
     }
 
     static int RunCli(string[] args)

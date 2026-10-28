@@ -14,7 +14,9 @@ public static class RoleReader
 {
     const uint PROCESS_QUERY_INFORMATION = 0x0400;
     const uint PROCESS_VM_READ = 0x0010;
-    const int AttackMarker = 0x034020C0;
+    /// <summary>C 型块里 +0x64 的特征常量大致落在这个区间（游戏版本会变，不能写死某一个值）。</summary>
+    const uint AttackMarkerMin = 0x02000000;
+    const uint AttackMarkerMax = 0x0FFFFFFF;
 
     [StructLayout(LayoutKind.Sequential)]
     struct MBI
@@ -149,8 +151,9 @@ public static class RoleReader
 
     /// <summary>
     /// 按角色 ID 定位当前攻击力（换装备立刻变的那一格）。
-    /// D 型：角色 ID 后 +0x1C/+0x20=等级、+0xB4=1、+0xB8=攻击 —— 通常只有 1 份，优先用。
-    /// C 型：+0x1C=1、+0x20=等级、+0x28=攻击、+0x64=0x034020C0 —— 可能有旧副本，取 +0x4C 时间戳最新的。
+    /// D 型：角色 ID 后 +0x1C/+0x20=等级、+0xB4=小正整数、+0xB8=攻击 —— 通常只有 1 份，优先用。
+    ///      （+0xB4 实测可为 1 或 2，不能写死 ==1，否则部分号读不到。）
+    /// C 型：+0x1C=小正整数、+0x20=等级、+0x28=攻击、+0x64≈特征常量 —— 可能有旧副本，取 +0x4C 时间戳最新的。
     /// 旧的 A 型（战斗/历史记录，+0x48）会残留旧攻击力，不再用来取当前值。
     /// </summary>
     public static AttackHit ProbeAttack(int pid, int level, ulong roleId)
@@ -175,9 +178,10 @@ public static class RoleReader
 
                     int At(int off) => BitConverter.ToInt32(buf, i + off);
                     int lv1C = At(0x1C), lv20 = At(0x20);
+                    int flagB4 = At(0xB4);
 
-                    // D：唯一的「当前角色」块
-                    if (lv1C == level && lv20 == level && At(0xB4) == 1)
+                    // D：唯一的「当前角色」块（+0x1C/+0x20 同时等于等级即可唯一定位）
+                    if (lv1C == level && lv20 == level && flagB4 is >= 1 and <= 255)
                     {
                         int atk = At(0xB8);
                         if (atk is >= 100 and <= 5000000)
@@ -189,7 +193,9 @@ public static class RoleReader
                     }
 
                     // C：可能有一份旧的；用 +0x4C 时间戳挑最新
-                    if (lv1C == 1 && lv20 == level && At(0x64) == AttackMarker)
+                    // +0x1C 和 +0x64 随角色/版本会变（见过 1 / 2，以及 0x034020C0 / 0x03464FC0），只要求落在合理区间
+                    uint marker = unchecked((uint)At(0x64));
+                    if (lv1C is >= 1 and <= 255 && lv20 == level && marker is >= AttackMarkerMin and <= AttackMarkerMax)
                     {
                         int atk = At(0x28);
                         if (atk is >= 100 and <= 5000000)

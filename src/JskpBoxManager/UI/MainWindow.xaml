@@ -125,8 +125,20 @@
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
                         <DataGridTextColumn Header="最近免扫换新" Binding="{Binding RenewText}" Width="100"/>
-                        <DataGridTextColumn Header="保活计划" Binding="{Binding Keepalive}" Width="100"/>
-                        <DataGridTextColumn Header="上次保活" Binding="{Binding LastRefresh}" Width="120"/>
+                        <DataGridTemplateColumn Header="保活计划" Width="120">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding Keepalive}" ToolTip="{Binding Keepalive}" TextTrimming="CharacterEllipsis"/>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+                        <DataGridTemplateColumn Header="上次保活" Width="150">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding LastRefreshShort}" ToolTip="{Binding LastRefresh}" TextTrimming="CharacterEllipsis"/>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
                         <DataGridTemplateColumn Header="" Width="28">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>

@@ -19,7 +19,10 @@ public sealed class BoxSummary
     public DateTime LastRenewUtc = DateTime.MinValue;
     public string Keepalive = "";
     public bool KeepaliveOn;
+    /// <summary>完整说明（详情面板 / 悬停提示）。</summary>
     public string LastRefresh = "";
+    /// <summary>表格里的短文本。</summary>
+    public string LastRefreshShort = "";
     public string Warning = "";
     public IlinkState Live = new();
     public IlinkState Vault = new();
@@ -72,20 +75,29 @@ public sealed class BoxSummary
         var pol = keep.For(box);
         s.KeepaliveOn = keep.EnabledFor(box);
         s.Keepalive = !s.KeepaliveOn ? "关" : s.Login == LoginLevel.None ? "登录后生效" : pol.Describe(box);
-        if (lastRefresh.TryGetValue(box, out var ev))
+        if (lastRefresh.TryGetValue(box, out var ev)
+            && DateTime.TryParseExact(JsonFile.Str(ev, "at"), "yyyy-MM-dd HH:mm:ss", null, System.Globalization.DateTimeStyles.None, out var at))
         {
             var r = JsonFile.Str(ev, "result");
-            var at = JsonFile.Str(ev, "at");
-            s.LastRefresh = (at.Length >= 16 ? at[5..16] : at) + " " + (r switch
+            var word = r switch
             {
                 "ok" => "成功", "in-game" => "游戏中跳过", "revoked" => "被顶掉", "qr" or "qr-seen" => "要扫码",
                 "no-game" => "没进游戏", "no-rewrite" => "未换新", _ => r,
-            });
+            };
+            // 保活失败后又手动启动 / 扫码换新过：失败已经过时，标出来，免得和「最近免扫换新」看着矛盾
+            bool recovered = r is not ("ok" or "in-game") && s.Login == LoginLevel.Ok && s.LastRenewUtc > at.ToUniversalTime();
+            s.LastRefreshShort = $"{Clock(at)} {word}" + (recovered ? "·已恢复" : "");
+            s.LastRefresh = $"{at:MM-dd HH:mm} {word}";
             if (JsonFile.Int(ev, "authRet") is int ret && ret != 0)
                 s.LastRefresh += $"（服务器拒绝授权 ret={ret}" + (JsonFile.Str(ev, "authMsg") is { Length: > 0 } m ? $"：{m}）" : "）");
+            if (recovered)
+                s.LastRefresh += $"；之后 {s.LastRenewUtc.ToLocalTime():MM-dd HH:mm} 已重新登录，现在免扫正常";
         }
         return s;
     }
+
+    static string Clock(DateTime t) =>
+        t.Date == DateTime.Today ? $"今天 {t:HH:mm}" : t.Date == DateTime.Today.AddDays(-1) ? $"昨天 {t:HH:mm}" : $"{t:MM-dd HH:mm}";
 
     /// <summary>从事件日志里取每个沙箱最近一次保活结果。</summary>
     public static Dictionary<string, JsonObject> LastRefreshEvents()

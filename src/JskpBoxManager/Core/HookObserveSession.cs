@@ -36,6 +36,17 @@ public sealed class HookObserveSession
         }
         if (!EnvDetect.SbieOk) { Out("Sandboxie 未就绪"); return 1; }
 
+        // 两个 hook 同时跑会各起一个箱内观测程序，日志每行重复，后启动的还会把前一个的输出文件删掉
+        using var single = new Mutex(false, $@"Local\JskpBoxManager.Hook.{_box}");
+        bool gotSingle;
+        try { gotSingle = single.WaitOne(0); } catch (AbandonedMutexException) { gotSingle = true; }
+        if (!gotSingle) { Out($"{_box} 已经有一个 hook 在运行，先关掉那个窗口再开"); return 1; }
+        try { return RunLocked(); }
+        finally { try { single.ReleaseMutex(); } catch { } }
+    }
+
+    int RunLocked()
+    {
         bool launch = !_args.Contains("--no-launch", StringComparer.OrdinalIgnoreCase);
         bool noStop = _args.Contains("--no-stop", StringComparer.OrdinalIgnoreCase);
         int seconds = ArgInt("--seconds", 240, 30, 7200);
@@ -86,10 +97,14 @@ public sealed class HookObserveSession
 
         var deadline = DateTime.Now.AddSeconds(seconds);
         DateTime lastAcct = DateTime.MinValue;
+        int emptyTicks = 0;
         while (DateTime.Now < deadline)
         {
             Thread.Sleep(2000);
             probe.Poll(PrintKeyLine);
+            // 观测程序本身也在箱内：箱里一个进程都没有，说明沙箱被停了（游戏关闭 / 别的命令停箱），没有再看的必要
+            emptyTicks = Sandboxie.Pids(_box).Count == 0 ? emptyTicks + 1 : 0;
+            if (emptyTicks >= 2) { Out($"{_box} 已经停止，观测提前结束"); break; }
             var st = Ilink.Live(_box);
             if (st.WriteUtc > startUtc && st.WriteUtc > lastAcct.AddMilliseconds(50))
             {

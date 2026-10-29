@@ -20,6 +20,7 @@ public sealed class BoxRow : INotifyPropertyChanged
     public string LoginText => Summary?.LoginText ?? "";
     public string Keepalive => Summary?.Keepalive ?? "";
     public string LastRefresh => Summary?.LastRefresh ?? "";
+    public string LastRefreshShort => Summary?.LastRefreshShort ?? "";
     public string Warning => Summary?.Warning ?? "";
     public Visibility WarningVisibility => Warning.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
 

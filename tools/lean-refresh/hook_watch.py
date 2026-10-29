@@ -88,6 +88,7 @@ class Watcher:
         self.device = frida.get_local_device()
         self.done: set[int] = set()
         self.roles: dict[int, tuple[str, str]] = {}
+        self.unknown: dict[int, float] = {}
         self.sessions = {}
         self.rva_cache: dict[str, int | None] = {}
         self.lock = threading.Lock()
@@ -207,9 +208,15 @@ class Watcher:
             if pid in self.done:
                 continue
             if pid not in self.roles:
-                if self.sbie.box_of(pid).lower() != self.box.lower():
-                    with self.lock:
-                        self.done.add(pid)
+                box = self.sbie.box_of(pid).lower()
+                if box != self.box.lower():
+                    # 刚创建的进程 SbieApi 可能还查不到所属沙箱（返回空）；主机上的进程也返回空。
+                    # 空的先多查几秒再放弃，否则沙箱里刚起来的微信主进程会被永久跳过
+                    first = self.unknown.setdefault(pid, time.time())
+                    if box or time.time() - first > 5:
+                        with self.lock:
+                            self.done.add(pid)
+                        self.write({"ev": "skip-other-box", "pid": pid, "sbieBox": box})
                     continue
                 try:
                     cmd = " ".join(p.cmdline())

@@ -78,6 +78,8 @@ public sealed class BoxSummary
                 "ok" => "成功", "in-game" => "游戏中跳过", "revoked" => "被顶掉", "qr" or "qr-seen" => "要扫码",
                 "no-game" => "没进游戏", "no-rewrite" => "未换新", _ => r,
             });
+            if (JsonFile.Int(ev, "authRet") is int ret && ret != 0)
+                s.LastRefresh += $"（服务器拒绝授权 ret={ret}" + (JsonFile.Str(ev, "authMsg") is { Length: > 0 } m ? $"：{m}）" : "）");
         }
         return s;
     }

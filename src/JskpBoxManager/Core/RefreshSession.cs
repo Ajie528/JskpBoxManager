@@ -10,6 +10,7 @@ namespace JskpBoxManager.Core;
 public sealed class RefreshSession
 {
     readonly string _box;
+    AuthProbe.Env _probeEnv;
     public RefreshSession(string box) { _box = box; }
     void L(string m) => Log.Box(_box, m);
 
@@ -17,6 +18,7 @@ public sealed class RefreshSession
     {
         public bool SawGame, Renewed, Revoked, QrFail, SawQr;
         public DateTime LaunchUtc;
+        public AuthProbe.AuthResult Auth;
     }
 
     public int Run()
@@ -97,6 +99,12 @@ public sealed class RefreshSession
         VaultSync.PushVaultToLive(_box);
 
         bool lean = cfg.For(_box).LeanRefresh;
+        if (cfg.For(_box).ProbeAuth)
+        {
+            _probeEnv = AuthProbe.Resolve(false);
+            L(_probeEnv.Ok ? $"refresh: auth probe on (frida {_probeEnv.Frida})" : "refresh: auth probe off -> " + _probeEnv.Error);
+            if (!_probeEnv.Ok) _probeEnv = null;
+        }
         ColdResult r = null;
         string usedMode = "Full";
 
@@ -153,6 +161,7 @@ public sealed class RefreshSession
         {
             ["result"] = outcome, ["keySha"] = Ilink.Live(_box).KeyHash, ["frozenKey"] = frozenKey,
             ["mode"] = usedMode, ["lean"] = lean,
+            ["auth"] = r.Auth?.Text, ["authRet"] = r.Auth?.Ret, ["authMsg"] = r.Auth?.Msg,
         });
 
         if (ok)
@@ -202,6 +211,12 @@ public sealed class RefreshSession
             }
             BoxRuntime.Warmup(_box, attempt > 1);
             BoxRuntime.ClearCrashRestore(_box);
+            AuthProbe probe = null;
+            if (_probeEnv != null)
+            {
+                probe = AuthProbe.Start(_box, _probeEnv, timeoutMin * 60 + 180, out var probeErr);
+                if (probe == null) L("refresh: auth probe not started -> " + probeErr);
+            }
             var baseline = Ilink.Baseline(_box);
             r.LaunchUtc = DateTime.UtcNow;
             BoxRuntime.StartBrowser(_box, "refresh", mode);
@@ -215,6 +230,7 @@ public sealed class RefreshSession
             while (DateTime.Now < deadline)
             {
                 Thread.Sleep(3000);
+                PollAuth(probe, r);
                 if (Ilink.RenewedSince(_box, r.LaunchUtc) && Ilink.Live(_box).KeyHash != frozenKey)
                 {
                     r.Renewed = true;
@@ -283,8 +299,19 @@ public sealed class RefreshSession
                 if (v.HasQqOrGame) continue;
                 if (wait >= 90) { L("refresh: no process 90s -> cold retry"); needRetry = true; break; }
             }
+            PollAuth(probe, r);
             if (r.SawGame || r.Renewed || r.Revoked || r.QrFail || !needRetry) break;
         }
         return r;
+    }
+
+    void PollAuth(AuthProbe probe, ColdResult r)
+    {
+        if (probe == null) return;
+        foreach (var a in probe.Poll())
+        {
+            L($"refresh: 授权返回 {a.Text}");
+            if (a.Cgi.Contains("Auth", StringComparison.OrdinalIgnoreCase)) r.Auth = a;
+        }
     }
 }

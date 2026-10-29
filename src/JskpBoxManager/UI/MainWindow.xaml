@@ -181,6 +181,7 @@
                         <TextBlock Text="静默保活" Style="{StaticResource SectionTitle}"/>
                         <CheckBox x:Name="ChkKeep" Content="为选中的沙箱启用保活" Margin="0,0,0,8"/>
                         <CheckBox x:Name="ChkLeanRefresh" Content="精简保活（不打开游戏中心；失败回退完整启动）" Margin="0,0,0,8"/>
+                        <CheckBox x:Name="ChkProbeAuth" Content="记录授权结果（用 Frida 截服务端返回；需要 Python + frida）" Margin="0,0,0,8"/>
                         <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
                             <RadioButton x:Name="RadInterval" Content="每隔" VerticalAlignment="Center" GroupName="sched" Checked="Sched_Changed"/>
                             <TextBox x:Name="TxtHours" Width="38" Margin="6,0" Padding="3" HorizontalContentAlignment="Center"/>

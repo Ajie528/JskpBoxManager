@@ -15,7 +15,9 @@
 | `hook_ilink.js` | 注入脚本：ilink 日志（`CustomAppender::append`）、凭证文件、connect / DNS |
 | `xlog_locate.py` | 按 RTTI 在 `ilink2.dll` 里找日志函数的 RVA，结果缓存到 `xlog_rva_cache.json` |
 
-依赖：Python 3、`py -3 -m pip install frida psutil pefile`。在发布包里使用时，把本目录复制到 `<安装目录>\tools\lean-refresh\`。
+依赖：Python 3、`py -3 -m pip install frida psutil pefile`。`build.ps1` 会把本目录打进发布包的 `tools\lean-refresh\`。
+
+正式保活勾选「记录授权结果」（`keepalive.json` 的 `"probeAuth": true`）时，也用 `hook_watch.py` 截每次 AutoAuth 的 ret / error_msg。
 
 ```text
 JskpBoxManager.exe hook qb1 --seconds 60

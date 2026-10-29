@@ -12,6 +12,9 @@
   观测程序在 qb1 箱内运行（主机注入会被沙箱拒绝），微信主进程一出现就挂上并拦截子进程，
   授权进程 ILinkServiceHost 出生即挂，能截到 ilink 明文日志里的 AutoAuth 授权结果（ret / error_msg）、凭证文件读写和对外连接。
   依赖 Python 3 + `pip install frida psutil pefile`（缺包时自动安装）。
+- 静默保活可选「记录授权结果」（`keepalive.json` 的 `probeAuth`，默认关）：保活时同样在箱内截 AutoAuth 返回，
+  日志里写「授权返回 成功/失败 ret= msg=」；服务端拒绝时界面「上次保活」直接显示 ret 和原因。缺 Python/frida 时自动跳过，不影响保活。
+  发布包附带 `tools\lean-refresh` 脚本。
   实测：仅去掉 GameUrl / 只启 WeChatAppEx 目前还不能稳定换新密钥，正式路径仍以回退 Full 为准。
 
 ### 修复

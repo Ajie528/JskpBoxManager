@@ -13,6 +13,8 @@ public sealed class KeepPolicy
     public string DailyTime = "04:00";
     /// <summary>精简保活：不打开游戏中心页，优先 Blank/NoUrl/RuntimeOnly；失败回退 Full。默认关。</summary>
     public bool LeanRefresh = false;
+    /// <summary>保活时在箱内挂 Frida 截授权返回（ret / error_msg），写进日志和保活结果。需要 Python + frida。默认关。</summary>
+    public bool ProbeAuth = false;
 
     public KeepPolicy Clone() => (KeepPolicy)MemberwiseClone();
 
@@ -75,6 +77,7 @@ public static class Keepalive
             var d = JsonFile.Str(o, "dailyTime");
             if (d.Length > 0) p.DailyTime = NormalizeClock(d, p.DailyTime);
             p.LeanRefresh = JsonFile.Bool(o, "leanRefresh") ?? false;
+            p.ProbeAuth = JsonFile.Bool(o, "probeAuth") ?? false;
         }
         return p;
     }
@@ -105,6 +108,7 @@ public static class Keepalive
                 ["intervalHours"] = kv.Value.IntervalHours,
                 ["dailyTime"] = kv.Value.DailyTime,
                 ["leanRefresh"] = kv.Value.LeanRefresh,
+                ["probeAuth"] = kv.Value.ProbeAuth,
             };
         JsonFile.WriteObject(AppPaths.KeepaliveJson, new JsonObject
         {

@@ -56,7 +56,7 @@ py -3 -c "import frida, psutil, pefile; print(frida.__version__)"
 
 4. **脚本目录**：`hook` 会从 exe 所在目录往上找 `tools\lean-refresh\hook_watch.py`（最多 8 层）。
    - 在仓库里构建运行：自动找到，不用管。
-   - 在别的电脑（比如 R7000P）用发布包：把仓库的整个 `tools\lean-refresh` 文件夹复制到安装目录下，变成
+   - 在别的电脑（比如 R7000P）用发布包：1.1.7 起 `build.ps1` 打的包已经带 `tools\lean-refresh`；旧包手动把仓库的这个文件夹复制到安装目录下，变成
      `<安装目录>\tools\lean-refresh\hook_watch.py`。
 5. **数据目录**：要有含 `profiles\qb1` 的安装目录。exe 旁边没有时，会自动在上级目录里找最近用过的 `JskpBoxManager-*`；也可以用 `--appdir` 指定。
 
@@ -177,6 +177,17 @@ python=C:\...\python.exe frida=17.24.3
 ## 6. 和正式保活的关系
 
 `hook` 只是观测工具，不改保活策略。正式换钥走 `refresh`（`RefreshSession`）；qb1 可在 `keepalive.json` 打开 `leanRefresh` 先试精简启动，失败回退 Full。
+
+### 6.1 正式保活里记录授权结果
+
+主界面「静默保活」里勾选 **记录授权结果**（或 `keepalive.json` 里该号的 `"probeAuth": true`），之后每次静默保活都会用同一套箱内观测程序截授权返回：
+
+- 沙箱日志里多一行：`refresh: 授权返回 成功 AutoAuthResponse error=0 ret=0`（失败时是 `失败 ... ret=非0 msg=服务端给的原因`）。
+- 保活结果事件（`logs\ilink-events.jsonl` 的 `"event":"refresh"`）带 `auth` / `authRet` / `authMsg`。
+- 服务端拒绝时，界面「上次保活」后面会显示 `（服务器拒绝授权 ret=…：原因）`。
+- 明文日志照样追加到 `logs\frida-ilink-<沙箱>.txt`。
+
+要求和 `hook` 一样：Python 3 + `pip install frida psutil pefile`，以及 exe 旁边的 `tools\lean-refresh`（`build.ps1` 打的发布包已带上）。保活时**不会**自动 pip 安装；缺环境时只在日志里写一行 `auth probe off -> 原因`，保活照常进行。只观测，不影响换钥结果。
 
 精简候选对照（不挂 Frida）：
 

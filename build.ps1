@@ -20,6 +20,10 @@ if ($LASTEXITCODE -ne 0) { throw "dotnet publish 失败（$LASTEXITCODE）" }
 
 Get-ChildItem $out -Filter *.pdb | Remove-Item -Force
 Copy-Item (Join-Path $root 'CHANGELOG.md'), (Join-Path $root 'README.md') $out
+# 「记录授权结果」和 hook 命令要用的 Frida 脚本（运行时按 exe 旁的 tools\lean-refresh 找）
+$hookDir = Join-Path $out 'tools\lean-refresh'
+New-Item -ItemType Directory -Force $hookDir | Out-Null
+Get-ChildItem (Join-Path $root 'tools\lean-refresh') -File -Include *.py, *.js, *.md -Recurse | Copy-Item -Destination $hookDir
 
 $zip = "$out.zip"
 if (Test-Path $zip) { Remove-Item $zip -Force }

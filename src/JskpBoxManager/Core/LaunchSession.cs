@@ -135,7 +135,9 @@ public sealed class LaunchSession
                 Thread.Sleep(6000);
                 BoxRuntime.WaitRpcReady(_box, 90);
                 BoxRuntime.EnsureWxRuntimeInBox(_box);
-                if (!didVaultRestore)
+                if (result.CredCleared)
+                    L("credential was cleared by runtime without QR -> keep runtime state (no vault restore) and retry");
+                else if (!didVaultRestore)
                 {
                     L("live launch failed -> full restore from vault then retry");
                     VaultSync.PushVaultToLive(_box);
@@ -180,7 +182,8 @@ public sealed class LaunchSession
         }
     }
 
-    sealed record WaitResult(bool Opened, bool NeedColdRetry, bool WaitingQr, bool SawQr);
+    /// <param name="CredCleared">启动后运行时把凭证写成了无效，但没出现扫码页（不能算被顶掉）。</param>
+    sealed record WaitResult(bool Opened, bool NeedColdRetry, bool WaitingQr, bool SawQr, bool CredCleared = false);
 
     WaitResult WaitForGame(LaunchBaseline baseline)
     {
@@ -191,7 +194,7 @@ public sealed class LaunchSession
         var lastCred = DateTime.MinValue;
         var lastTabClean = DateTime.MinValue;
         bool savedLogin = NeedScan.SavedLoginUsable(_box);
-        bool revoked = false, waitingQr = false, qrResumed = false, notedSavedQr = false, sawQr = false;
+        bool revoked = false, credCleared = false, waitingQr = false, qrResumed = false, notedSavedQr = false, sawQr = false;
         bool sawApp = false, sawWx = false, gameUrlNudged = false, pageReloadDone = false;
         int mpFailTicks = 0, wxGoneAfterSeen = 0, missingAfterSeen = 0;
         DateTime? noUiSince = null, gameSince = null;
@@ -214,17 +217,24 @@ public sealed class LaunchSession
                     try { Ilink.Save(_box, "launch"); } catch { }
                     lastCred = DateTime.Now;
                 }
-                // 服务端拒绝了这次自动授权（被别的设备扫码顶掉，或过期）：金库同一把也没用，直接等扫码
-                if (!revoked && baseline != null && Ilink.RevokedSinceLaunch(_box, baseline))
+                // 运行时把凭证写成无效：只有同时出现扫码页才是真被顶掉 / 过期。
+                // 实测（R7000P 10-29 14:12）也会无扫码页地清掉、下次冷启动又自己恢复，那种不能登记作废
+                if (!revoked && !credCleared && baseline != null && Ilink.RevokedSinceLaunch(_box, baseline))
                 {
+                    credCleared = true;
+                    L("credential cleared by runtime after launch -> wait; only a QR page confirms the key was revoked");
+                }
+
+                var v = new BoxView(_box);
+                if (credCleared && !revoked && v.HasStrictQr)
+                {
+                    // 服务端拒绝了这次自动授权（被别的设备扫码顶掉，或过期）：金库同一把也没用，直接等扫码
                     revoked = true;
                     Ilink.RegisterRevoked(_box, baseline, "launch");
                     savedLogin = false;
                     NeedScan.Set(_box, "key-revoked");
                     Phase(BoxPhase.WaitingScan, "登录已失效（可能在别的设备扫码登录过），请用微信扫码");
                 }
-
-                var v = new BoxView(_box);
                 if (v.CloseRestorePage()) L("closed 要恢复页面吗 dialog");
                 if (!waitingQr && (DateTime.Now - lastTabClean).TotalSeconds >= 6)
                 {
@@ -245,7 +255,7 @@ public sealed class LaunchSession
                     else if (mpFailTicks >= 8)
                     {
                         L("mini-program still failed -> cold relaunch");
-                        return new(false, true, waitingQr, sawQr);
+                        return new(false, true, waitingQr, sawQr, credCleared && !revoked);
                     }
                     continue;
                 }
@@ -259,7 +269,7 @@ public sealed class LaunchSession
                     if (renewed || (DateTime.Now - gameSince.Value).TotalSeconds >= 8)
                     {
                         L($"game window confirmed (credential renewed={renewed})");
-                        return new(true, false, false, sawQr);
+                        return new(true, false, false, sawQr, credCleared && !revoked);
                     }
                     continue;
                 }
@@ -282,7 +292,7 @@ public sealed class LaunchSession
                             if (!revoked && Ilink.VaultCanHelp(_box))
                             {
                                 L("QR still up 60s -> restore vault login and cold retry");
-                                return new(false, true, false, sawQr);
+                                return new(false, true, false, sawQr, credCleared && !revoked);
                             }
                             L("saved login stale: QR still up 60s with no game -> require WeChat scan");
                             savedLogin = false;
@@ -351,7 +361,7 @@ public sealed class LaunchSession
                             if (Cdp.HasQrTab(_box) || notedSavedQr)
                             {
                                 L("saved login: QR still up with no game -> cold relaunch");
-                                return new(false, true, false, sawQr);
+                                return new(false, true, false, sawQr, credCleared && !revoked);
                             }
                             L("saved login: still no game after reload -> reopen GameUrl once");
                             BoxRuntime.StartBrowser(_box, "nudge");
@@ -361,7 +371,7 @@ public sealed class LaunchSession
                         else if (gameUrlNudged && wxWait >= 50)
                         {
                             L("saved login: still no game after GameUrl nudge -> cold relaunch");
-                            return new(false, true, false, sawQr);
+                            return new(false, true, false, sawQr, credCleared && !revoked);
                         }
                         else if (LogDue(20)) L("saved login: WeChat up, waiting for game window...");
                         continue;
@@ -378,7 +388,7 @@ public sealed class LaunchSession
                     if (!waitingQr && wxWait >= 120)
                     {
                         L("WeChat runtime up without game after GameUrl nudge -> cold relaunch");
-                        return new(false, true, false, sawQr);
+                        return new(false, true, false, sawQr, credCleared && !revoked);
                     }
                 }
 
@@ -389,7 +399,7 @@ public sealed class LaunchSession
                 if (sawApp && sawWx && wxGoneAfterSeen >= 3 && (DateTime.Now - launchStarted).TotalSeconds < 120)
                 {
                     L("WeChatAppEx died after start (SBIE1231 likely) -> cold relaunch");
-                    return new(false, true, waitingQr, sawQr);
+                    return new(false, true, waitingQr, sawQr, credCleared && !revoked);
                 }
 
                 if (!v.HasQqOrGame)
@@ -397,7 +407,7 @@ public sealed class LaunchSession
                     if (waitingQr)
                     {
                         L("box ended while waiting for QR");
-                        return new(false, false, true, sawQr);
+                        return new(false, false, true, sawQr, credCleared && !revoked);
                     }
                     if (!sawApp)
                     {
@@ -414,14 +424,14 @@ public sealed class LaunchSession
                         else if (DateTime.Now > coldStartDeadline)
                         {
                             L("cold start timeout (no process)");
-                            return new(false, true, false, sawQr);
+                            return new(false, true, false, sawQr, credCleared && !revoked);
                         }
                         continue;
                     }
                     if (++missingAfterSeen >= 4)
                     {
                         L("box died before game (cold start)");
-                        return new(false, true, false, sawQr);
+                        return new(false, true, false, sawQr, credCleared && !revoked);
                     }
                     continue;
                 }
@@ -444,7 +454,7 @@ public sealed class LaunchSession
                     if (!sawWx && !waitingQr && uiWait >= 90)
                     {
                         L("UI 90s without WeChat runtime -> cold relaunch");
-                        return new(false, true, false, sawQr);
+                        return new(false, true, false, sawQr, credCleared && !revoked);
                     }
                     continue;
                 }
@@ -463,7 +473,7 @@ public sealed class LaunchSession
                 else if (noUi >= 90)
                 {
                     L("QQ process up 90s without a window -> cold relaunch");
-                    return new(false, true, false, sawQr);
+                    return new(false, true, false, sawQr, credCleared && !revoked);
                 }
                 else if (LogDue(30)) L("QQ loading, waiting...");
             }
@@ -473,7 +483,7 @@ public sealed class LaunchSession
             }
         }
         L("launch wait timeout (30 min)");
-        return new(false, false, waitingQr, sawQr);
+        return new(false, false, waitingQr, sawQr, credCleared && !revoked);
     }
 
     /// <summary>看门：游戏开着时定时存凭证、藏浏览器；玩家关游戏后停箱。</summary>

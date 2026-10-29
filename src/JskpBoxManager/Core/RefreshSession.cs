@@ -17,6 +17,8 @@ public sealed class RefreshSession
     sealed class ColdResult
     {
         public bool SawGame, Renewed, Revoked, QrFail, SawQr;
+        /// <summary>运行时把凭证写成了无效但没出现扫码页：不登记作废，也不拿金库旧凭证覆盖运行时自己的状态。</summary>
+        public bool CredCleared;
         public DateTime LaunchUtc;
         public AuthProbe.AuthResult Auth;
     }
@@ -160,7 +162,7 @@ public sealed class RefreshSession
         Ilink.WriteEvent(_box, "refresh", new JsonObject
         {
             ["result"] = outcome, ["keySha"] = Ilink.Live(_box).KeyHash, ["frozenKey"] = frozenKey,
-            ["mode"] = usedMode, ["lean"] = lean,
+            ["mode"] = usedMode, ["lean"] = lean, ["credCleared"] = r.CredCleared,
             ["auth"] = r.Auth?.Text, ["authRet"] = r.Auth?.Ret, ["authMsg"] = r.Auth?.Msg,
         });
 
@@ -187,7 +189,7 @@ public sealed class RefreshSession
             }
             else L($"refresh session FAIL mode={usedMode} (will retry next schedule)");
             BoxRuntime.StopForce(_box, false);
-            if (!r.Revoked) try { VaultSync.PushVaultToLive(_box); } catch { }
+            if (!r.Revoked && !r.CredCleared) try { VaultSync.PushVaultToLive(_box); } catch { }
             BoxStatusFile.Write(_box, NeedScan.Pending(_box) ? BoxPhase.Failed : BoxPhase.Stopped,
                 NeedScan.Pending(_box) ? "保活失败：需要重新扫码" : $"保活未成功（{outcome}），下次再试");
         }
@@ -207,7 +209,7 @@ public sealed class RefreshSession
                 BoxRuntime.RegisterLauncher(_box, "refresh");
                 Thread.Sleep(4000);
                 BoxRuntime.EnsureWxRuntimeInBox(_box);
-                VaultSync.PushVaultToLive(_box);
+                if (!r.CredCleared) VaultSync.PushVaultToLive(_box);
             }
             BoxRuntime.Warmup(_box, attempt > 1);
             BoxRuntime.ClearCrashRestore(_box);
@@ -237,13 +239,18 @@ public sealed class RefreshSession
                     L($"refresh: ilink key renewed mode={mode} {Ilink.Live(_box)}");
                     break;
                 }
-                if (Ilink.RevokedSinceLaunch(_box, baseline))
+                if (!r.CredCleared && Ilink.RevokedSinceLaunch(_box, baseline))
+                {
+                    r.CredCleared = true;
+                    L("refresh: credential cleared by runtime -> wait; only a QR page confirms the key was revoked");
+                }
+                var v = new BoxView(_box);
+                if (r.CredCleared && v.HasStrictQr)
                 {
                     Ilink.RegisterRevoked(_box, baseline, "refresh");
                     r.Revoked = true;
                     break;
                 }
-                var v = new BoxView(_box);
                 v.CloseRestorePage();
                 if (leanNudge && (DateTime.Now - lastTab).TotalSeconds >= 8) { Cdp.CloseExtraTabs(_box); lastTab = DateTime.Now; }
                 if (v.HasGameWindow) { r.SawGame = true; L("refresh: game window up -> check ilink credential"); break; }

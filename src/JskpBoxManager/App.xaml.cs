@@ -127,6 +127,21 @@ public partial class App : Application
                 case "lean": return new LeanProbeSession(box, args.Skip(2)).Run();
                 case "stop": BoxRuntime.StopForce(box, true); return 0;
                 case "clear": BoxRuntime.ClearLogin(box); return 0;
+                case "cred-save":
+                case "cred-load":
+                {
+                    // 重放实验用：把整套凭证导出到目录 / 从目录写回沙箱 live
+                    string dir = "";
+                    for (int i = 0; i < args.Length - 1; i++)
+                        if (args[i].Equals("--dir", StringComparison.OrdinalIgnoreCase)) dir = args[i + 1];
+                    if (dir.Length == 0) { Console($"用法：JskpBoxManager.exe {cmd} {box} --dir 目录"); return 2; }
+                    if (cmd == "cred-load" && Sandboxie.Pids(box).Count > 0)
+                    { Console($"{box} 还在运行，先 stop {box} 再导入"); return 1; }
+                    bool ok = cmd == "cred-save" ? Ilink.ExportLive(box, dir) : Ilink.ImportToLive(box, dir);
+                    Console($"{cmd} {box} {(ok ? "成功" : "失败（沙箱里没有 ilink 凭证？）")} dir={dir}");
+                    if (ok) Console((cmd == "cred-save" ? "已导出：" : "已写回 live：") + Ilink.Live(box));
+                    return ok ? 0 : 1;
+                }
                 case "role":
                     var r = RoleCapture.ReadOnce(box, true, !args.Contains("--dry"));
                     Console($"{box}  {r.Message}");

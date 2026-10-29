@@ -13,7 +13,7 @@ namespace JskpBoxManager.Core;
 public sealed class HookObserveSession
 {
     static readonly Regex KeyLine = new(
-        @"TdiCheckCgiResponse|autoauth_key|require manual|SessionTimeout|session timeout|Logout|kick|get_login_qrcode|svr\(.*cmdid:3198",
+        @"TdiSendRequest: cgi =|TdiCheckCgiResponse|autoauth_key|require manual|SessionTimeout|session timeout|Logout|kick|login|qrcode|ManualAuth|NewInit|svr\(.*cmdid:",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     readonly string _box;

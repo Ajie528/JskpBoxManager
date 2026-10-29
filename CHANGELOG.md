@@ -3,6 +3,13 @@
 版本号规则：`主版本.次版本.修订号`。只修 bug 加修订号；加功能加次版本号；数据格式或用法有不兼容变化加主版本号。
 每次发版在最上面新增一节，并同步修改 `Directory.Build.props` 里的 `<Version>`。
 
+## [1.3.0] - 2026-10-29
+
+### 新增
+- 两条凭证重放实验命令：`cred-save qbN --dir 目录` 把沙箱里整套凭证（ilink 整树 + psk.key + device_uuid_0 + applet.db + mpkv.db）原样导出；`cred-load qbN --dir 目录` 写回沙箱 live（需先停箱）。
+- `hook` 现在会把每个请求/响应的 CGI（`TdiSendRequest` / `TdiCheckCgiResponse`）以及 login / qrcode / ManualAuth / NewInit 相关行都显示出来，扫码登录流程一眼可见。
+- `docs/服务端规则测试.md` 新增 F 组：抓扫码流程 + 凭证重放实验的完整步骤（用备用小号）。
+
 ## [1.2.2] - 2026-10-29
 
 ### 修复

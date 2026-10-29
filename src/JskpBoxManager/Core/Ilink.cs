@@ -164,6 +164,16 @@ public static class Ilink
     public static IlinkState Live(string box) => Read(BoxPaths.WmpfLive(box));
     public static IlinkState VaultState(string box) => Read(BoxPaths.WmpfVault(box));
 
+    /// <summary>把沙箱里当前这套凭证（ilink + psk + 配套文件）原样导出到一个目录，用于重放实验。只读，不动金库。</summary>
+    public static bool ExportLive(string box, string dir)
+    {
+        Directory.CreateDirectory(dir);
+        return CopyTree(BoxPaths.WmpfLive(box), dir);
+    }
+
+    /// <summary>把之前导出的一套凭证原样写回沙箱 live（覆盖），用于重放实验。沙箱必须已停。</summary>
+    public static bool ImportToLive(string box, string dir) => CopyTree(dir, BoxPaths.WmpfLive(box));
+
     // ---------- 复制 ----------
 
     static bool CopyTree(string srcRoot, string dstRoot)

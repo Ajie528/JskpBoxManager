@@ -148,7 +148,10 @@ public partial class App : Application
         }
     }
 
-    /// <summary>--appdir 指向含 profiles 的安装目录。hook/lean 在 exe 旁没有金库时，自动找本机已有的 qb1 数据目录。</summary>
+    /// <summary>
+    /// --appdir 指向含 profiles 的安装目录。hook/lean 在 exe 旁没有金库时（例如从仓库 bin 目录运行），
+    /// 在 exe 所在目录及上级目录（含 dist）里找 JskpBoxManager-* 安装目录，取 qb1 最近用过的那个。
+    /// </summary>
     static void ApplyAppDir(string[] args)
     {
         for (int i = 0; i < args.Length - 1; i++)
@@ -160,19 +163,18 @@ public partial class App : Application
         var cmd = args[0].ToLowerInvariant();
         if (cmd is not ("hook" or "lean")) return;
         if (Directory.Exists(Path.Combine(AppPaths.Profiles, "qb1"))) return;
-        foreach (var c in new[]
+        var roots = new List<string>();
+        for (var d = new DirectoryInfo(AppPaths.AppDir); d != null && roots.Count < 20; d = d.Parent)
         {
-            @"D:\a_game_scrpit\JskpBoxManager-1.1.5",
-            @"D:\a_game_scrpit\JskpBoxManager-1.1.6",
-            @"D:\a_game_scrpit\JskpBoxManager-1.1.7",
-        })
-        {
-            if (Directory.Exists(Path.Combine(c, "profiles", "qb1")))
-            {
-                AppPaths.UseDataDir(c);
-                return;
-            }
+            roots.Add(d.FullName);
+            roots.Add(Path.Combine(d.FullName, "dist"));
         }
+        var best = roots.Where(Directory.Exists)
+            .SelectMany(r => { try { return Directory.GetDirectories(r, "JskpBoxManager-*"); } catch { return Array.Empty<string>(); } })
+            .Where(c => Directory.Exists(Path.Combine(c, "profiles", "qb1")))
+            .OrderByDescending(c => File.GetLastWriteTimeUtc(Path.Combine(c, "logs", "qb1.log")))
+            .FirstOrDefault();
+        if (best != null) AppPaths.UseDataDir(best);
     }
 
     /// <summary>命令行更新：有新版就下载、校验、替换（不打开界面）。</summary>

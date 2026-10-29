@@ -1,19 +1,27 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 
 namespace JskpBoxManager.Core;
 
 /// <summary>
-/// Frida 只读观测（原 tools/lean-refresh/hook-observe-qb1.ps1）。
-/// JskpBoxManager.exe hook qb1 [--mode Full] [--seconds 180] [--no-launch] [--no-stop] [--pid N]
-/// 用 <see cref="BoxView"/> 等「向僵尸开炮」窗口，再把 hook_ilink.js attach 上去。不改包。
+/// Frida 只读观测：JskpBoxManager.exe hook qb1 [--mode Full] [--seconds 240] [--no-launch] [--no-stop]
+///
+/// Sandboxie 拒绝主机往箱内注入 frida-agent，所以 tools/lean-refresh/hook_watch.py 在沙箱里运行，
+/// 并且在启动浏览器之前就开始盯：微信运行时一出生就被挂上，ilink 子进程（ILinkServiceHost）启动后
+/// 几百毫秒内发出的 ilinkapp_autoauth 请求和服务端返回都能截到。不改包、不改参数。
 /// </summary>
 public sealed class HookObserveSession
 {
+    const string OutName = "jskp-frida-qb1";
+    static readonly Regex KeyLine = new(
+        @"TdiCheckCgiResponse|autoauth_key|require manual|SessionTimeout|session timeout|Logout|kick|get_login_qrcode|svr\(.*cmdid:3198",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     readonly string _box;
     readonly List<string> _args;
-    string _logPath = "";
+    string _logJsonl = "", _logTxt = "";
     static bool _consoleReady;
 
     public HookObserveSession(string box, IEnumerable<string> args)
@@ -33,8 +41,7 @@ public sealed class HookObserveSession
 
         bool launch = !_args.Contains("--no-launch", StringComparer.OrdinalIgnoreCase);
         bool noStop = _args.Contains("--no-stop", StringComparer.OrdinalIgnoreCase);
-        int seconds = ArgInt("--seconds", 180, 10, 3600);
-        int givenPid = ArgInt("--pid", 0, 0, int.MaxValue);
+        int seconds = ArgInt("--seconds", 240, 30, 7200);
         var mode = BoxRuntime.LaunchMode.Full;
         for (int i = 0; i < _args.Count - 1; i++)
             if (_args[i].Equals("--mode", StringComparison.OrdinalIgnoreCase)
@@ -42,342 +49,201 @@ public sealed class HookObserveSession
                 mode = m;
 
         var tools = FindToolsDir();
-        var hookJs = Path.Combine(tools, "hook_ilink.js");
-        var attachPy = Path.Combine(tools, "hook_attach.py");
         Directory.CreateDirectory(AppPaths.Logs);
-        _logPath = Path.Combine(AppPaths.Logs, "frida-ilink-qb1.jsonl");
+        _logJsonl = Path.Combine(AppPaths.Logs, "frida-ilink-qb1.jsonl");
+        _logTxt = Path.Combine(AppPaths.Logs, "frida-ilink-qb1.txt");
 
-        var py = FindPython();
-        var fridaVer = FridaVersion(py);
-        if (fridaVer.Length == 0)
+        var python = FindPython();
+        if (python.Length == 0) { Out("找不到 Python 3。先安装 Python 3，再执行：py -3 -m pip install frida psutil pefile"); return 1; }
+        var deps = PyDeps(python);
+        if (deps.Length == 0)
         {
-            Out("安装 frida（Python 包）...");
-            var pipArgs = PyArgs(py, "-m", "pip", "install", "--upgrade", "frida");
-            ProcessUtil.Run(py.Exe, pipArgs, 180000);
-            fridaVer = FridaVersion(py);
+            Out("安装 Python 包 frida / psutil / pefile ...");
+            ProcessUtil.Run(python, new[] { "-m", "pip", "install", "--upgrade", "frida", "psutil", "pefile" }, 300000);
+            deps = PyDeps(python);
         }
-        if (fridaVer.Length == 0) { Out("Frida Python 包不可用。可手动：py -3 -m pip install frida"); return 1; }
-        Out($"frida python {fridaVer}");
+        if (deps.Length == 0) { Out($"Python 包不可用。手动执行：\"{python}\" -m pip install frida psutil pefile"); return 1; }
+        Out($"python={python} frida={deps}");
         Out($"appdir={AppPaths.AppDir}");
-        Out($"tools={tools}");
 
-        var launchUtc = DateTime.UtcNow;
-        Emit(new JsonObject { ["ev"] = "start", ["mode"] = mode.ToString(), ["launch"] = launch, ["seconds"] = seconds, ["frida"] = fridaVer });
+        // 箱内 python 写到用户目录下（虚拟路径），主机按沙箱真实路径去读
+        var outVirtual = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), OutName + ".jsonl");
+        var outReal = Path.Combine(EnvDetect.SandboxRoot, _box, "user", "current", OutName + ".jsonl");
+        var txtReal = Path.ChangeExtension(outReal, ".txt");
+        var errReal = Path.ChangeExtension(outReal, ".err");
+        foreach (var p in new[] { outReal, txtReal, errReal }) try { File.Delete(p); } catch { }
+
+        var startUtc = DateTime.UtcNow;
+        Emit(new JsonObject { ["ev"] = "start", ["mode"] = mode.ToString(), ["launch"] = launch, ["seconds"] = seconds, ["frida"] = deps });
+        AppendTxt($"===== {DateTime.Now:yyyy-MM-dd HH:mm:ss} hook {_box} mode={mode} launch={launch} seconds={seconds} =====");
 
         if (launch)
         {
-            if (NeedScan.Pending(_box))
-                Out("警告：need-scan 未清，观测可能只看到扫码路径");
+            if (NeedScan.Pending(_box)) Out("提示：qb1 标记了需要扫码，这次大概率只会看到扫码流程");
             Out("停箱后冷启动...");
-            StopBox();
-            Thread.Sleep(2000);
+            BoxRuntime.StopForce(_box, true);
             BoxRuntime.EnsureWxRuntimeInBox(_box);
             try { VaultSync.PushVaultToLive(_box); } catch (Exception ex) { Out("推金库失败：" + ex.Message); }
             BoxRuntime.Warmup(_box, false);
             BoxRuntime.ClearCrashRestore(_box);
-            launchUtc = DateTime.UtcNow;
-            BoxRuntime.StartBrowser(_box, "hook", mode);
-            Out($"launched mode={mode}; waiting 向僵尸开炮 / WeChatAppEx...");
-            Emit(new JsonObject { ["ev"] = "launched", ["mode"] = mode.ToString() });
         }
 
-        int wxPid = givenPid;
-        string why = givenPid > 0 ? "given" : "";
-        if (wxPid <= 0)
+        // 用 CreateNoWindow 拉 Start.exe 时，箱内实例常被结束（0x40010004）；Start.exe 本身是窗口程序，正常方式启动即可。
+        // 控制台版 python.exe 同理会失败，用 pythonw.exe。
+        var pythonw = Path.Combine(Path.GetDirectoryName(python)!, "pythonw.exe");
+        var watchArgs = new List<string>
         {
-            var deadline = DateTime.Now.AddSeconds(90);
-            int fallback = 0;
-            while (DateTime.Now < deadline)
-            {
-                var v = new BoxView(_box);
-                if (v.HasGameWindow)
-                {
-                    var hwnd = v.GameHwnd;
-                    wxPid = Win32.PidOf(hwnd);
-                    why = "game-window";
-                    Emit(new JsonObject
-                    {
-                        ["ev"] = "game-window",
-                        ["hwnd"] = $"0x{hwnd.ToInt64():X}",
-                        ["pid"] = wxPid,
-                        ["title"] = Win32.Title(hwnd),
-                        ["proc"] = ProcessUtil.NameOf(wxPid),
-                    });
-                    Out($"game-window pid={wxPid} title={Win32.Title(hwnd)}");
-                    break;
-                }
-                int main = MainWeChatPid(v);
-                if (main > 0) fallback = main;
-                Thread.Sleep(1000);
-            }
-            if (wxPid <= 0 && fallback > 0)
-            {
-                wxPid = fallback;
-                why = "main-no-game-window";
-                Out($"90 秒内没有游戏窗，改为 attach 主进程 pid={wxPid}");
-            }
+            "/box:" + _box, "/hide_window", File.Exists(pythonw) ? pythonw : python, Path.Combine(tools, "hook_watch.py"),
+            "--box", _box, "--out", outVirtual, "--seconds", (seconds + 60).ToString(),
+            "--sbie-dir", EnvDetect.SbieDir,
+        };
+        Log.Box(_box, "hook watcher: " + string.Join(" ", watchArgs));
+        bool ready = false;
+        for (int attempt = 1; attempt <= 3 && !ready; attempt++)
+        {
+            using (var starter = ProcessUtil.StartDetached(EnvDetect.SbieStart, watchArgs, false))
+                if (starter != null && starter.WaitForExit(10000) && starter.ExitCode != 0)
+                    Out($"拉起观测器：Start.exe 退出码 0x{starter.ExitCode:X}（第 {attempt} 次）");
+            ready = WaitWatchStart(outReal, 10);
         }
-
-        if (wxPid <= 0)
+        long jPos = 0, tPos = 0;
+        if (!ready)
         {
-            Out("没有 WeChatAppEx / 游戏窗，仅做文件监视");
-            Emit(new JsonObject { ["ev"] = "no-wechat-process", ["mode"] = mode.ToString() });
-            WatchFiles(launchUtc, seconds);
-            if (launch && !noStop) StopBox();
-            Out("done; log=" + _logPath);
+            string err = "";
+            try { if (File.Exists(errReal)) err = File.ReadAllText(errReal).Trim(); } catch { }
+            Out("沙箱内的 hook_watch.py 没有启动。" + (err.Length > 0 ? "Python 报错：\n" + err : "没有任何报错输出（Python 可能没被拉起）"));
+            if (launch && !noStop) BoxRuntime.StopForce(_box, true);
             return 1;
         }
-
-        var order = CandidatePids(wxPid, why);
-        Process proc = null;
-        int attachedPid = 0;
-        foreach (var (pid, w) in order)
+        if (launch)
         {
-            Out($"attach pid={pid} via {w}");
-            Emit(new JsonObject { ["ev"] = "attach", ["pid"] = pid, ["why"] = w, ["where"] = "host", ["mode"] = mode.ToString() });
-            proc = StartAttach(py, attachPy, pid, hookJs, seconds);
-            if (!proc.WaitForExit(8000))
+            startUtc = DateTime.UtcNow;
+            BoxRuntime.StartBrowser(_box, "hook", mode);
+            Emit(new JsonObject { ["ev"] = "launched", ["mode"] = mode.ToString() });
+        }
+        Out(launch ? $"观测器已就绪，已启动 mode={mode}，观测 {seconds} 秒..." : $"观测器已就绪，不重启，直接观测当前 qb1 {seconds} 秒...");
+
+        var deadline = DateTime.Now.AddSeconds(seconds);
+        DateTime lastAcct = DateTime.MinValue;
+        while (DateTime.Now < deadline)
+        {
+            Thread.Sleep(2000);
+            Mirror(outReal, _logJsonl, ref jPos, null);
+            Mirror(txtReal, _logTxt, ref tPos, PrintKeyLine);
+            var st = Ilink.Live(_box);
+            if (st.WriteUtc > startUtc && st.WriteUtc > lastAcct.AddMilliseconds(50))
             {
-                attachedPid = pid;
-                break;
+                lastAcct = st.WriteUtc;
+                Emit(new JsonObject { ["ev"] = "file-watch", ["valid"] = st.Valid, ["keySha"] = st.KeyHash, ["writeLocal"] = st.WriteLocal });
+                Out($"[凭证] tdi_account.txt 重写 valid={st.Valid} key={st.KeyHash}");
             }
-            Out($"主机 attach pid={pid} 失败");
-            proc.Dispose();
-            proc = null;
         }
-
-        if (proc == null)
-        {
-            var inbox = order.Count > 0 ? order[0] : (wxPid, why);
-            Out($"主机注入被拒绝，改为在沙箱内 attach pid={inbox.Item1}");
-            Emit(new JsonObject { ["ev"] = "attach", ["pid"] = inbox.Item1, ["why"] = inbox.Item2, ["where"] = "inbox" });
-            if (TryAttachInBox(py, attachPy, inbox.Item1, hookJs, seconds))
-                attachedPid = inbox.Item1;
-            else
-                Out("沙箱内 attach 也失败，继续文件监视");
-        }
-
-        WatchFiles(launchUtc, seconds);
-        if (proc != null && !proc.HasExited)
-        {
-            try { proc.Kill(true); } catch { }
-        }
-        try { proc?.WaitForExit(5000); } catch { }
-        proc?.Dispose();
-        if (attachedPid > 0) Out($"hook 目标 pid={attachedPid}");
+        Mirror(outReal, _logJsonl, ref jPos, null);
+        Mirror(txtReal, _logTxt, ref tPos, PrintKeyLine);
 
         if (launch && !noStop)
         {
-            Out("观测结束，停箱");
-            StopBox();
+            Out("观测结束，保存凭证并停箱");
+            BoxRuntime.StopForce(_box, true);
         }
-        Out("done; log=" + _logPath);
+        Summary(outReal);
+        Out("明文日志：" + _logTxt);
+        Out("完整记录：" + _logJsonl);
         return 0;
     }
 
-    Process StartAttach(Py py, string attachPy, int pid, string hookJs, int seconds)
+    void PrintKeyLine(string line)
     {
-        var psi = new ProcessStartInfo(py.Exe)
-        {
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            StandardOutputEncoding = Encoding.UTF8,
-            StandardErrorEncoding = Encoding.UTF8,
-        };
-        foreach (var a in PyArgs(py, attachPy, pid.ToString(), hookJs, _logPath, seconds.ToString()))
-            psi.ArgumentList.Add(a);
-        var proc = Process.Start(psi);
-        if (proc == null) throw new InvalidOperationException("无法启动 hook_attach.py");
-        proc.OutputDataReceived += (_, e) =>
-        {
-            if (string.IsNullOrWhiteSpace(e.Data)) return;
-            Out("frida " + e.Data);
-            Emit(new JsonObject { ["ev"] = "frida-out", ["line"] = e.Data });
-        };
-        proc.ErrorDataReceived += (_, e) =>
-        {
-            if (string.IsNullOrWhiteSpace(e.Data)) return;
-            Out("frida! " + e.Data);
-            Emit(new JsonObject { ["ev"] = "frida-err", ["line"] = e.Data });
-        };
-        proc.BeginOutputReadLine();
-        proc.BeginErrorReadLine();
-        return proc;
+        if (line.Contains("[attach") || line.Contains("[已挂上") || line.Contains("[警告]") || line.Contains("[脚本错误]")
+            || line.Contains("tdi_account") || KeyLine.IsMatch(line))
+            Out(line.Length > 300 ? line[..300] : line);
     }
 
-    void WatchFiles(DateTime sinceUtc, int seconds)
+    /// <summary>从 jsonl 里挑出 AutoAuth/ManualAuth 的结果，给出一句结论。</summary>
+    void Summary(string jsonl)
+    {
+        var results = new List<string>();
+        try
+        {
+            using var fs = new FileStream(jsonl, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var sr = new StreamReader(fs, Encoding.UTF8);
+            string line;
+            while ((line = sr.ReadLine()) != null)
+            {
+                if (!line.Contains("TdiCheckCgiResponse") && !line.Contains("autoauth_key is empty")) continue;
+                var o = JsonNode.Parse(line);
+                results.Add($"{o?["t"]} {o?["msg"]}");
+            }
+        }
+        catch { }
+        Out("===== 授权结果 =====");
+        if (results.Count == 0) Out("没有截到 AutoAuth/ManualAuth 的返回（可能运行时没起来，或 --no-launch 时授权早已完成）");
+        foreach (var r in results)
+        {
+            var m = Regex.Match(r, @"cgi = (\w+), error = (-?\d+).*?ret = (-?\d+), error_msg = ?(.*)$");
+            if (m.Success)
+            {
+                var ok = m.Groups[2].Value == "0" && m.Groups[3].Value == "0";
+                Out($"{(ok ? "成功" : "失败")} {m.Groups[1].Value} error={m.Groups[2].Value} ret={m.Groups[3].Value} msg={m.Groups[4].Value.Trim()}");
+            }
+            else Out(r);
+            Emit(new JsonObject { ["ev"] = "auth-result", ["line"] = r });
+        }
+    }
+
+    static bool WaitWatchStart(string outReal, int seconds)
     {
         var deadline = DateTime.Now.AddSeconds(seconds);
-        DateTime lastAcct = DateTime.MinValue, lastPsk = DateTime.MinValue;
-        var pskPath = Path.Combine(BoxPaths.WmpfLive(_box), @"ilink\default\psk.key");
-        var inboxLog = Path.Combine(BoxPaths.UserData(_box), "frida-ilink-inbox.jsonl");
-        long inboxPos = 0;
         while (DateTime.Now < deadline)
         {
-            MirrorInbox(inboxLog, ref inboxPos);
-            var st = Ilink.Live(_box);
-            if (st.WriteUtc > sinceUtc && st.WriteUtc > lastAcct.AddMilliseconds(50))
+            try
             {
-                lastAcct = st.WriteUtc;
-                Emit(new JsonObject
+                if (File.Exists(outReal))
                 {
-                    ["ev"] = "file-watch",
-                    ["path"] = st.Path,
-                    ["valid"] = st.Valid,
-                    ["keySha"] = st.KeyHash,
-                    ["writeLocal"] = st.WriteLocal,
-                    ["uin"] = st.Uin,
-                });
-                Out($"file-watch acct valid={st.Valid} key={st.KeyHash}");
+                    using var fs = new FileStream(outReal, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                    if (fs.Length > 0) return true;
+                }
             }
-            var pskWrite = FileWriteUtc(pskPath);
-            if (pskWrite > sinceUtc && pskWrite > lastPsk.AddMilliseconds(50))
-            {
-                lastPsk = pskWrite;
-                var live = Ilink.Live(_box);
-                Emit(new JsonObject
-                {
-                    ["ev"] = "file-watch",
-                    ["path"] = pskPath,
-                    ["pskSha"] = live.PskHash,
-                    ["writeLocal"] = pskWrite.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"),
-                });
-                Out($"file-watch psk sha={live.PskHash}");
-            }
-            Thread.Sleep(2000);
+            catch { }
+            Thread.Sleep(500);
         }
-        MirrorInbox(inboxLog, ref inboxPos);
+        return false;
     }
 
-    void MirrorInbox(string inboxLog, ref long pos)
+    /// <summary>把箱内文件新增的部分追加到程序 logs 目录；按整行处理。</summary>
+    static void Mirror(string src, string dst, ref long pos, Action<string> onLine)
     {
         try
         {
-            if (!File.Exists(inboxLog)) return;
-            using var fs = new FileStream(inboxLog, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            if (!File.Exists(src)) return;
+            using var fs = new FileStream(src, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
             if (fs.Length <= pos) return;
             fs.Position = pos;
             var buf = new byte[fs.Length - pos];
             int n = fs.Read(buf, 0, buf.Length);
-            pos += n;
-            if (n > 0) File.AppendAllText(_logPath, Encoding.UTF8.GetString(buf, 0, n), new UTF8Encoding(false));
+            int end = Array.LastIndexOf(buf, (byte)'\n', n - 1);
+            if (end < 0) return;
+            pos += end + 1;
+            var text = Encoding.UTF8.GetString(buf, 0, end + 1);
+            File.AppendAllText(dst, text, new UTF8Encoding(false));
+            if (onLine != null)
+                foreach (var l in text.Split('\n'))
+                    if (l.Length > 0) onLine(l.TrimEnd('\r'));
         }
         catch { }
     }
 
-    List<(int Pid, string Why)> CandidatePids(int preferred, string why)
+    void AppendTxt(string line)
     {
-        var list = new List<(int, string)>();
-        var seen = new HashSet<int>();
-        void Add(int pid, string w)
-        {
-            if (pid <= 0 || !seen.Add(pid)) return;
-            list.Add((pid, w));
-        }
-        Add(preferred, why);
-        var v = new BoxView(_box);
-        Add(MainWeChatPid(v), "main");
-        foreach (var pid in v.Pids)
-            if (v.NameOf(pid) is "WeChatAppEx" or "WeChatAppHost")
-                Add(pid, "wechat");
-        return list;
-    }
-
-    bool TryAttachInBox(Py py, string attachPy, int pid, string hookJs, int seconds)
-    {
-        var inboxLog = Path.Combine(BoxPaths.UserData(_box), "frida-ilink-inbox.jsonl");
-        try { if (File.Exists(inboxLog)) File.Delete(inboxLog); } catch { }
-        var args = new List<string>();
-        if (py.Launcher) args.Add("-3");
-        args.Add(attachPy);
-        args.Add(pid.ToString());
-        args.Add(hookJs);
-        args.Add(inboxLog);
-        args.Add(seconds.ToString());
-        var cmd = new List<string> { py.Exe };
-        cmd.AddRange(args);
-        Sandboxie.StartInBox(_box, cmd, true);
-
-        var deadline = DateTime.Now.AddSeconds(20);
-        while (DateTime.Now < deadline)
-        {
-            Thread.Sleep(1000);
-            string text = "";
-            try { if (File.Exists(inboxLog)) text = File.ReadAllText(inboxLog); } catch { }
-            if (text.Contains("frida-attached", StringComparison.Ordinal))
-            {
-                Out("沙箱内 attach 成功");
-                try { File.AppendAllText(_logPath, text, new UTF8Encoding(false)); } catch { }
-                return true;
-            }
-            if (text.Contains("frida-err", StringComparison.Ordinal))
-            {
-                Out("沙箱内 attach 失败");
-                try { File.AppendAllText(_logPath, text, new UTF8Encoding(false)); } catch { }
-                return false;
-            }
-        }
-        Out("沙箱内 attach 无回执（20 秒）");
-        return false;
-    }
-
-    static int MainWeChatPid(BoxView v)
-    {
-        var cmds = ProcessUtil.CommandLines(v.Pids);
-        int best = 0;
-        long bestWs = -1;
-        foreach (var pid in v.Pids)
-        {
-            var name = v.NameOf(pid);
-            if (name is not ("WeChatAppEx" or "WeChatAppHost")) continue;
-            cmds.TryGetValue(pid, out var info);
-            if ((info.Cmd ?? "").Contains("--type=", StringComparison.OrdinalIgnoreCase)) continue;
-            if (!name.Equals("WeChatAppEx", StringComparison.OrdinalIgnoreCase)
-                && !name.Equals("WeChatAppHost", StringComparison.OrdinalIgnoreCase))
-                continue;
-            long ws = WorkingSet(pid);
-            if (ws >= bestWs) { bestWs = ws; best = pid; }
-        }
-        if (best > 0) return best;
-        foreach (var pid in v.Pids)
-        {
-            if (v.NameOf(pid) is not ("WeChatAppEx" or "WeChatAppHost")) continue;
-            long ws = WorkingSet(pid);
-            if (ws >= bestWs) { bestWs = ws; best = pid; }
-        }
-        return best;
-    }
-
-    static long WorkingSet(int pid)
-    {
-        try { using var p = Process.GetProcessById(pid); return p.WorkingSet64; }
-        catch { return 0; }
-    }
-
-    static void StopBox()
-    {
-        Sandboxie.Terminate("qb1");
-        var deadline = DateTime.Now.AddSeconds(20);
-        while (DateTime.Now < deadline && Sandboxie.Pids("qb1").Count > 0)
-            Thread.Sleep(500);
-    }
-
-    static DateTime FileWriteUtc(string path)
-    {
-        try { return File.Exists(path) ? File.GetLastWriteTimeUtc(path) : DateTime.MinValue; }
-        catch { return DateTime.MinValue; }
+        try { File.AppendAllText(_logTxt, line + "\r\n", new UTF8Encoding(false)); } catch { }
     }
 
     void Emit(JsonObject o)
     {
         o["at"] ??= DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
         o["box"] = _box;
-        try
-        {
-            File.AppendAllText(_logPath, o.ToJsonString(JsonFile.Compact) + "\r\n", new UTF8Encoding(false));
-        }
+        o["src"] = "host";
+        try { File.AppendAllText(_logJsonl, o.ToJsonString(JsonFile.Compact) + "\r\n", new UTF8Encoding(false)); }
         catch { }
     }
 
@@ -407,53 +273,36 @@ public sealed class HookObserveSession
 
     static string FindToolsDir()
     {
-        var starts = new[] { AppContext.BaseDirectory, Environment.CurrentDirectory, AppPaths.AppDir };
+        var starts = new[] { AppContext.BaseDirectory, Environment.CurrentDirectory, AppPaths.AppDir, Path.GetDirectoryName(Environment.ProcessPath) ?? "" };
         foreach (var s in starts)
         {
+            if (string.IsNullOrEmpty(s)) continue;
             var dir = new DirectoryInfo(s);
             for (int i = 0; dir != null && i < 8; i++, dir = dir.Parent)
             {
-                var js = Path.Combine(dir.FullName, "tools", "lean-refresh", "hook_ilink.js");
-                if (File.Exists(js)) return Path.GetDirectoryName(js)!;
+                var py = Path.Combine(dir.FullName, "tools", "lean-refresh", "hook_watch.py");
+                if (File.Exists(py)) return Path.GetDirectoryName(py)!;
             }
         }
-        throw new FileNotFoundException("找不到 tools/lean-refresh/hook_ilink.js");
+        throw new FileNotFoundException("找不到 tools\\lean-refresh\\hook_watch.py（把仓库的 tools 目录放在 exe 旁边或上级目录）");
     }
 
-    readonly record struct Py(string Exe, bool Launcher);
-
-    static Py FindPython()
+    /// <summary>真正的 python.exe 路径（箱内要直接启动它，不经过 py.exe 启动器）。</summary>
+    static string FindPython()
     {
-        var path = Environment.GetEnvironmentVariable("PATH") ?? "";
-        foreach (var dir in path.Split(';', StringSplitOptions.RemoveEmptyEntries))
+        foreach (var (exe, args) in new[] { ("py.exe", new[] { "-3" }), ("python.exe", Array.Empty<string>()) })
         {
-            var py = Path.Combine(dir.Trim(), "py.exe");
-            if (File.Exists(py)) return new Py(py, true);
+            var a = args.Concat(new[] { "-c", "import sys; print(sys.executable)" });
+            var (code, output) = ProcessUtil.Run(exe, a, 20000);
+            var path = (output ?? "").Trim().Split('\n').LastOrDefault()?.Trim() ?? "";
+            if (code == 0 && File.Exists(path)) return path;
         }
-        foreach (var hard in new[]
-        {
-            @"C:\Windows\py.exe",
-            @"D:\Programs\Python\Python313\python.exe",
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"Programs\Python\Python313\python.exe"),
-        })
-        {
-            if (!File.Exists(hard)) continue;
-            return new Py(hard, Path.GetFileName(hard).Equals("py.exe", StringComparison.OrdinalIgnoreCase));
-        }
-        throw new FileNotFoundException("找不到 Python（py.exe / python.exe）");
+        return "";
     }
 
-    static string[] PyArgs(Py py, params string[] rest)
+    static string PyDeps(string python)
     {
-        if (!py.Launcher) return rest;
-        var list = new List<string> { "-3" };
-        list.AddRange(rest);
-        return list.ToArray();
-    }
-
-    static string FridaVersion(Py py)
-    {
-        var (code, output) = ProcessUtil.Run(py.Exe, PyArgs(py, "-c", "import frida; print(frida.__version__)"), 30000);
+        var (code, output) = ProcessUtil.Run(python, new[] { "-c", "import frida, psutil, pefile; print(frida.__version__)" }, 30000);
         if (code != 0) return "";
         return (output ?? "").Trim().Split('\n').LastOrDefault()?.Trim() ?? "";
     }

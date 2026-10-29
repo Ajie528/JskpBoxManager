@@ -9,8 +9,13 @@
 - 保活可选「精简保活」：`keepalive.json` 的 `leanRefresh`（默认关；建议先只开 qb1）。
   开启后冷启动先试不打开游戏中心的候选，失败自动回退完整 GameUrl 启动。
 - 实验命令 `hook` / `lean` / `observe`（硬锁观测为 qb1）与 Frida 脚本 `tools/lean-refresh/`；说明见 `docs/Hook观测使用说明.md`。
-  用与正式启动相同的窗口识别记录「向僵尸开炮」；主机注入被沙箱拒绝时改为在箱内 attach。
+  观测程序在 qb1 箱内运行（主机注入会被沙箱拒绝），微信主进程一出现就挂上并拦截子进程，
+  授权进程 ILinkServiceHost 出生即挂，能截到 ilink 明文日志里的 AutoAuth 授权结果（ret / error_msg）、凭证文件读写和对外连接。
+  依赖 Python 3 + `pip install frida psutil pefile`（缺包时自动安装）。
   实测：仅去掉 GameUrl / 只启 WeChatAppEx 目前还不能稳定换新密钥，正式路径仍以回退 Full 为准。
+
+### 修复
+- `hook` / `lean` 找数据目录不再依赖写死的 `D:\a_game_scrpit` 路径，改为在上级目录里找最近用过的 `JskpBoxManager-*`。
 
 ## [1.1.6] - 2026-10-28
 

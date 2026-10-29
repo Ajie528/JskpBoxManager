@@ -79,7 +79,8 @@
 2. **精简运行时保活**（已开工，见下方「精简保活实验结果」）  
    命令：`JskpBoxManager.exe lean qb1`（硬锁 qb1，C#，用 BoxView 认进程）。正式保活见 `keepalive.json` 的 `leanRefresh`（默认关，仅建议 qb1 先开）。
 3. **Hook 观测**（已开工）  
-   命令：`JskpBoxManager.exe hook qb1`，脚本 `tools\lean-refresh\hook_ilink.js`。只观测 CreateFile/MoveFile 与模块列表，不改包。依赖本机 `pip install frida`。  
+   命令：`JskpBoxManager.exe hook qb1`，观测程序在 qb1 箱内运行，ILinkServiceHost 出生即挂，截 ilink 明文日志（含 AutoAuth 的 ret / error_msg）、凭证文件读写和对外连接，不改包。依赖 `pip install frida psutil pefile`。  
+   已确认：免扫保活就是 ilink 带旧凭证向 `longcloud.weixin.com` 发 `ilinkapp_autoauth`（cmdid 3198），ret=0 时写回新凭证。  
    **详细说明书**：[Hook观测使用说明.md](Hook观测使用说明.md)
 4. **完整直连**：在 1–3 都做完、确认服务端没有最长存活期、而官方运行时又确实无法满足需求时才值得考虑。
 
@@ -87,13 +88,13 @@
 
 ```text
 # 精简启动候选（Blank → NoUrl → RuntimeOnly），看能否换新密钥
-JskpBoxManager.exe lean qb1 --appdir D:\a_game_scrpit\JskpBoxManager-1.1.5
+JskpBoxManager.exe lean qb1
 
 # 指定模式；Full 仅作对照（会走游戏中心）
 JskpBoxManager.exe lean qb1 --modes RuntimeOnly --seconds 180
 
 # Frida 观测（详见 Hook观测使用说明.md）
-JskpBoxManager.exe hook qb1 --appdir D:\a_game_scrpit\JskpBoxManager-1.1.5 --mode Full --seconds 180
+JskpBoxManager.exe hook qb1 --seconds 60
 ```
 
 日志：`logs\lean-refresh-qb1.jsonl`、`logs\frida-ilink-qb1.jsonl`。  

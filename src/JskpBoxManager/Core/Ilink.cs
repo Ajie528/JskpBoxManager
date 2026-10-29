@@ -405,10 +405,13 @@ public static class Ilink
             if (!IsRevoked(box, k))
                 try { File.AppendAllText(BoxPaths.RevokedFile(box), $"{k} {at} {reason}\r\n"); } catch { }
         var age = Math.Round((b.LaunchUtc - b.KeyWriteUtc).TotalHours, 2);
+        var chain = AuthChain.For(box);
         WriteEvent(box, "key-revoked", new JsonObject
         {
             ["uin"] = b.Uin, ["keySha"] = b.KeyHash, ["keyAgeHours"] = age,
             ["keyAt"] = b.KeyWriteUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"), ["reason"] = reason,
+            ["chainDays"] = chain == null ? null : Math.Round(chain.Days, 2),
+            ["chainRenewals"] = chain?.Renewals, ["chainStartKnown"] = chain?.StartKnown,
         });
         Log.Box(box, $"ilink key revoked by server (kicked by another device or expired) key={b.KeyHash} age={age}h -> need WeChat scan, vault copy not usable");
     }

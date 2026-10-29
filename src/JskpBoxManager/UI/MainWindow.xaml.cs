@@ -154,7 +154,8 @@ public partial class MainWindow : Window
                 var notes = Notes.Load();
                 var keep = Keepalive.Load();
                 var ev = BoxSummary.LastRefreshEvents();
-                var res = boxes.Select(b => BoxSummary.Build(b, notes, keep, ev)).ToList();
+                var chains = AuthChain.Load();
+                var res = boxes.Select(b => BoxSummary.Build(b, notes, keep, ev, chains)).ToList();
                 BoxSummary.MarkDuplicates(res);
                 return res;
             });
@@ -291,6 +292,7 @@ public partial class MainWindow : Window
             var best = s.Live.Valid && s.Live.WriteUtc >= s.Vault.WriteUtc ? s.Live : s.Vault;
             lines.Add($"微信身份：{best.Uin}");
             lines.Add($"最近一次免扫换新：{best.WriteLocal}（{BoxRow.Ago(best.WriteUtc)}）");
+            if (s.Chain != null) lines.Add("免扫链：" + s.Chain.Text);
             lines.Add(s.Vault.Valid ? $"金库备份：{s.Vault.WriteLocal}" : "金库备份：还没有（进一次游戏后自动保存）");
             if (s.Live.Valid && s.Vault.Valid && s.Live.KeyHash != s.Vault.KeyHash && s.Live.WriteUtc > s.Vault.WriteUtc)
                 lines.Add("沙箱里有更新的凭证，下次停止/保活时会存进金库");

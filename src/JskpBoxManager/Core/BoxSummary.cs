@@ -24,8 +24,10 @@ public sealed class BoxSummary
     public IlinkState Live = new();
     public IlinkState Vault = new();
     public RoleInfo Role;
+    public AuthChain Chain;
 
-    public static BoxSummary Build(string box, Dictionary<string, string> notes, KeepConfig keep, Dictionary<string, JsonObject> lastRefresh)
+    public static BoxSummary Build(string box, Dictionary<string, string> notes, KeepConfig keep, Dictionary<string, JsonObject> lastRefresh,
+        Dictionary<string, AuthChain> chains)
     {
         var s = new BoxSummary { Box = box, Note = notes.GetValueOrDefault(box, ""), Role = Roles.Load(box) };
         s.Live = Ilink.Live(box);
@@ -44,6 +46,7 @@ public sealed class BoxSummary
         {
             s.Login = LoginLevel.Ok;
             s.LoginText = "免扫可用";
+            if (chains.TryGetValue(box, out var chain) && chain.Uin == s.Uin) s.Chain = chain;
         }
         else
         {

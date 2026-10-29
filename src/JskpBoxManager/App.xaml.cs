@@ -133,7 +133,7 @@ public partial class App : Application
                     return r.NameFound ? 0 : 1;
                 case "status":
                     var keep = Keepalive.Load();
-                    var s = BoxSummary.Build(box, Notes.Load(), keep, BoxSummary.LastRefreshEvents());
+                    var s = BoxSummary.Build(box, Notes.Load(), keep, BoxSummary.LastRefreshEvents(), AuthChain.Load());
                     Console(Diagnostics.EnvironmentReport(new List<BoxSummary> { s }));
                     return 0;
                 default:

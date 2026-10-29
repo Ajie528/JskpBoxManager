@@ -107,10 +107,10 @@ JskpBoxManager.exe update           检查并更新到最新版本（不打开�
 
 - 需要 .NET 8 SDK：`winget install Microsoft.DotNet.SDK.8`
 - 调试：`dotnet build`；打包：`powershell -ExecutionPolicy Bypass -File build.ps1`，产物在 `dist\`。
-- 发新版：
+- 发新版（自动）：
   1. 修改 `Directory.Build.props` 里的 `<Version>`；
   2. 在 `CHANGELOG.md` 最上面新增一节 `## [版本号] - 日期`，写清楚新增 / 变化 / 修复；
-  3. 提交并推送，然后运行 `powershell -ExecutionPolicy Bypass -File release.ps1`。
-     它会打包、打 `v版本号` 标签，并在 GitHub 创建 Release（更新说明取自 CHANGELOG 对应一节），
-     上传 `JskpBoxManager.exe`、`JskpBoxManager.exe.sha256` 和 zip。各电脑上的程序就会提示更新。
-  4. 发版需要 GitHub CLI：`winget install GitHub.cli`，然后 `gh auth login` 登录一次。
+  3. 提交并推送到 `main`。GitHub Actions 会自动打包、打 `v版本号` 标签并创建 Release
+     （说明取自 CHANGELOG 对应一节，上传 `JskpBoxManager.exe`、`JskpBoxManager.exe.sha256` 和 zip），各电脑上的程序就会提示更新。
+     版本号没改的推送只做编译检查，不发版。
+- 其他电脑上的开发环境、调试方法、发版失败排查见 [docs/开发者指南.md](docs/开发者指南.md)。

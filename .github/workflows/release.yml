@@ -1,0 +1,41 @@
+# 推送到 main 后自动发版：Directory.Build.props 的版本号还没有对应的 v标签 时，
+# 打包并创建 GitHub Release（说明取自 CHANGELOG.md 同版本一节）；版本号没变就只做编译检查。
+name: release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      # 程序里显示的打包时间用本地时间（北京时间）
+      - name: 时区
+        run: tzutil /s "China Standard Time"
+
+      - name: 编译检查
+        shell: pwsh
+        run: dotnet build src/JskpBoxManager/JskpBoxManager.csproj -c Release --nologo
+
+      - name: 发版（版本号已发布过则跳过）
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./release.ps1 -Ci

@@ -1,6 +1,9 @@
 ﻿# 发版：打包 → 打标签 → 在 GitHub 创建 Release 并上传 exe / sha256 / zip
-# 用法：powershell -ExecutionPolicy Bypass -File release.ps1
-# 前提：代码已提交并推送；CHANGELOG.md 里有本版本的一节；已 gh auth login
+# 平时由 GitHub Actions（.github/workflows/release.yml）在推送到 main 后自动执行，本地一般不用跑。
+# 本地手动发版：powershell -ExecutionPolicy Bypass -File release.ps1
+#   前提：代码已提交并推送；CHANGELOG.md 里有本版本的一节；已 gh auth login
+# CI：release.ps1 -Ci —— 该版本已经发过就直接跳过（不算失败），标签由 gh 在当前提交上创建
+param([switch]$Ci)
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 Set-Location $root
@@ -13,8 +16,12 @@ if (-not (Test-Path $gh)) { throw '没找到 GitHub CLI：winget install GitHub.
 $version = $props.Project.PropertyGroup.Version
 $tag = "v$version"
 
-if (git status --porcelain) { throw '还有没提交的改动，先提交再发版' }
-if (git tag -l $tag) { throw "标签 $tag 已存在：先改 Directory.Build.props 的版本号" }
+if (-not $Ci -and (git status --porcelain)) { throw '还有没提交的改动，先提交再发版' }
+$remoteTag = git ls-remote --tags origin "refs/tags/$tag"
+if ((git tag -l $tag) -or $remoteTag) {
+    if ($Ci) { "版本 $version 已经发布过（标签 $tag 已存在），跳过。要发新版请先改 Directory.Build.props 的版本号。"; exit 0 }
+    throw "标签 $tag 已存在：先改 Directory.Build.props 的版本号"
+}
 
 $changelog = Get-Content (Join-Path $root 'CHANGELOG.md') -Encoding UTF8
 $start = -1; $end = $changelog.Count
@@ -40,8 +47,13 @@ $assets = @(
 )
 foreach ($a in $assets) { if (-not (Test-Path $a)) { throw "缺少发布文件 $a" } }
 
-git tag -a $tag -m "向僵多开管家 $tag"
-git push origin $tag
-& $gh release create $tag @assets --title "向僵多开管家 $tag" --notes-file $notesFile
+if ($Ci) {
+    & $gh release create $tag @assets --target (git rev-parse HEAD) --title "向僵多开管家 $tag" --notes-file $notesFile
+}
+else {
+    git tag -a $tag -m "向僵多开管家 $tag"
+    git push origin $tag
+    & $gh release create $tag @assets --title "向僵多开管家 $tag" --notes-file $notesFile
+}
 if ($LASTEXITCODE -ne 0) { throw 'gh release create 失败' }
 "已发布 $tag"

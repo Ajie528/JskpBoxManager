@@ -9,7 +9,16 @@ namespace JskpBoxManager.Core;
 public static class AppPaths
 {
     /// <summary>单文件发布会解压到临时目录运行（AppContext.BaseDirectory 指向那里），数据目录必须按 exe 的真实位置算。</summary>
-    public static string AppDir { get; } = ResolveAppDir();
+    public static string AppDir { get; private set; } = ResolveAppDir();
+
+    /// <summary>命令行可用 --appdir 指向已有金库/日志的安装目录（与 exe 所在目录不同时）。</summary>
+    public static void UseDataDir(string dir)
+    {
+        if (string.IsNullOrWhiteSpace(dir) || !Directory.Exists(dir))
+            throw new DirectoryNotFoundException("数据目录不存在：" + dir);
+        AppDir = Path.GetFullPath(dir).TrimEnd('\\');
+        EnvDetect.Reload();
+    }
 
     static string ResolveAppDir()
     {

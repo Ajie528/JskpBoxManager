@@ -112,15 +112,19 @@ public partial class App : Application
                 return 0;
             }
             if (cmd == "update") return RunUpdate();
+            ApplyAppDir(args);
             if (!Sandboxie.IsBoxName(box))
             {
-                Console($"用法：JskpBoxManager.exe launch|refresh|stop|clear|status|role qbN");
+                Console("用法：JskpBoxManager.exe launch|refresh|stop|clear|status|role|observe|hook|lean qbN [--appdir 目录]");
                 return 2;
             }
             switch (cmd)
             {
                 case "launch": return new LaunchSession(box).Run();
                 case "refresh": return new RefreshSession(box).Run();
+                case "observe": return new ObserveSession(box, args.Skip(2)).Run();
+                case "hook": return new HookObserveSession(box, args.Skip(2)).Run();
+                case "lean": return new LeanProbeSession(box, args.Skip(2)).Run();
                 case "stop": BoxRuntime.StopForce(box, true); return 0;
                 case "clear": BoxRuntime.ClearLogin(box); return 0;
                 case "role":
@@ -141,6 +145,33 @@ public partial class App : Application
         {
             Log.Box(Sandboxie.IsBoxName(box) ? box : "app", $"{cmd} EXCEPTION: {ex}");
             return 1;
+        }
+    }
+
+    /// <summary>--appdir 指向含 profiles 的安装目录。hook/lean 在 exe 旁没有金库时，自动找本机已有的 qb1 数据目录。</summary>
+    static void ApplyAppDir(string[] args)
+    {
+        for (int i = 0; i < args.Length - 1; i++)
+        {
+            if (!args[i].Equals("--appdir", StringComparison.OrdinalIgnoreCase)) continue;
+            AppPaths.UseDataDir(args[i + 1]);
+            return;
+        }
+        var cmd = args[0].ToLowerInvariant();
+        if (cmd is not ("hook" or "lean")) return;
+        if (Directory.Exists(Path.Combine(AppPaths.Profiles, "qb1"))) return;
+        foreach (var c in new[]
+        {
+            @"D:\a_game_scrpit\JskpBoxManager-1.1.5",
+            @"D:\a_game_scrpit\JskpBoxManager-1.1.6",
+            @"D:\a_game_scrpit\JskpBoxManager-1.1.7",
+        })
+        {
+            if (Directory.Exists(Path.Combine(c, "profiles", "qb1")))
+            {
+                AppPaths.UseDataDir(c);
+                return;
+            }
         }
     }
 

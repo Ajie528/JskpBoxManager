@@ -11,12 +11,18 @@ public sealed class KeepPolicy
     public string Schedule = "interval"; // interval | daily
     public int IntervalHours = 4;
     public string DailyTime = "04:00";
+    /// <summary>精简保活：不打开游戏中心页，优先 Blank/NoUrl/RuntimeOnly；失败回退 Full。默认关。</summary>
+    public bool LeanRefresh = false;
 
     public KeepPolicy Clone() => (KeepPolicy)MemberwiseClone();
 
-    public string Describe(string box) => Schedule == "daily"
-        ? $"每天 {Keepalive.RunAt(box, this):HH:mm}"
-        : $"每 {IntervalHours} 小时";
+    public string Describe(string box)
+    {
+        var baseDesc = Schedule == "daily"
+            ? $"每天 {Keepalive.RunAt(box, this):HH:mm}"
+            : $"每 {IntervalHours} 小时";
+        return LeanRefresh ? baseDesc + "·精简" : baseDesc;
+    }
 }
 
 public sealed class KeepConfig
@@ -68,6 +74,7 @@ public static class Keepalive
             if (h != null) p.IntervalHours = Math.Clamp(h.Value, 1, 24);
             var d = JsonFile.Str(o, "dailyTime");
             if (d.Length > 0) p.DailyTime = NormalizeClock(d, p.DailyTime);
+            p.LeanRefresh = JsonFile.Bool(o, "leanRefresh") ?? false;
         }
         return p;
     }
@@ -97,6 +104,7 @@ public static class Keepalive
                 ["schedule"] = kv.Value.Schedule,
                 ["intervalHours"] = kv.Value.IntervalHours,
                 ["dailyTime"] = kv.Value.DailyTime,
+                ["leanRefresh"] = kv.Value.LeanRefresh,
             };
         JsonFile.WriteObject(AppPaths.KeepaliveJson, new JsonObject
         {

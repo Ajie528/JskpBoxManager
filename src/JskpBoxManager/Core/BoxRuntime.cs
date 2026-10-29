@@ -32,24 +32,38 @@ public static class BoxRuntime
         Log.Box(box, "cleared sandbox copy of browser core (it had hidden chrome_elf.dll)");
     }
 
-    public static List<string> LaunchArgs(string box)
+    /// <summary>保活/启动用的浏览器启动模式。Full=现有游戏中心；其余为精简保活候选。</summary>
+    public enum LaunchMode { Full, Blank, NoUrl, RuntimeOnly }
+
+    public static List<string> LaunchArgs(string box, LaunchMode mode = LaunchMode.Full)
     {
         EnsureQqProgramReadable(box);
-        return new List<string>
+        if (mode == LaunchMode.RuntimeOnly)
+        {
+            EnsureWxRuntimeInBox(box);
+            var exe = Path.Combine(BoxPaths.UserData(box), BoxPaths.RuntimeName, @"runtime\WeChatAppEx.exe");
+            return new List<string> { exe, "--wmpf_root_dir=" + BoxPaths.WmpfLive(box) };
+        }
+        var args = new List<string>
         {
             EnvDetect.QqCoreExe(),
             "--no-first-run", "--no-sandbox", "--ignore-gpu-blocklist",
             "--disable-session-crashed-bubble", "--hide-crash-restore-bubble",
             "--remote-debugging-port=" + BoxPaths.DebugPort(box), "--remote-allow-origins=*",
             "--wmpf_root_dir=" + BoxPaths.WmpfLive(box),
-            AppInfo.GameUrl,
         };
+        if (mode == LaunchMode.Blank) args.Add("about:blank");
+        else if (mode == LaunchMode.Full) args.Add(AppInfo.GameUrl);
+        // NoUrl: no trailing URL
+        return args;
     }
 
-    public static void StartBrowser(string box, string why)
+    public static void StartBrowser(string box, string why, LaunchMode mode = LaunchMode.Full)
     {
-        Sandboxie.StartInBox(box, LaunchArgs(box));
-        Log.Box(box, "QQBrowser start issued (" + why + ")");
+        Sandboxie.StartInBox(box, LaunchArgs(box, mode));
+        Log.Box(box, mode == LaunchMode.Full
+            ? "QQBrowser start issued (" + why + ")"
+            : $"QQBrowser start issued ({why}, mode={mode})");
     }
 
     /// <summary>沙箱里常强杀 QQ，下次会弹「非正常关闭」并恢复 WXRuntime_Log 旧标签。启动前清掉会话快照，标记正常退出。</summary>

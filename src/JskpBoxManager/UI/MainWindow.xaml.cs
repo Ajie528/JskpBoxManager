@@ -235,6 +235,7 @@ public partial class MainWindow : Window
             var keep = Keepalive.Load();
             var pol = keep.For(cur.Box);
             ChkKeep.IsChecked = pol.Enabled;
+            ChkLeanRefresh.IsChecked = pol.LeanRefresh;
             TxtHours.Text = pol.IntervalHours.ToString();
             var hm = pol.DailyTime.Split(':');
             TxtHour.Text = hm[0];
@@ -420,12 +421,17 @@ public partial class MainWindow : Window
             return;
         }
         bool enabled = ChkKeep.IsChecked == true;
+        bool lean = ChkLeanRefresh.IsChecked == true;
         bool daily = RadDaily.IsChecked == true;
         var errors = await RunBusy("正在保存保活设置并同步计划任务…", () =>
         {
             var cfg = Keepalive.Load();
             foreach (var b in boxes)
-                cfg.Boxes[b] = new KeepPolicy { Enabled = enabled, Schedule = daily ? "daily" : "interval", IntervalHours = hours, DailyTime = $"{hh:D2}:{mm:D2}" };
+                cfg.Boxes[b] = new KeepPolicy
+                {
+                    Enabled = enabled, Schedule = daily ? "daily" : "interval",
+                    IntervalHours = hours, DailyTime = $"{hh:D2}:{mm:D2}", LeanRefresh = lean,
+                };
             Keepalive.Save(cfg);
             var errs = new List<string>();
             foreach (var b in boxes)

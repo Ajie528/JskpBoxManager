@@ -166,6 +166,8 @@
                                     ToolTip="隐藏 QQ 浏览器窗口、回收它的内存；不影响游戏"/>
                             <Button x:Name="BtnClear" Content="⟲  清除登录 / 换号重新扫码" Style="{StaticResource DangerBtn}" Click="Clear_Click"
                                     ToolTip="删除这个沙箱保存的登录，下次启动要重新扫码；游戏包和备注保留"/>
+                            <Button x:Name="BtnDelete" Content="🗑  删除这个沙箱" Style="{StaticResource DangerBtn}" Click="DeleteBox_Click"
+                                    ToolTip="彻底删除这个沙箱：登录、游戏包、备注、保活任务、配置、快捷方式全部清除，不可恢复"/>
                         </StackPanel>
 
                         <Separator Margin="0,6,0,12"/>
@@ -192,8 +194,12 @@
                         <Separator Margin="0,12"/>
                         <TextBlock Text="静默保活" Style="{StaticResource SectionTitle}"/>
                         <CheckBox x:Name="ChkKeep" Content="为选中的沙箱启用保活" Margin="0,0,0,8"/>
-                        <CheckBox x:Name="ChkLeanRefresh" Content="精简保活（不打开游戏中心；失败回退完整启动）" Margin="0,0,0,8"/>
-                        <CheckBox x:Name="ChkProbeAuth" Content="记录授权结果（用 Frida 截服务端返回；需要 Python + frida）" Margin="0,0,0,8"/>
+                        <CheckBox x:Name="ChkLeanRefresh" Margin="0,0,0,8">
+                            <TextBlock Text="精简保活（不打开游戏中心；失败回退完整启动）" TextWrapping="Wrap"/>
+                        </CheckBox>
+                        <CheckBox x:Name="ChkProbeAuth" Margin="0,0,0,8">
+                            <TextBlock Text="记录授权结果（用 Frida 截服务端返回；需要 Python + frida）" TextWrapping="Wrap"/>
+                        </CheckBox>
                         <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
                             <RadioButton x:Name="RadInterval" Content="每隔" VerticalAlignment="Center" GroupName="sched" Checked="Sched_Changed"/>
                             <TextBox x:Name="TxtHours" Width="38" Margin="6,0" Padding="3" HorizontalContentAlignment="Center"/>

@@ -43,6 +43,9 @@ public static class Sandboxie
         ProcessUtil.Run(EnvDetect.SbieStart, new[] { "/reload" }, 30000);
     }
 
+    /// <summary>删除整段配置（例如整个沙箱的 [qbN] 段）。</summary>
+    public static void DeleteSection(string section) => Ini("delete", section);
+
     /// <summary>沙箱内进程。Start.exe /listpids 先输出个数，再逐行输出 PID。</summary>
     public static List<int> Pids(string box)
     {

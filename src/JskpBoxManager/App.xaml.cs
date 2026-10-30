@@ -127,6 +127,8 @@ public partial class App : Application
                 case "lean": return new LeanProbeSession(box, args.Skip(2)).Run();
                 case "stop": BoxRuntime.StopForce(box, true); return 0;
                 case "clear": BoxRuntime.ClearLogin(box); return 0;
+                case "delbox":
+                case "removebox": BoxSetup.RemoveBox(box); Console($"已删除沙箱 {box}（含登录、游戏包、备注、保活任务、配置、快捷方式）"); return 0;
                 case "cred-save":
                 case "cred-load":
                 {

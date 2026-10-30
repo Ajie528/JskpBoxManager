@@ -88,6 +88,60 @@ public static class BoxSetup
         return box;
     }
 
+    /// <summary>彻底删除一个沙箱：停箱、删沙箱内容、删金库（登录/游戏包/备注）、删保活任务、删 Sandboxie 配置段、删桌面快捷方式。不可恢复。</summary>
+    public static void RemoveBox(string box)
+    {
+        if (!Sandboxie.IsBoxName(box)) throw new ArgumentException("沙箱名不合法：" + box);
+        Log.Box(box, "remove box start");
+        try { BoxRuntime.StopForce(box, false); } catch { }
+        try { Sandboxie.DeleteContentsSilent(box); } catch { }
+        try { Keepalive.RemoveTask(box); } catch { }
+        try { RemoveShortcuts(box); } catch { }
+        // 删金库（整个 profiles\qbN）
+        try { var prof = BoxPaths.Vault(box); if (Directory.Exists(prof)) Directory.Delete(prof, true); } catch (Exception ex) { Log.Box(box, "remove box: delete vault failed " + ex.Message); }
+        // 删运行时状态/日志旁文件
+        try { File.Delete(AppPaths.BoxRefreshPhase(box)); } catch { }
+        try { File.Delete(AppPaths.BoxLauncherPid(box)); } catch { }
+        // 最后删 Sandboxie 配置段并重载
+        try { Sandboxie.DeleteSection(box); } catch { }
+        Sandboxie.Reload();
+        Log.Box(box, "remove box done");
+    }
+
+    /// <summary>删掉指向该沙箱的桌面快捷方式（jskp-*.lnk，target 为本程序且参数含 launch qbN；兼容旧版 .cmd 快捷方式）。</summary>
+    static void RemoveShortcuts(string box)
+    {
+        var shellType = Type.GetTypeFromProgID("WScript.Shell");
+        if (shellType == null) return;
+        dynamic shell = Activator.CreateInstance(shellType);
+        try
+        {
+            foreach (var f in Directory.GetFiles(Desktop, "*.lnk"))
+            {
+                var name = Path.GetFileName(f);
+                bool legacyName = name == $"向僵尸开炮-QQ沙箱{Sandboxie.BoxNumber(box)}.lnk";
+                bool match = legacyName;
+                if (!match && name.StartsWith("jskp-", StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        dynamic l = shell.CreateShortcut(f);
+                        string target = l.TargetPath ?? "";
+                        string args = l.Arguments ?? "";
+                        match = target.EndsWith(@"\" + box + ".cmd", StringComparison.OrdinalIgnoreCase)
+                                || (target.EndsWith("JskpBoxManager.exe", StringComparison.OrdinalIgnoreCase) && Regex.IsMatch(args, @"\blaunch\s+" + box + @"\b"));
+                    }
+                    catch { }
+                }
+                if (match) try { File.Delete(f); } catch { }
+            }
+        }
+        finally
+        {
+            System.Runtime.InteropServices.Marshal.FinalReleaseComObject(shell);
+        }
+    }
+
     // ---------- 桌面快捷方式 ----------
 
     static string Desktop => Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);

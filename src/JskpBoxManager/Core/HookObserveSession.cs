@@ -96,15 +96,21 @@ public sealed class HookObserveSession
         Out(launch ? $"观测器已就绪，已启动 mode={mode}，观测 {seconds} 秒..." : $"观测器已就绪，不重启，直接观测当前 qb1 {seconds} 秒...");
 
         var deadline = DateTime.Now.AddSeconds(seconds);
+        var launchGrace = DateTime.Now.AddSeconds(90); // 冷启动时箱里要好几秒才出现第一个进程
         DateTime lastAcct = DateTime.MinValue;
         int emptyTicks = 0;
+        bool sawPids = false;
         while (DateTime.Now < deadline)
         {
             Thread.Sleep(2000);
             probe.Poll(PrintKeyLine);
-            // 观测程序本身也在箱内：箱里一个进程都没有，说明沙箱被停了（游戏关闭 / 别的命令停箱），没有再看的必要
-            emptyTicks = Sandboxie.Pids(_box).Count == 0 ? emptyTicks + 1 : 0;
-            if (emptyTicks >= 2) { Out($"{_box} 已经停止，观测提前结束"); break; }
+            // 观测程序本身也在箱内：箱里一个进程都没有，说明沙箱被停了（游戏关闭 / 别的命令停箱），没有再看的必要。
+            // 但冷启动阶段箱还没起来也是 0，不能误判——只有"起来过又归零"才算真的停了。
+            int pids = Sandboxie.Pids(_box).Count;
+            if (pids > 0) { sawPids = true; emptyTicks = 0; }
+            else if (sawPids) emptyTicks++;
+            if (sawPids && emptyTicks >= 2) { Out($"{_box} 已经停止，观测提前结束"); break; }
+            if (!sawPids && DateTime.Now > launchGrace) { Out($"{_box} 启动 90 秒后箱里仍没有进程，可能没起来，提前结束"); break; }
             var st = Ilink.Live(_box);
             if (st.WriteUtc > startUtc && st.WriteUtc > lastAcct.AddMilliseconds(50))
             {

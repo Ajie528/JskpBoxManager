@@ -207,7 +207,7 @@ public partial class MainWindow : Window
         var cur = Current;
         bool any = sel.Count > 0;
         foreach (var b in new[] { BtnStart, BtnStop, BtnMem, BtnKeepSave }) b.IsEnabled = any && _busy == 0;
-        BtnClear.IsEnabled = sel.Count == 1 && _busy == 0;
+        BtnClear.IsEnabled = BtnDelete.IsEnabled = sel.Count == 1 && _busy == 0;
         BtnNote.IsEnabled = TxtNote.IsEnabled = sel.Count == 1;
         if (!any || cur == null)
         {
@@ -382,6 +382,19 @@ public partial class MainWindow : Window
                 "清除登录", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes) return;
         await RunBusy($"正在清除 {cur.Box} 的登录…", () => BoxRuntime.ClearLogin(cur.Box));
         SetStatus($"已清除 {cur.Box} 的登录，下次启动扫码即可");
+    }
+
+    async void DeleteBox_Click(object sender, RoutedEventArgs e)
+    {
+        var cur = Current;
+        if (cur == null || Selected.Count != 1) return;
+        var who = cur.Summary?.Note is { Length: > 0 } n ? $"{cur.Box}（{n}）" : cur.Box;
+        if (MessageBox.Show(this,
+                $"将彻底删除沙箱 {who}：\n\n· 保存的微信登录\n· 下载的游戏包\n· 账号备注\n· 保活计划任务\n· Sandboxie 里的这个沙箱及其内容\n· 桌面快捷方式\n\n删除后无法恢复。确定删除？",
+                "删除沙箱", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes) return;
+        await RunBusy($"正在删除 {cur.Box}…", () => BoxSetup.RemoveBox(cur.Box));
+        await RefreshAsync();
+        SetStatus($"已删除沙箱 {cur.Box}");
     }
 
     async void Note_Click(object sender, RoutedEventArgs e)

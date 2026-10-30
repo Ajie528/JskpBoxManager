@@ -1,7 +1,7 @@
 <Project>
   <!-- 发版只改这里，并在 CHANGELOG.md 顶部补一节同版本号的记录 -->
   <PropertyGroup>
-    <Version>1.3.0</Version>
+    <Version>1.4.0</Version>
     <Product>向僵多开管家</Product>
     <Company>jskp</Company>
     <Copyright>jskp</Copyright>

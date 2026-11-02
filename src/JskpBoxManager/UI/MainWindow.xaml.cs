@@ -24,8 +24,10 @@ public partial class MainWindow : Window
         TxtVersion.Text = AppInfo.VersionLabel;
         Grid.ItemsSource = _rows;
         ChkGlobalKeep.IsChecked = Keepalive.Load().Enabled;
+        SyncProtocolUi();
         _timer.Tick += async (_, _) => await RefreshAsync();
         Loaded += async (_, _) => await StartupAsync();
+        Closed += (_, _) => { try { ProtocolServer.StopCurrent(); } catch { } };
         UpdateDetail(true);
     }
 
@@ -41,6 +43,7 @@ public partial class MainWindow : Window
 
         await RefreshAsync();
         _timer.Start();
+        TryStartProtocolServer();
         if (_updatedFrom != null)
         {
             SetStatus($"已从 v{_updatedFrom} 更新到 {AppInfo.VersionLabel}");
@@ -154,8 +157,9 @@ public partial class MainWindow : Window
                 var notes = Notes.Load();
                 var keep = Keepalive.Load();
                 var ev = BoxSummary.LastRefreshEvents();
+                var rev = BoxSummary.LastRevokeEvents();
                 var chains = AuthChain.Load();
-                var res = boxes.Select(b => BoxSummary.Build(b, notes, keep, ev, chains)).ToList();
+                var res = boxes.Select(b => BoxSummary.Build(b, notes, keep, ev, chains, rev)).ToList();
                 BoxSummary.MarkDuplicates(res);
                 return res;
             });
@@ -294,7 +298,7 @@ public partial class MainWindow : Window
             var best = s.Live.Valid && s.Live.WriteUtc >= s.Vault.WriteUtc ? s.Live : s.Vault;
             lines.Add($"微信身份：{best.Uin}");
             lines.Add($"最近一次免扫换新：{best.WriteLocal}（{BoxRow.Ago(best.WriteUtc)}）");
-            if (s.Chain != null) lines.Add("免扫链：" + s.Chain.Text);
+            if (s.Chain != null) lines.Add("免扫链寿命：" + s.Chain.Text);
             lines.Add(s.Vault.Valid ? $"金库备份：{s.Vault.WriteLocal}" : "金库备份：还没有（进一次游戏后自动保存）");
             if (s.Live.Valid && s.Vault.Valid && s.Live.KeyHash != s.Vault.KeyHash && s.Live.WriteUtc > s.Vault.WriteUtc)
                 lines.Add("沙箱里有更新的凭证，下次停止/保活时会存进金库");
@@ -303,6 +307,7 @@ public partial class MainWindow : Window
         if (s.Login == LoginLevel.NeedScan)
             lines.Add("⚠ 服务器要求重新扫码：通常是这个微信号在别的电脑/沙箱扫码登录过（后扫码的会顶掉先登录的）。点「启动游戏」扫一次即可恢复。");
         if (s.Warning.Length > 0) lines.Add("⚠ " + s.Warning);
+        if (s.LastRevoke.Length > 0) lines.Add("上次被顶/失效：" + s.LastRevoke);
         if (s.LastRefresh.Length > 0) lines.Add($"上次保活：{s.LastRefresh}");
         return string.Join("\n", lines);
     }
@@ -372,6 +377,14 @@ public partial class MainWindow : Window
         var boxes = Selected.Select(r => r.Box).ToList();
         var msgs = await RunBusy("正在释放浏览器内存…", () => boxes.Select(b => b + "：" + BoxRuntime.ReleaseBrowserMemory(b)).ToList());
         SetStatus(string.Join("  ", msgs));
+    }
+
+    void Tools_Click(object sender, RoutedEventArgs e)
+    {
+        var cur = Current;
+        if (cur == null) { SetStatus("请先选择一个沙箱"); return; }
+        var w = new ToolsWindow(cur.Box) { Owner = this };
+        w.Show();
     }
 
     async void Clear_Click(object sender, RoutedEventArgs e)
@@ -478,6 +491,112 @@ public partial class MainWindow : Window
         });
         if (errors.Count > 0) MessageBox.Show(this, string.Join("\n", errors), "部分计划任务没更新成功", MessageBoxButton.OK, MessageBoxImage.Warning);
         SetStatus(on ? "静默保活已开启（各沙箱按自己的计划执行）" : "静默保活已全部关闭");
+    }
+
+    void SyncProtocolUi()
+    {
+        var cfg = ProtocolConfig.Load();
+        ChkProtocol.IsChecked = cfg.Enabled;
+        var cur = ProtocolServer.Current;
+        if (cur != null && cur.Running)
+            TxtProtocol.Text = cur.BaseUrl;
+        else if (cfg.Enabled)
+            TxtProtocol.Text = $"待启动 :{cfg.Port}";
+        else
+            TxtProtocol.Text = "未启用";
+        TxtProtocol.ToolTip = ProtocolServer.StatusText()
+            + "\n脚本取业务 token：GET " + cfg.BaseUrl + "/token?ref=qb1"
+            + "\n请求头 Authorization: Bearer <令牌>（点「复制令牌」）";
+    }
+
+    void TryStartProtocolServer()
+    {
+        try
+        {
+            var cfg = ProtocolConfig.Load();
+            if (!cfg.Enabled) { SyncProtocolUi(); return; }
+            var srv = ProtocolServer.EnsureStarted();
+            SyncProtocolUi();
+            if (srv == null || !srv.Running)
+                SetStatus("协议服务启用失败：" + (ProtocolServer.Current?.LastError ?? "未知错误"));
+            else
+                SetStatus($"协议服务已监听 {srv.BaseUrl}");
+        }
+        catch (Exception ex)
+        {
+            SyncProtocolUi();
+            SetStatus("协议服务启动异常：" + ex.Message);
+        }
+    }
+
+    void Protocol_Click(object sender, RoutedEventArgs e)
+    {
+        bool on = ChkProtocol.IsChecked == true;
+        var cfg = ProtocolConfig.Load();
+        cfg.Enabled = on;
+        ProtocolConfig.EnsureToken(cfg);
+        ProtocolConfig.Save(cfg);
+        if (on) TryStartProtocolServer();
+        else
+        {
+            ProtocolServer.StopCurrent();
+            SyncProtocolUi();
+            SetStatus("协议服务已关闭");
+        }
+    }
+
+    void ProtocolToken_Click(object sender, RoutedEventArgs e)
+    {
+        var cfg = ProtocolConfig.EnsureToken(ProtocolConfig.Load());
+        ProtocolConfig.Save(cfg);
+        if (TrySetClipboard(cfg.Token))
+            SetStatus("已复制协议令牌；脚本请设置 JSKP_PROTOCOL_TOKEN，请求头 Authorization: Bearer <令牌>");
+        else
+            ShowCopyableToken(cfg.Token);
+    }
+
+    /// <summary>
+    /// 先走原生 Win32 剪贴板（输入法/剪贴板工具占用时更稳），失败再退回 WPF。
+    /// 原因多为常驻的输入法（如搜狗）或剪贴板管理器长期占着剪贴板（CLIPBRD_E_CANT_OPEN）。
+    /// </summary>
+    bool TrySetClipboard(string text)
+    {
+        try { if (Win32.SetClipboardText(text)) return true; } catch { }
+        for (int i = 0; i < 6; i++)
+        {
+            try { Clipboard.SetDataObject(text, false); return true; }
+            catch { System.Threading.Thread.Sleep(80); }
+        }
+        return false;
+    }
+
+    /// <summary>复制失败时给一个只读可全选的框，方便手动复制。</summary>
+    void ShowCopyableToken(string token)
+    {
+        var win = new Window
+        {
+            Title = "协议令牌（复制失败，请手动复制）",
+            Owner = this,
+            Width = 520,
+            SizeToContent = SizeToContent.Height,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            ResizeMode = ResizeMode.NoResize,
+        };
+        var panel = new System.Windows.Controls.StackPanel { Margin = new Thickness(16) };
+        panel.Children.Add(new System.Windows.Controls.TextBlock
+        {
+            Text = "剪贴板被其它程序占用，自动复制失败。请手动全选复制下面的令牌：",
+            TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 10),
+        });
+        var box = new System.Windows.Controls.TextBox
+        {
+            Text = token, IsReadOnly = true, FontFamily = new System.Windows.Media.FontFamily("Consolas"),
+            TextWrapping = TextWrapping.Wrap, Padding = new Thickness(6),
+        };
+        box.Loaded += (_, _) => { box.Focus(); box.SelectAll(); };
+        panel.Children.Add(box);
+        win.Content = panel;
+        win.ShowDialog();
     }
 
     async void NewBox_Click(object sender, RoutedEventArgs e)

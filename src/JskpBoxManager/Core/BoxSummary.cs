@@ -28,10 +28,13 @@ public sealed class BoxSummary
     public IlinkState Vault = new();
     public RoleInfo Role;
     public AuthChain Chain;
+    /// <summary>最近一次被服务端判死（key-revoked）的说明；没有则空。</summary>
+    public string LastRevoke = "";
 
     public static BoxSummary Build(string box, Dictionary<string, string> notes, KeepConfig keep, Dictionary<string, JsonObject> lastRefresh,
-        Dictionary<string, AuthChain> chains)
+        Dictionary<string, AuthChain> chains, Dictionary<string, JsonObject> revokes = null)
     {
+        revokes ??= LastRevokeEvents();
         var s = new BoxSummary { Box = box, Note = notes.GetValueOrDefault(box, ""), Role = Roles.Load(box) };
         s.Live = Ilink.Live(box);
         s.Vault = Ilink.VaultState(box);
@@ -100,11 +103,43 @@ public sealed class BoxSummary
             if (recovered)
                 s.LastRefresh += $"；之后 {s.LastRenewUtc.ToLocalTime():MM-dd HH:mm} 已重新登录，现在免扫正常";
         }
+
+        if (revokes.TryGetValue(box, out var rev)
+            && DateTime.TryParseExact(JsonFile.Str(rev, "at"), "yyyy-MM-dd HH:mm:ss", null, System.Globalization.DateTimeStyles.None, out var revAt))
+        {
+            var parts = new List<string>();
+            if (JsonFile.Double(rev, "keyAgeHours") is double age) parts.Add($"密钥已用 {age:0.#} 小时");
+            if (JsonFile.Double(rev, "chainDays") is double days) parts.Add($"免扫链活了 {days:0.#} 天");
+            if (JsonFile.Int(rev, "chainRenewals") is int rn) parts.Add($"期间换新 {rn} 次");
+            var detail = parts.Count > 0 ? "（" + string.Join("，", parts) + "）" : "";
+            // 被顶后又恢复了就标成历史
+            bool recoveredAfter = s.Login == LoginLevel.Ok && s.LastRenewUtc > revAt.ToUniversalTime();
+            s.LastRevoke = (recoveredAfter ? "历史：" : "") + $"{revAt:MM-dd HH:mm} 被服务端判死{detail}"
+                + (recoveredAfter ? "，之后已重新扫码恢复" : "，需重新扫码");
+        }
         return s;
     }
 
     static string Clock(DateTime t) =>
         t.Date == DateTime.Today ? $"今天 {t:HH:mm}" : t.Date == DateTime.Today.AddDays(-1) ? $"昨天 {t:HH:mm}" : $"{t:MM-dd HH:mm}";
+
+    /// <summary>从事件日志里取每个沙箱最近一次「被服务端判死」(key-revoked) 事件。</summary>
+    public static Dictionary<string, JsonObject> LastRevokeEvents()
+    {
+        var d = new Dictionary<string, JsonObject>();
+        foreach (var line in Log.Tail(AppPaths.EventLog, 8000))
+        {
+            try
+            {
+                if (JsonNode.Parse(line) is not JsonObject o) continue;
+                if (JsonFile.Str(o, "event") != "key-revoked") continue;
+                if (JsonFile.Str(o, "pc") is var pc && pc.Length > 0 && pc != Environment.MachineName) continue;
+                d[JsonFile.Str(o, "box")] = o;
+            }
+            catch { }
+        }
+        return d;
+    }
 
     /// <summary>从事件日志里取每个沙箱最近一次保活结果。</summary>
     public static Dictionary<string, JsonObject> LastRefreshEvents()

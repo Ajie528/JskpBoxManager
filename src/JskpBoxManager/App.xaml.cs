@@ -1,4 +1,5 @@
-﻿using System.Windows;
+﻿using System.Text.RegularExpressions;
+using System.Windows;
 using JskpBoxManager.Core;
 using JskpBoxManager.UI;
 
@@ -9,6 +10,12 @@ namespace JskpBoxManager;
 ///   JskpBoxManager.exe              打开管理界面
 ///   JskpBoxManager.exe launch qbN   后台启动游戏并看门（桌面快捷方式、界面「启动」都走这里）
 ///   JskpBoxManager.exe refresh qbN  静默保活（计划任务调用）
+///   JskpBoxManager.exe getcode qbN  取本游戏 wx.login code
+///   JskpBoxManager.exe capture qbN  CDP 抓 wx.request / wx.login
+///   JskpBoxManager.exe keylog qbN   导出游戏 TLS 密钥（配合抓包解密业务 HTTPS）
+///   JskpBoxManager.exe token qbN    一条龙：抓包+keylog+解密，输出业务 token（需 Wireshark）
+///   JskpBoxManager.exe unpack qbN   定位并解包游戏 wxapkg
+///   JskpBoxManager.exe server       本机协议 HTTP 服务
 ///   JskpBoxManager.exe stop|clear|status qbN
 /// </summary>
 public partial class App : Application
@@ -42,6 +49,8 @@ public partial class App : Application
         if (cli)
         {
             ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            // launch/refresh/stop 常由快捷方式/计划任务拉起，不弹黑窗；诊断类命令要看得见输出
+            if (NeedsCliConsole(args[0])) Win32.EnsureCliConsole();
             int code = RunCli(args);
             Shutdown(code);
             return;
@@ -100,22 +109,44 @@ public partial class App : Application
         }
     }
 
+    static bool NeedsCliConsole(string cmd) => cmd.ToLowerInvariant() is
+        "version" or "--version" or "update" or "server" or "getcode" or "wxcode"
+        or "capture" or "keylog" or "token" or "unpack" or "observe" or "hook" or "lean" or "status" or "role"
+        or "cred-save" or "cred-load" or "help" or "/?" or "-h" or "--help";
+
     static int RunCli(string[] args)
     {
         var cmd = args[0].ToLowerInvariant();
         var box = args.Length >= 2 ? args[1] : "";
         try
         {
+            if (cmd is "help" or "/?" or "-h" or "--help")
+            {
+                Console("用法：");
+                Console("  .\\JskpBoxManager.exe capture qb1 --seconds 120");
+                Console("  .\\JskpBoxManager.exe unpack qb1");
+                Console("  .\\JskpBoxManager.exe getcode qb1");
+                Console("  .\\JskpBoxManager.exe server");
+                Console("  .\\JskpBoxManager.exe launch|refresh|stop|clear|status qbN");
+                Console("PowerShell 必须加 .\\ 前缀；看输出请在本窗口运行，不要双击 exe。");
+                return 0;
+            }
             if (cmd is "version" or "--version")
             {
                 Console(AppInfo.VersionLabel);
                 return 0;
             }
             if (cmd == "update") return RunUpdate();
+            if (cmd == "server") return RunServer(args);
+            if (cmd is "getcode" or "wxcode")
+            {
+                ApplyAppDir(args);
+                return RunGetCode(args);
+            }
             ApplyAppDir(args);
             if (!Sandboxie.IsBoxName(box))
             {
-                Console("用法：JskpBoxManager.exe launch|refresh|stop|clear|status|role|observe|hook|lean qbN [--appdir 目录]");
+                Console("用法：JskpBoxManager.exe launch|refresh|stop|clear|status|role|observe|hook|lean|getcode|capture|keylog|token|unpack|server qbN [--appdir 目录]");
                 return 2;
             }
             switch (cmd)
@@ -125,6 +156,10 @@ public partial class App : Application
                 case "observe": return new ObserveSession(box, args.Skip(2)).Run();
                 case "hook": return new HookObserveSession(box, args.Skip(2)).Run();
                 case "lean": return new LeanProbeSession(box, args.Skip(2)).Run();
+                case "capture": return new CaptureSession(box, args.Skip(2)).Run();
+                case "keylog": return new SslKeylogSession(box, args.Skip(2)).Run();
+                case "token": return new TokenSession(box, args.Skip(2)).Run();
+                case "unpack": return RunUnpack(box, args.Skip(2).ToArray());
                 case "stop": BoxRuntime.StopForce(box, true); return 0;
                 case "clear": BoxRuntime.ClearLogin(box); return 0;
                 case "delbox":
@@ -178,6 +213,7 @@ public partial class App : Application
             return;
         }
         var cmd = args[0].ToLowerInvariant();
+        // capture/keylog/unpack/getcode 必须和界面、协议服务用同一个目录，不能跳到别的安装目录
         if (cmd is not ("hook" or "lean")) return;
         if (Directory.Exists(Path.Combine(AppPaths.Profiles, "qb1"))) return;
         var roots = new List<string>();
@@ -192,6 +228,88 @@ public partial class App : Application
             .OrderByDescending(c => File.GetLastWriteTimeUtc(Path.Combine(c, "logs", "qb1.log")))
             .FirstOrDefault();
         if (best != null) AppPaths.UseDataDir(best);
+    }
+
+    static int RunUnpack(string box, string[] args)
+    {
+        string outDir = "";
+        for (int i = 0; i < args.Length - 1; i++)
+            if (args[i].Equals("--out", StringComparison.OrdinalIgnoreCase)) outDir = args[i + 1];
+        var found = Wxapkg.Locate(box);
+        Console($"找到 {found.Count} 个 .wxapkg：");
+        foreach (var f in found.Take(20))
+            Console($"  {f.Size / 1024}KB  {f.WriteUtc.ToLocalTime():MM-dd HH:mm}  {f.Rel}");
+        if (found.Count == 0)
+        {
+            Console("没有包。请先启动一次游戏让沙箱下载，或确认金库里有 Applet 缓存。");
+            return 1;
+        }
+        var r = Wxapkg.UnpackBox(box, string.IsNullOrWhiteSpace(outDir) ? null : outDir);
+        if (!r.Ok)
+        {
+            Console("解包失败：" + r.Error);
+            if (r.OutDir.Length > 0) Console("输出目录：" + r.OutDir);
+            return 1;
+        }
+        Console($"解包成功：{r.Files} 个文件 → {r.OutDir}");
+        Console("登录相关线索（login-hints.txt）：");
+        foreach (var h in r.LoginHits.Take(40)) Console("  " + h);
+        if (r.LoginHits.Count == 0) Console("  （未自动命中关键词，请到输出目录里搜 login / code / session）");
+        return 0;
+    }
+
+    /// <summary>本机协议服务：脚本用 JSKP_SERVER 指向这里取 wx.login code。Ctrl+C 结束。</summary>
+    static int RunServer(string[] args)
+    {
+        ApplyAppDir(args);
+        var cfg = ProtocolConfig.Load();
+        cfg.Enabled = true;
+        for (int i = 0; i < args.Length - 1; i++)
+        {
+            if (args[i].Equals("--port", StringComparison.OrdinalIgnoreCase) && int.TryParse(args[i + 1], out int p))
+                cfg.Port = Math.Clamp(p, 1024, 65535);
+            if (args[i].Equals("--token", StringComparison.OrdinalIgnoreCase))
+                cfg.Token = args[i + 1];
+        }
+        ProtocolConfig.EnsureToken(cfg);
+        ProtocolConfig.Save(cfg);
+        var srv = new ProtocolServer();
+        srv.Start(cfg);
+        if (!srv.Running)
+        {
+            Console("协议服务启动失败：" + srv.LastError);
+            return 1;
+        }
+        Console($"协议服务已启动 {srv.BaseUrl}");
+        Console($"环境变量示例：");
+        Console($"  set JSKP_SERVER={srv.BaseUrl}");
+        Console($"  set JSKP_PROTOCOL_TOKEN={cfg.Token}");
+        Console($"取码：POST {srv.BaseUrl}/wxapp/getCode  JSON {{\"ref\":\"qb1\",\"app_id\":\"{AppInfo.GameAppId}\"}}");
+        Console("按 Ctrl+C 结束。");
+        try { Thread.Sleep(Timeout.Infinite); }
+        catch { }
+        finally { srv.Stop(); }
+        return 0;
+    }
+
+    /// <summary>命令行直接取一次 code（不经 HTTP）。</summary>
+    static int RunGetCode(string[] args)
+    {
+        var box = args.Length >= 2 ? args[1] : "";
+        if (!Sandboxie.IsBoxName(box) && !Regex.IsMatch(box ?? "", @"^\d+$"))
+        {
+            Console("用法：JskpBoxManager.exe getcode qbN [--no-ensure]");
+            return 2;
+        }
+        bool ensure = !args.Any(a => a.Equals("--no-ensure", StringComparison.OrdinalIgnoreCase));
+        var r = WxLoginCode.Get(box, AppInfo.GameAppId, ensure);
+        if (!r.Ok)
+        {
+            Console("取码失败：" + r.Error);
+            return 1;
+        }
+        Console(r.Code);
+        return 0;
     }
 
     /// <summary>命令行更新：有新版就下载、校验、替换（不打开界面）。</summary>
@@ -213,20 +331,25 @@ public partial class App : Application
         }
     }
 
-    /// <summary>WinExe 没有自己的控制台：从命令行运行时附着到父控制台输出。</summary>
+    /// <summary>WinExe CLI 输出：已 EnsureCliConsole 时直接写；否则尽力挂父控制台。</summary>
     static void Console(string text)
     {
-        if (System.Console.IsOutputRedirected)
+        try
         {
-            using var w = new StreamWriter(System.Console.OpenStandardOutput(), new System.Text.UTF8Encoding(false));
-            w.WriteLine(text);
-            return;
-        }
-        if (Win32.AttachConsole(-1))
-        {
-            System.Console.OutputEncoding = System.Text.Encoding.UTF8;
-            System.Console.WriteLine();
+            Win32.EnsureCliConsole();
             System.Console.WriteLine(text);
+        }
+        catch
+        {
+            try
+            {
+                if (System.Console.IsOutputRedirected)
+                {
+                    using var w = new StreamWriter(System.Console.OpenStandardOutput(), new System.Text.UTF8Encoding(false));
+                    w.WriteLine(text);
+                }
+            }
+            catch { }
         }
     }
 

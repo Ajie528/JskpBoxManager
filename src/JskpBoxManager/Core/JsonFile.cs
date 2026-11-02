@@ -87,4 +87,20 @@ public static class JsonFile
         catch { }
         return null;
     }
+
+    public static double? Double(JsonObject o, string key)
+    {
+        if (o == null || !o.TryGetPropertyValue(key, out var v) || v == null) return null;
+        try
+        {
+            if (v is JsonValue jv)
+            {
+                if (jv.TryGetValue<double>(out var d)) return d;
+                if (jv.TryGetValue<int>(out var i)) return i;
+                if (jv.TryGetValue<string>(out var s) && double.TryParse(s, out var p)) return p;
+            }
+        }
+        catch { }
+        return null;
+    }
 }

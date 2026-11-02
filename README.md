@@ -29,7 +29,9 @@
 | `logs\` | 运行日志、凭证事件 `ilink-events.jsonl` |
 | `box-notes.json` | 账号备注 |
 | `keepalive.json` | 保活设置 |
+| `protocol.json` | 协议服务端口和令牌（**令牌等同登录权，不要外发**） |
 | `paths.json` | 手动指定的软件路径（没手动指定就没有） |
+| `logs\sslkeys-qbN.log` | 取 Token 时导出的 TLS 密钥（**能解密你的加密流量，不要外发**） |
 
 ## 从旧版（PowerShell 版 QQ 多开管理）迁移
 
@@ -69,6 +71,33 @@
 只是两边同时在玩时，游戏会弹「该帐号在其他地方登录」把另一边挤下线，点确定后重新进游戏仍然免扫）。
 列表里出现 ⚠ 表示有两个沙箱登录的是同一个微信号。
 
+### 高级工具（取 Token / 抓包 / 解包 / 保活）
+
+选中沙箱后点详情里的「🛠 高级工具」，在弹出窗口里点按钮即可，不用敲命令：取业务 Token、导 TLS 密钥、解包 wxapkg、抓 wx 请求、Frida 观测、凭证导入导出、状态、读角色等。右侧实时显示输出，取到 Token 可一键复制。
+
+### 取业务 Token
+
+「向僵尸开炮」的业务登录接口已通过抓包解密确认：免扫进游戏时游戏会请求
+`h5api.scgame.com.cn//login/login_wxmg.php?appid=1048&js_code=<wx.login码>&...`，返回里带 `token`、`uin`、`open_id`。
+
+本程序能自动把这个 token 抓出来（**需本机装 Wireshark**，安装时勾选 Npcap）：
+
+- **界面**：选中沙箱 →「🛠 高级工具」→「取业务 Token」。它会冷启动免扫登录、自动抓包解密，取到后显示并可一键复制。约 2 分钟、会冷启动该箱。
+- **HTTP**：勾选顶栏「协议服务」后，`GET http://127.0.0.1:18000/token?ref=qb1`（请求头带 `Authorization: Bearer <复制令牌得到的值>`）同样返回 token。
+
+原理与边界见 [docs/抓登录接口与解包.md](docs/抓登录接口与解包.md)、[docs/协议服务说明.md](docs/协议服务说明.md)。
+
+> 顶栏「协议服务」里的 `/wxapp/getCode`（CDP 取 wx.login code）对本游戏取不到码（微信运行时无调试端口），已改以 `/token` 为准，getCode 仅作兼容保留。
+
+### 关于「永久在线 / 不开游戏也在线」
+
+做不到纯 HTTP 的永久在线，两层都验证过：
+
+- **微信免扫**（ilink）：续期必须让官方运行时发一次 AutoAuth，只能靠保活冷启动，没有纯 HTTP 续期（见 `docs/mmtls直连可行性研究.md`）。免扫链本身还有寿命、会被别处扫码顶掉。
+- **游戏在线**：游戏的「在线」是一条到 `ws82-t5game2.scgame.com.cn` 的长连 WebSocket，由 Unity 运行时驱动；关游戏就断开。拿到的 `token` 只代表「已登录」，不等于「在线」。定时请求某个 URL **维持不了**在线。
+
+想「关了游戏尽量别掉线」，用下面保活里的「**关游戏后常驻轻量运行时**」把运行时挂着，而不是指望 HTTP 续命。
+
 ### 静默保活
 
 到点在后台冷启动一次沙箱，微信自动授权换新登录凭证后自动关闭，全程不弹窗。
@@ -77,6 +106,7 @@
 - 每天模式下各沙箱依次错开 10 分钟（qb1 在设定时刻，qb2 晚 10 分钟……）。
 - 游戏正开着时到点只保存凭证，不会重启游戏。
 - 实测空闲 10 天以上登录仍然有效，每天保活一次足够。
+- **关游戏后常驻轻量运行时**（可选）：关掉游戏窗时不整箱停，而是藏窗、压内存，保留微信运行时长连接，尽量不掉线。每箱仍占数百 MB 内存。点「停止」仍会整箱关掉。详见 [docs/保活选项说明.md](docs/保活选项说明.md)。
 - 保活依赖 Windows 计划任务 `jskp-keepalive-qbN`，需要电脑开机且用户已登录。
 
 ## 出问题怎么办
@@ -87,7 +117,7 @@
 
 ## 命令行
 
-桌面快捷方式和计划任务调用的就是这些命令，一般不用手动执行：
+日常操作都在界面里（包括「🛠 高级工具」）。桌面快捷方式和计划任务调用的是下面这些命令，一般不用手动执行：
 
 ```text
 JskpBoxManager.exe                  打开管理界面
@@ -102,9 +132,17 @@ JskpBoxManager.exe hook qb1         Frida 只读 hook（仅 qb1，日志 logs\fr
 JskpBoxManager.exe lean qb1         精简启动候选实验（仅 qb1）
 JskpBoxManager.exe cred-save qb1 --dir 目录   导出整套凭证（重放实验用，只读）
 JskpBoxManager.exe cred-load qb1 --dir 目录   把导出的凭证写回沙箱 live（需先停箱）
+JskpBoxManager.exe token qb1        一条龙抓包解密，输出业务 token（需装 Wireshark）
+JskpBoxManager.exe keylog qb1       导出游戏 TLS 密钥（配合 Wireshark 解密）
+JskpBoxManager.exe unpack qb1       定位并解包游戏 wxapkg（logs\wxapkg-qb1\）
+JskpBoxManager.exe capture qb1      CDP 抓 wx.request / wx.login（本游戏抓不到，留作排查）
+JskpBoxManager.exe getcode qb1      CDP 取 wx.login code（本游戏取不到，仅兼容）
+JskpBoxManager.exe server           本机协议 HTTP 服务（提供 /token）
 JskpBoxManager.exe version          输出版本号
 JskpBoxManager.exe update           检查并更新到最新版本（不打开界面）
 ```
+
+抓业务登录接口的步骤见 [docs/抓登录接口与解包.md](docs/抓登录接口与解包.md)。
 
 ## 开发与发版
 

@@ -1,0 +1,95 @@
+<Window x:Class="JskpBoxManager.UI.ToolsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="高级工具" Width="960" Height="640" MinWidth="820" MinHeight="520"
+        WindowStartupLocation="CenterOwner" FontFamily="Microsoft YaHei UI" FontSize="13"
+        Background="White" Icon="/app.ico">
+    <Grid Margin="0">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- 顶栏 -->
+        <Border Grid.Row="0" Background="#0F172A" Padding="18,12">
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                <TextBlock x:Name="TxtTitle" Text="高级工具" Foreground="White" FontSize="16" FontWeight="SemiBold"/>
+                <TextBlock x:Name="TxtSub" Foreground="#94A3B8" Margin="12,3,0,0"/>
+            </StackPanel>
+        </Border>
+
+        <Grid Grid.Row="1" Margin="14">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="280"/>
+                <ColumnDefinition Width="12"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- 左：工具按钮 -->
+            <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto">
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                        <TextBlock Text="秒数" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                        <TextBox x:Name="TxtSeconds" Text="130" Width="60" Padding="4" HorizontalContentAlignment="Center"/>
+                        <TextBlock Text="（抓包/保活/观测用）" Foreground="{StaticResource Muted}" FontSize="11" VerticalAlignment="Center" Margin="6,0,0,0"/>
+                    </StackPanel>
+
+                    <TextBlock Text="登录态" Style="{StaticResource SectionTitle}"/>
+                    <Button Content="▶ 启动游戏（免扫进入）" Style="{StaticResource PrimaryBtn}" Click="Launch_Click"/>
+                    <Button Content="🔄 静默保活一次（续期免扫）" Style="{StaticResource Btn}" Click="Refresh_Click"
+                            ToolTip="冷启动让微信运行时做一次 AutoAuth 换新密钥"/>
+                    <Button Content="🎟 取业务 Token（抓包解密）" Style="{StaticResource Btn}" Click="Token_Click"
+                            ToolTip="需装 Wireshark：冷启动免扫登录并解密，输出 token/uin/open_id"/>
+                    <Button Content="🔑 导出 TLS 密钥" Style="{StaticResource Btn}" Click="Keylog_Click"
+                            ToolTip="设 SSLKEYLOGFILE 冷启动，导出会话密钥供 Wireshark 解密"/>
+
+                    <TextBlock Text="抓包 / 逆向" Style="{StaticResource SectionTitle}" Margin="0,10,0,8"/>
+                    <Button Content="📦 解包 wxapkg（找登录接口）" Style="{StaticResource Btn}" Click="Unpack_Click"/>
+                    <Button Content="🕸 抓 wx.request（CDP）" Style="{StaticResource Btn}" Click="Capture_Click"/>
+                    <Button Content="🔬 Frida 观测 ilink/SSL" Style="{StaticResource Btn}" Click="Hook_Click"
+                            ToolTip="需 Python+frida：截 AutoAuth 返回与业务明文"/>
+                    <Button Content="🧪 精简启动实验" Style="{StaticResource Btn}" Click="Lean_Click"/>
+                    <Button Content="👁 窗口/凭证观测" Style="{StaticResource Btn}" Click="Observe_Click"/>
+
+                    <TextBlock Text="凭证 / 信息" Style="{StaticResource SectionTitle}" Margin="0,10,0,8"/>
+                    <Button Content="📊 状态" Style="{StaticResource Btn}" Click="Status_Click"/>
+                    <Button Content="🎮 读角色和攻击力" Style="{StaticResource Btn}" Click="Role_Click"/>
+                    <Button Content="⬇ 导出整套凭证" Style="{StaticResource Btn}" Click="CredSave_Click"/>
+                    <Button Content="⬆ 导入整套凭证（需先停箱）" Style="{StaticResource Btn}" Click="CredLoad_Click"/>
+
+                    <TextBlock Text="危险操作" Style="{StaticResource SectionTitle}" Margin="0,10,0,8" Foreground="{StaticResource Danger}"/>
+                    <Button Content="■ 停止沙箱" Style="{StaticResource Btn}" Click="Stop_Click"/>
+                    <Button Content="⟲ 清除登录 / 换号重扫" Style="{StaticResource DangerBtn}" Click="Clear_Click"/>
+                    <Button Content="🗑 删除这个沙箱" Style="{StaticResource DangerBtn}" Click="Delbox_Click"/>
+                </StackPanel>
+            </ScrollViewer>
+
+            <!-- 右：输出控制台 -->
+            <DockPanel Grid.Column="2">
+                <DockPanel DockPanel.Dock="Top" Margin="0,0,0,6">
+                    <TextBlock Text="运行输出" Style="{StaticResource SectionTitle}" Margin="0"/>
+                    <TextBlock x:Name="TxtResult" DockPanel.Dock="Right" Foreground="{StaticResource Accent}" FontWeight="SemiBold" HorizontalAlignment="Right"/>
+                </DockPanel>
+                <Border BorderBrush="{StaticResource Border}" BorderThickness="1" CornerRadius="6" Background="#0B1220">
+                    <TextBox x:Name="TxtOut" IsReadOnly="True" Background="Transparent" Foreground="#E5E7EB"
+                             FontFamily="Consolas, Microsoft YaHei UI" FontSize="12" BorderThickness="0" Padding="8"
+                             TextWrapping="NoWrap" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"/>
+                </Border>
+            </DockPanel>
+        </Grid>
+
+        <!-- 底栏 -->
+        <Border Grid.Row="2" BorderBrush="{StaticResource Border}" BorderThickness="0,1,0,0" Padding="14,8" Background="#F8FAFC">
+            <DockPanel>
+                <StackPanel Orientation="Horizontal" DockPanel.Dock="Right">
+                    <Button x:Name="BtnCopyToken" Content="复制 Token" Style="{StaticResource PrimaryBtn}" Margin="0,0,8,0" Visibility="Collapsed" Click="CopyToken_Click"/>
+                    <Button Content="复制输出" Style="{StaticResource Btn}" Margin="0,0,8,0" Click="CopyOut_Click"/>
+                    <Button x:Name="BtnStop" Content="停止" Style="{StaticResource DangerBtn}" Margin="0,0,8,0" IsEnabled="False" Click="StopRun_Click"/>
+                    <Button Content="关闭" Style="{StaticResource Btn}" Margin="0" IsCancel="True" Click="CloseWin_Click"/>
+                </StackPanel>
+                <TextBlock x:Name="TxtStatus" VerticalAlignment="Center" Foreground="#334155" Text="就绪" TextTrimming="CharacterEllipsis"/>
+            </DockPanel>
+        </Border>
+    </Grid>
+</Window>

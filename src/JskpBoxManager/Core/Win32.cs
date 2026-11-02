@@ -71,6 +71,91 @@ public static class Win32
     [DllImport("psapi.dll")] public static extern bool EmptyWorkingSet(IntPtr process);
     [DllImport("shell32.dll")] static extern int SHGetPropertyStoreForWindow(IntPtr h, ref Guid iid, out IPropertyStore ps);
     [DllImport("kernel32.dll")] public static extern bool AttachConsole(int pid);
+    [DllImport("kernel32.dll")] public static extern bool AllocConsole();
+    [DllImport("kernel32.dll")] public static extern bool FreeConsole();
+
+    static bool _cliConsoleReady;
+
+    /// <summary>
+    /// WinExe 默认没有控制台：先挂到父进程（PowerShell/cmd），失败再 AllocConsole 弹黑窗。
+    /// 否则用户跑 capture/unpack 会以为「命令没启动」。
+    /// </summary>
+    public static void EnsureCliConsole()
+    {
+        if (_cliConsoleReady) return;
+        try
+        {
+            if (System.Console.IsOutputRedirected)
+            {
+                _cliConsoleReady = true;
+                return;
+            }
+        }
+        catch { }
+
+        bool attached = false;
+        try { attached = AttachConsole(-1); } catch { }
+        if (!attached)
+        {
+            try { AllocConsole(); } catch { }
+        }
+        try
+        {
+            System.Console.OutputEncoding = Encoding.UTF8;
+            System.Console.InputEncoding = Encoding.UTF8;
+            // AllocConsole / AttachConsole 之后必须重绑，否则 WriteLine 仍打到空流
+            System.Console.SetOut(new StreamWriter(System.Console.OpenStandardOutput(), Encoding.UTF8) { AutoFlush = true });
+            System.Console.SetError(new StreamWriter(System.Console.OpenStandardError(), Encoding.UTF8) { AutoFlush = true });
+        }
+        catch { }
+        _cliConsoleReady = true;
+    }
+
+    [DllImport("user32.dll", SetLastError = true)] static extern bool OpenClipboard(IntPtr hWnd);
+    [DllImport("user32.dll", SetLastError = true)] static extern bool CloseClipboard();
+    [DllImport("user32.dll", SetLastError = true)] static extern bool EmptyClipboard();
+    [DllImport("user32.dll", SetLastError = true)] static extern IntPtr SetClipboardData(uint format, IntPtr hMem);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr GlobalAlloc(uint flags, UIntPtr bytes);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr GlobalLock(IntPtr h);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool GlobalUnlock(IntPtr h);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr GlobalFree(IntPtr h);
+
+    const uint CF_UNICODETEXT = 13;
+    const uint GMEM_MOVEABLE = 0x0002;
+
+    /// <summary>
+    /// 原生剪贴板写入，绕开 WPF/OLE。输入法或剪贴板工具常占住剪贴板导致 CLIPBRD_E_CANT_OPEN，
+    /// 这里对 OpenClipboard 重试多次。成功返回 true。
+    /// </summary>
+    public static bool SetClipboardText(string text)
+    {
+        text ??= "";
+        bool opened = false;
+        for (int i = 0; i < 30; i++)
+        {
+            if (OpenClipboard(IntPtr.Zero)) { opened = true; break; }
+            Thread.Sleep(60);
+        }
+        if (!opened) return false;
+        try
+        {
+            EmptyClipboard();
+            var bytes = Encoding.Unicode.GetBytes(text + "\0");
+            IntPtr hMem = GlobalAlloc(GMEM_MOVEABLE, (UIntPtr)bytes.Length);
+            if (hMem == IntPtr.Zero) return false;
+            IntPtr dst = GlobalLock(hMem);
+            if (dst == IntPtr.Zero) { GlobalFree(hMem); return false; }
+            try { Marshal.Copy(bytes, 0, dst, bytes.Length); }
+            finally { GlobalUnlock(hMem); }
+            if (SetClipboardData(CF_UNICODETEXT, hMem) == IntPtr.Zero)
+            {
+                GlobalFree(hMem); // 失败时所有权仍在我们手里
+                return false;
+            }
+            return true; // 成功后 hMem 所有权转给系统，不要释放
+        }
+        finally { CloseClipboard(); }
+    }
 
     [StructLayout(LayoutKind.Sequential)]
     public struct RECT { public int Left, Top, Right, Bottom; }

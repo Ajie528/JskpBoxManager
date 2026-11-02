@@ -92,7 +92,7 @@ class Watcher:
         self.sessions = {}
         self.rva_cache: dict[str, int | None] = {}
         self.lock = threading.Lock()
-        self.counts = {"xlog": 0, "file": 0, "net": 0}
+        self.counts = {"xlog": 0, "file": 0, "net": 0, "http": 0}
         self.device.on("child-added", self.on_child)
 
     # ---------- output ----------
@@ -128,6 +128,15 @@ class Watcher:
             text = f"{now()} [文件] [{role}] {p.get('op')} ok={p.get('ok')} {p.get('path')}"
         elif ev == "net":
             text = f"{now()} [网络] [{role}] {p.get('op')} {p.get('to') or p.get('host')} ({p.get('from')})"
+        elif ev == "http":
+            snippet = (p.get("text") or "").replace("\r\n", " ").replace("\n", " ")
+            if len(snippet) > 300:
+                snippet = snippet[:300] + "..."
+            text = f"{now()} [HTTP明文] [{role}] {p.get('dir')} len={p.get('len')} {snippet}"
+        elif ev == "ssl-hooked":
+            text = f"{now()} [已挂上 SSL 明文] pid={pid} role={role} {p.get('funcs')}"
+        elif ev == "ssl-missing":
+            text = f"{now()} [警告] pid={pid} role={role} {p.get('note')}"
         elif ev == "xlog-hooked":
             text = f"{now()} [已挂上 ilink 日志] pid={pid} role={role} {p.get('rva')}"
         self.write({"ev": "frida", **p}, text)
@@ -269,7 +278,7 @@ class Watcher:
                     pass
         self.write({"ev": "watch-end", **self.counts, "attached": len(self.sessions)},
                    f"{now()} 结束：attach {len(self.sessions)} 个进程；ilink 日志 {self.counts['xlog']} 行，"
-                   f"文件 {self.counts['file']}，网络 {self.counts['net']}")
+                   f"文件 {self.counts['file']}，网络 {self.counts['net']}，HTTP明文 {self.counts['http']}")
         return 0 if self.sessions else 1
 
 

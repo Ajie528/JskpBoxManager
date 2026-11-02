@@ -3,6 +3,41 @@
 版本号规则：`主版本.次版本.修订号`。只修 bug 加修订号；加功能加次版本号；数据格式或用法有不兼容变化加主版本号。
 每次发版在最上面新增一节，并同步修改 `Directory.Build.props` 里的 `<Version>`。
 
+## [1.5.1] - 2026-11-02
+
+### 新增
+- `capture qbN`：用 CDP 只读包住小游戏里的 `wx.request` / `wx.login`，把 URL、头、体、响应写到 `logs\wxapi-qbN.jsonl`（用于抓业务登录接口）。
+- `unpack qbN`：在沙箱 live/金库里定位 `.wxapkg`，尝试明文与 AppID 异或解密后解包到 `logs\wxapkg-qbN\`，并扫出可能的登录相关文件到 `login-hints.txt`。
+- 说明见 `docs/抓登录接口与解包.md`。
+
+### 修复
+- 「复制令牌」改用 Win32 原生剪贴板写入并重试（输入法/剪贴板工具常占住剪贴板导致 `CLIPBRD_E_CANT_OPEN`）；WPF 方式作备用。仍失败则弹出可全选的令牌框。与此同时出现的 Sandboxie `SBIE2203 GUIPROXY` 多半是沙箱里搜狗输入法抢剪贴板/GUI 代理，与令牌本身无关。
+- `capture` / `unpack` / `getcode` 等诊断命令：WinExe 原先不挂控制台，PowerShell 里像「没启动」。现在会挂到当前终端，挂不上则 `AllocConsole` 弹黑窗；并支持 `help`。
+- `capture` / `unpack` / `getcode` 不再自动跳到别的安装目录（如 1.5.1 里没有金库时跳去 1.5.0 跑、日志也写到 1.5.0）；一律使用 exe 所在目录，开头打印数据目录。
+- `unpack` 解析 wxapkg 头偏移错误（把 @5 的索引长度当成文件数，报「文件表损坏 @#0」）。标准头文件数在偏移 14，已修正，实测解出 111 个文件。
+
+### 新增
+- 详情面板「登录凭证」区更清楚地显示**免扫链寿命**（自扫码起已免扫多久、换新几次）和**上次被顶/失效**（密钥用了多久、免扫链活了几天、是否已重新扫码恢复），方便判断到底是服务端寿命到了还是被别处顶掉。
+- **协议服务改造为提供业务 token**：新增 `GET /token?ref=qb1`，调用已验证的抓包解密流程，返回 `{token,uin,open_id,js_code,...}`，脚本可直接 HTTP 取 token（需装 Wireshark）。原 `/wxapp/getCode` 走 CDP 对本游戏取不到码，保留仅为兼容。`/health` 列出可用接口。服务在 GUI 进程内运行取 token 时不再弹控制台窗口。
+- **「高级工具」窗口**（主界面详情里按钮「🛠 高级工具」）：把命令行能力搬进 GUI，选中沙箱后点按钮即可，无需记命令。含：启动游戏、静默保活、取业务 Token、导 TLS 密钥、解包 wxapkg、抓 wx.request、Frida 观测、精简启动实验、窗口/凭证观测、状态、读角色、凭证导入/导出、停止/清除/删除。右侧实时显示运行输出；取到 Token 时可一键「复制 Token」。底层仍调同一套已验证的子命令。
+- `scripts/get_wx_code.py` 接上第 5 步：取 code 后调游戏登录接口 `login_wxmg.php` 换业务 Token（接口由解包 `game.js` 得出，见 `docs/抓登录接口与解包.md`）；`--code-only` 只输出 code。
+- `hook`（Frida）尝试挂 BoringSSL `SSL_write`/`SSL_read`；实测业务 TLS 在 `flue.dll`（Chromium 本体）里静态内链、不导出符号，三进程均 `ssl-missing`，此路不通。
+- `keylog qbN` 命令（**已实测可用**）：设 `SSLKEYLOGFILE` 环境变量（经 Sandboxie 传入箱内 Chromium），走正式 launch 免扫冷启动进游戏，把 TLS 会话密钥导出到 `logs\sslkeys-qbN.log`，并打印 scgame 的 IP 与 tshark 解密命令。配合 Wireshark 抓包即可解出 `login_wxmg.php` 的 `js_code`/`token`。因 `WeChatAppEx` 无调试口（CDP 不通）、BoringSSL 无导出（Frida 直挂不通），这是当前可行的业务 HTTPS 取证路径。
+- `token qbN` 命令（**已端到端实测**，需装 Wireshark）：一条龙自动「tshark 定时抓包 + keylog 冷启动免扫登录 + 解密提取」，stdout 输出一行 JSON `{ok,appid,wx_appid,js_code,token,uin,open_id}`。自动选活动网卡、解析 scgame IP 做抓包过滤。参数 `--seconds`（默认 130）、`--iface`、`--keep`（保留 pcap）。实测解出真实 `token`/`uin`/`open_id`。
+- 业务登录接口已实测确认：`GET h5api.scgame.com.cn//login/login_wxmg.php?appid=1048&js_code=<code>&uuid=&game_client_version=` → `{ret,uin,token,open_id,wx_appid,...}`（HTTP/2 over TLS）。见 `docs/抓登录接口与解包.md`。
+
+## [1.5.0] - 2026-11-02
+
+### 新增
+- **本机协议服务**（参考 YYB-Go 的脚本接入方式，实现走 CDP + 官方运行时，不仿造 ilink 发包）：
+  - 界面顶部勾选「协议服务」；仅监听 `127.0.0.1`，Bearer 令牌鉴权（「复制令牌」）。
+  - `POST /wxapp/getCode`：按沙箱 `ref` + 本游戏 APPID，在真实微信运行时调用 `wx.login` 取 code。
+  - `GET /accounts`、`GET /health`；配置文件 `protocol.json`。
+  - 命令行：`server` 常驻监听；`getcode qbN` 直接取一次 code。
+  - 示例脚本 `scripts/get_wx_code.py`：读环境变量 `JSKP_SERVER` / `YYB_SERVER`、`JSKP_PROTOCOL_TOKEN`，避免写死 IP。
+  - 说明见 `docs/协议服务说明.md`。
+- 第 5 步「用 code 换业务 Token」仍由脚本调游戏自己的后端完成；本程序只提供授权 code。
+
 ## [1.4.3] - 2026-11-02
 
 ### 变更

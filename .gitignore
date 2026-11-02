@@ -11,6 +11,7 @@ profiles/
 logs/
 paths.json
 keepalive.json
+protocol.json
 box-notes.json
 migrated.json
 roles/

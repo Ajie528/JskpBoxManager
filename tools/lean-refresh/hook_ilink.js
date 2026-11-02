@@ -5,12 +5,17 @@
  *    函数 RVA 由 xlog_locate.py 按 RTTI 离线算出，通过 rpc.exports.init 传进来。
  * 2. 凭证文件：kernelbase CreateFileW / MoveFileExW / DeleteFileW / ReplaceFileW 命中 tdi_account.txt、psk.key、ilink 目录。
  * 3. 网络：ws2_32 connect / WSAConnect 目标地址，GetAddrInfoW / getaddrinfo 域名（每个只记一次）。
+ * 4. 业务 HTTPS 明文：BoringSSL SSL_write / SSL_read，截「向僵尸开炮」登录请求（js_code）和返回（token）。
  */
 'use strict';
 
 let cfg = { xlogRva: null, role: '' };
 let xlogHooked = false;
+let sslHooked = false;
 const seenNet = new Set();
+
+// 只上报命中这些关键词的明文，避免把所有 HTTPS 流量都倒出来
+const HTTP_KEYWORDS = ['login_wxmg', 'scgame.com.cn', 'js_code=', '"token"', 'wx_mds_charge', 'dodjoy.com', 'h5api'];
 
 function emit(obj) {
   send(Object.assign({ ts: Date.now(), pid: Process.id, role: cfg.role }, obj));
@@ -188,12 +193,94 @@ function interestingModules() {
     .map(m => ({ name: m.name, base: m.base.toString(), size: m.size }));
 }
 
+// ---------- 4. 业务 HTTPS 明文（BoringSSL SSL_write / SSL_read） ----------
+
+/** 读指针处的字节为字符串（可能含二进制，按 latin1 原样取，便于关键词匹配）。 */
+function rawStr(p, len) {
+  try {
+    if (p.isNull() || len <= 0) return '';
+    const n = Math.min(len, 1 << 16);
+    const bytes = new Uint8Array(p.readByteArray(n));
+    let s = '';
+    for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+    return s;
+  } catch (_) { return ''; }
+}
+
+function wanted(text) {
+  if (!text) return false;
+  for (const k of HTTP_KEYWORDS) if (text.indexOf(k) >= 0) return true;
+  return false;
+}
+
+function emitHttp(dir, text) {
+  if (!wanted(text)) return;
+  // 截断，别把整个响应体灌进日志
+  const out = text.length > 8000 ? text.slice(0, 8000) + '...<truncated>' : text;
+  emit({ ev: 'http', dir, len: text.length, text: out });
+}
+
+/** 在所有已加载模块里找 SSL_write / SSL_read 导出（Chromium 常静态链接 BoringSSL，可能找不到）。 */
+function findSslExports() {
+  const want = ['SSL_write', 'SSL_read', 'SSL_write_ex', 'SSL_read_ex'];
+  const found = {};
+  for (const m of Process.enumerateModules()) {
+    for (const n of want) {
+      if (found[n]) continue;
+      try {
+        const e = m.getExportByName(n);
+        if (e && !e.isNull()) found[n] = { addr: e, module: m.name };
+      } catch (_) {}
+    }
+  }
+  return found;
+}
+
+function hookSsl() {
+  if (sslHooked) return;
+  const f = findSslExports();
+  const names = Object.keys(f);
+  if (names.length === 0) {
+    emit({ ev: 'ssl-missing', note: '未找到 SSL_write/SSL_read 导出（BoringSSL 可能被静态链接/裁剪）' });
+    return;
+  }
+  sslHooked = true;
+
+  // int SSL_write(SSL*, const void* buf, int num) —— 出站明文（请求）
+  if (f.SSL_write) {
+    Interceptor.attach(f.SSL_write.addr, {
+      onEnter(a) { try { emitHttp('write', rawStr(a[1], a[2].toInt32())); } catch (_) {} }
+    });
+  }
+  // int SSL_write_ex(SSL*, const void* buf, size_t num, size_t* written)
+  if (f.SSL_write_ex) {
+    Interceptor.attach(f.SSL_write_ex.addr, {
+      onEnter(a) { try { emitHttp('write', rawStr(a[1], a[2].toInt32())); } catch (_) {} }
+    });
+  }
+  // int SSL_read(SSL*, void* buf, int num) —— 入站明文（响应），返回值是实际字节数
+  if (f.SSL_read) {
+    Interceptor.attach(f.SSL_read.addr, {
+      onEnter(a) { this.buf = a[1]; },
+      onLeave(r) { try { const n = r.toInt32(); if (n > 0) emitHttp('read', rawStr(this.buf, n)); } catch (_) {} }
+    });
+  }
+  if (f.SSL_read_ex) {
+    Interceptor.attach(f.SSL_read_ex.addr, {
+      onEnter(a) { this.buf = a[1]; this.pn = a[3]; },
+      onLeave() { try { const n = this.pn.isNull() ? 0 : this.pn.readU32(); if (n > 0) emitHttp('read', rawStr(this.buf, n)); } catch (_) {} }
+    });
+  }
+  emit({ ev: 'ssl-hooked', funcs: names.map(n => n + '@' + f[n].module) });
+}
+
 rpc.exports = {
   init(c) {
     cfg = Object.assign(cfg, c || {});
     const fileLib = hookFiles();
     const net = hookNet();
     watchIlinkModule();
+    hookSsl();
     emit({ ev: 'script-load', arch: Process.arch, fileLib, net, modules: interestingModules() });
     return true;
   },

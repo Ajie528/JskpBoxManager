@@ -63,10 +63,15 @@ public sealed class BoxSummary
         var st = BoxStatusFile.Read(box);
         string mode = BoxRuntime.LauncherMode(box);
         if (s.InGame) { s.Phase = "ingame"; s.PhaseText = "游戏中"; }
-        else if (mode == "refresh") { s.Phase = "busy"; s.PhaseText = "保活中…"; }
-        else if (st != null && mode.Length > 0 && st.Phase is BoxPhase.Starting or BoxPhase.WaitingScan or BoxPhase.InGame)
+        else if (st != null && st.Phase == BoxPhase.Resident && s.Running)
         {
-            s.Phase = st.Phase == BoxPhase.WaitingScan ? "scan" : "busy";
+            s.Phase = "resident";
+            s.PhaseText = string.IsNullOrWhiteSpace(st.Text) ? "常驻保活中（轻量）" : st.Text;
+        }
+        else if (mode == "refresh") { s.Phase = "busy"; s.PhaseText = "保活中…"; }
+        else if (st != null && mode.Length > 0 && st.Phase is BoxPhase.Starting or BoxPhase.WaitingScan or BoxPhase.InGame or BoxPhase.Resident)
+        {
+            s.Phase = st.Phase == BoxPhase.WaitingScan ? "scan" : st.Phase == BoxPhase.Resident ? "resident" : "busy";
             s.PhaseText = st.Text;
         }
         else if (s.Running) { s.Phase = "busy"; s.PhaseText = "运行中"; }
@@ -81,7 +86,8 @@ public sealed class BoxSummary
             var r = JsonFile.Str(ev, "result");
             var word = r switch
             {
-                "ok" => "成功", "in-game" => "游戏中跳过", "revoked" => "被顶掉", "suspected" => "疑似失效（未确认被顶）",
+                "ok" => "成功", "in-game" => "游戏中跳过", "resident-skip" => "常驻跳过",
+                "revoked" => "被顶掉", "suspected" => "疑似失效（未确认被顶）",
                 "qr" or "qr-seen" => "要扫码",
                 "no-game" => "没进游戏", "no-rewrite" => "未换新", _ => r,
             };

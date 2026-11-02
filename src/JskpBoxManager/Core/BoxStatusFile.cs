@@ -8,6 +8,8 @@ public enum BoxPhase
     Starting,
     WaitingScan,
     InGame,
+    /// <summary>关游戏窗后仍留着 QQ/微信运行时，藏窗压内存保 ilink 长连接。</summary>
+    Resident,
     Refreshing,
     Failed,
 }

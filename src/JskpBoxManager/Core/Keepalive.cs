@@ -8,7 +8,7 @@ namespace JskpBoxManager.Core;
 public sealed class KeepPolicy
 {
     public bool Enabled = true;
-    public string Schedule = "interval"; // interval | daily
+    public string Schedule = "daily"; // daily | interval（默认每天一次，少滚密钥）
     public int IntervalHours = 4;
     public string DailyTime = "04:00";
     /// <summary>精简保活：不打开游戏中心页，优先 Blank/NoUrl/RuntimeOnly；失败回退 Full。默认关。</summary>
@@ -17,6 +17,8 @@ public sealed class KeepPolicy
     public bool ProbeAuth = false;
     /// <summary>手动启动和游戏中也挂 Frida 记授权返回（玩着掉线也能抓到 ret）。默认关。</summary>
     public bool ProbeAuthLive = false;
+    /// <summary>关游戏窗后不整箱停，藏窗压内存，保留 QQBrowser+WeChatAppEx 上的 ilink 长连接。默认关。</summary>
+    public bool ResidentKeepalive = false;
 
     public KeepPolicy Clone() => (KeepPolicy)MemberwiseClone();
 
@@ -25,7 +27,9 @@ public sealed class KeepPolicy
         var baseDesc = Schedule == "daily"
             ? $"每天 {Keepalive.RunAt(box, this):HH:mm}"
             : $"每 {IntervalHours} 小时";
-        return LeanRefresh ? baseDesc + "·精简" : baseDesc;
+        if (LeanRefresh) baseDesc += "·精简";
+        if (ResidentKeepalive) baseDesc += "·常驻";
+        return baseDesc;
     }
 }
 
@@ -81,6 +85,7 @@ public static class Keepalive
             p.LeanRefresh = JsonFile.Bool(o, "leanRefresh") ?? false;
             p.ProbeAuth = JsonFile.Bool(o, "probeAuth") ?? false;
             p.ProbeAuthLive = JsonFile.Bool(o, "probeAuthLive") ?? false;
+            p.ResidentKeepalive = JsonFile.Bool(o, "residentKeepalive") ?? false;
         }
         return p;
     }
@@ -91,7 +96,8 @@ public static class Keepalive
         var raw = JsonFile.ReadObject(AppPaths.KeepaliveJson);
         if (raw == null) return cfg;
         cfg.Enabled = JsonFile.Bool(raw, "enabled") ?? true;
-        cfg.Defaults.Schedule = JsonFile.Str(raw, "schedule") == "daily" ? "daily" : "interval";
+        // 显式写 interval 才保留；缺省/其它值走每天（新默认）
+        cfg.Defaults.Schedule = JsonFile.Str(raw, "schedule") == "interval" ? "interval" : "daily";
         cfg.Defaults.IntervalHours = Math.Clamp(JsonFile.Int(raw, "intervalHours") ?? 4, 1, 24);
         cfg.Defaults.DailyTime = NormalizeClock(JsonFile.Str(raw, "dailyTime"));
         if (raw["boxes"] is JsonObject boxes)
@@ -113,6 +119,7 @@ public static class Keepalive
                 ["leanRefresh"] = kv.Value.LeanRefresh,
                 ["probeAuth"] = kv.Value.ProbeAuth,
                 ["probeAuthLive"] = kv.Value.ProbeAuthLive,
+                ["residentKeepalive"] = kv.Value.ResidentKeepalive,
             };
         JsonFile.WriteObject(AppPaths.KeepaliveJson, new JsonObject
         {

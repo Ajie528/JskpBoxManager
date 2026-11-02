@@ -339,4 +339,27 @@ public sealed class BoxView
         }
         return (before, after);
     }
+
+    /// <summary>
+    /// 常驻轻量：藏 QQ/微信壳（扫码窗除外）、关残留游戏标题窗、杀渲染进程、压 QQ 工作集。不 Terminate。
+    /// </summary>
+    public void TrimResident()
+    {
+        foreach (var w in Windows)
+        {
+            if (Titles.IsIme(w.Title, w.Class, w.Proc)) continue;
+            if (Titles.IsStrictQr(w.Title)) continue;
+            bool isQq = IsQq(w.Proc), isWx = IsWx(w.Proc);
+            if (!(isQq || isWx)) continue;
+            if (Titles.IsGame(w.Title))
+            {
+                Win32.PostMessage(w.Hwnd, Win32.WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+                continue;
+            }
+            Win32.ForceHide(w.Hwnd);
+        }
+        try { Cdp.CloseExtraTabs(Box); } catch { }
+        KillBrowserRenderers();
+        TrimBrowserMemory();
+    }
 }

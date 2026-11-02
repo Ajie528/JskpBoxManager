@@ -239,12 +239,13 @@ public partial class MainWindow : Window
             ChkLeanRefresh.IsChecked = pol.LeanRefresh;
             ChkProbeAuth.IsChecked = pol.ProbeAuth;
             ChkProbeAuthLive.IsChecked = pol.ProbeAuthLive;
+            ChkResidentKeep.IsChecked = pol.ResidentKeepalive;
             TxtHours.Text = pol.IntervalHours.ToString();
             var hm = pol.DailyTime.Split(':');
             TxtHour.Text = hm[0];
             TxtMinute.Text = hm.Length > 1 ? hm[1] : "00";
-            RadDaily.IsChecked = pol.Schedule == "daily";
-            RadInterval.IsChecked = pol.Schedule != "daily";
+            RadDaily.IsChecked = pol.Schedule != "interval";
+            RadInterval.IsChecked = pol.Schedule == "interval";
             Sched_Changed(null, null);
         }
         TxtCred.Text = s == null ? "" : CredentialText(s);
@@ -441,6 +442,7 @@ public partial class MainWindow : Window
         bool lean = ChkLeanRefresh.IsChecked == true;
         bool probe = ChkProbeAuth.IsChecked == true;
         bool probeLive = ChkProbeAuthLive.IsChecked == true;
+        bool resident = ChkResidentKeep.IsChecked == true;
         bool daily = RadDaily.IsChecked == true;
         var errors = await RunBusy("正在保存保活设置并同步计划任务…", () =>
         {
@@ -450,7 +452,7 @@ public partial class MainWindow : Window
                 {
                     Enabled = enabled, Schedule = daily ? "daily" : "interval",
                     IntervalHours = hours, DailyTime = $"{hh:D2}:{mm:D2}", LeanRefresh = lean, ProbeAuth = probe,
-                    ProbeAuthLive = probeLive,
+                    ProbeAuthLive = probeLive, ResidentKeepalive = resident,
                 };
             Keepalive.Save(cfg);
             var errs = new List<string>();

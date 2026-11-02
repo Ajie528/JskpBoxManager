@@ -2,7 +2,7 @@ namespace JskpBoxManager.Core;
 
 /// <summary>
 /// 「启动游戏」的后台流程（JskpBoxManager.exe launch qbN）：准备凭证 → 拉起浏览器 → 等游戏或扫码 → 看门。
-/// 看门期间定时存凭证；玩家关掉游戏后停箱并做最后一次保存。
+/// 看门期间定时存凭证；玩家关掉游戏后默认停箱；若开了常驻则藏窗压内存，保留 ilink 长连接。
 /// </summary>
 public sealed class LaunchSession
 {
@@ -41,10 +41,15 @@ public sealed class LaunchSession
         using var mutex = TryLock(_box, out bool got);
         if (!got)
         {
-            // 已有一个启动/看门进程：把已有界面拉到前台就行
+            // 已有一个启动/看门进程：把已有界面拉到前台；常驻态则复开 GameUrl 让看门进程接上游戏窗
             var v = new BoxView(_box);
             if (v.HasGameWindow) { v.ShowGameWindow(); L("already running -> show game window"); }
             else if (v.HasStrictQr) { v.ShowQrWindow(); L("already running -> show QR window"); }
+            else if (v.WeChatRuntimeUp && Keepalive.Load().For(_box).ResidentKeepalive)
+            {
+                try { BoxRuntime.StartBrowser(_box, "resume-resident-dup"); } catch { }
+                L("already running (resident) -> reopen GameUrl");
+            }
             else L("already running (launcher busy) -> skip duplicate launch");
             return 0;
         }
@@ -148,6 +153,14 @@ public sealed class LaunchSession
         }
         if (existing.WeChatRuntimeUp)
         {
+            if (Keepalive.Load().For(_box).ResidentKeepalive)
+            {
+                L("WeChat runtime only (resident) -> reopen GameUrl + watch");
+                try { BoxRuntime.StartBrowser(_box, "resume-resident"); } catch { }
+                ProbeStart("resume-resident");
+                Watch();
+                return;
+            }
             L("WeChat runtime only (no game window) -> force stop and relaunch");
             BoxRuntime.StopForce(_box, false);
             BoxRuntime.RegisterLauncher(_box, "launch");
@@ -728,6 +741,18 @@ public sealed class LaunchSession
                 if (goneTicks == 1) try { Ilink.Save(_box, "game-closing"); } catch { }
                 if (goneTicks >= 3)
                 {
+                    if (Keepalive.Load().For(_box).ResidentKeepalive)
+                    {
+                        if (EnterResident())
+                        {
+                            hadGame = true;
+                            goneTicks = 0;
+                            uiGoneTicks = 0;
+                            wxNoGameSince = null;
+                            continue;
+                        }
+                        break;
+                    }
                     L("game closed -> stop box (save credential)");
                     Phase(BoxPhase.Stopped, "游戏已关闭，正在保存…");
                     BoxRuntime.StopSoft(_box, true);
@@ -794,6 +819,139 @@ public sealed class LaunchSession
                 BoxRuntime.StopSoft(_box, false);
                 Phase(BoxPhase.Failed, "等了 30 分钟没进游戏，已停止");
                 break;
+            }
+        }
+    }
+
+    /// <summary>
+    /// 关游戏后常驻：存凭证、藏窗压内存，保留 QQBrowser+WeChatAppEx 上的 ilink。
+    /// 返回 true = 游戏窗又回来了，继续 WatchLoop；false = 结束看门。
+    /// </summary>
+    bool EnterResident()
+    {
+        L("game closed -> enter resident (hide+trim, keep ilink runtime)");
+        Phase(BoxPhase.Resident, "常驻保活中（轻量）");
+        try { Ilink.Save(_box, "enter-resident"); } catch { }
+        try
+        {
+            var first = new BoxView(_box);
+            first.TrimResident();
+        }
+        catch { }
+
+        int failStreak = 0;
+        var lastTrim = DateTime.MinValue;
+        var lastCred = DateTime.MinValue;
+        var lastLog = DateTime.MinValue;
+        bool sawQr = false;
+
+        while (true)
+        {
+            Thread.Sleep(2000);
+            try { ProbeTick(); } catch { }
+            if (_hardReject)
+            {
+                L("resident: hard AutoAuth reject (ret=-13) -> need scan");
+                NeedScan.Set(_box, "resident-ret-13");
+                Phase(BoxPhase.WaitingScan, "授权被服务端拒绝，需要扫码");
+                return false;
+            }
+
+            BoxView v;
+            try { v = new BoxView(_box); }
+            catch { continue; }
+
+            if (!v.HasQqOrGame)
+            {
+                L("resident: box empty -> end");
+                try { Ilink.Save(_box, "resident-end"); } catch { }
+                Phase(BoxPhase.Stopped, "常驻已结束");
+                return false;
+            }
+
+            if (v.HasGameWindow)
+            {
+                L("resident: game window back -> resume watch");
+                Phase(BoxPhase.InGame, "游戏中");
+                v.ShowGameWindow();
+                return true;
+            }
+
+            if (v.HasStrictQr)
+            {
+                if (!sawQr)
+                {
+                    sawQr = true;
+                    NeedScan.Set(_box, "resident-qr");
+                    Phase(BoxPhase.WaitingScan, "需要用微信扫码登录");
+                    L("resident: QR appeared");
+                }
+                if ((DateTime.Now - lastLog).TotalSeconds >= 60)
+                {
+                    v.ShowQrWindow();
+                    lastLog = DateTime.Now;
+                }
+                continue;
+            }
+            if (sawQr)
+            {
+                // 扫完码后复开游戏页，仍留在常驻循环等游戏窗
+                L("resident: QR gone after scan -> reopen GameUrl");
+                Phase(BoxPhase.Starting, "已扫码，正在进入游戏…");
+                try { BoxRuntime.StartBrowser(_box, "resident-post-scan"); } catch { }
+                sawQr = false;
+                Phase(BoxPhase.Resident, "常驻保活中（轻量）");
+                continue;
+            }
+
+            if ((DateTime.Now - lastCred).TotalSeconds >= 30)
+            {
+                try { Ilink.Save(_box, "resident"); } catch { }
+                lastCred = DateTime.Now;
+            }
+
+            if ((DateTime.Now - lastTrim).TotalSeconds >= 30)
+            {
+                try { v.TrimResident(); } catch { }
+                lastTrim = DateTime.Now;
+                Phase(BoxPhase.Resident, "常驻保活中（轻量）");
+            }
+
+            if (v.WeChatRuntimeUp)
+            {
+                failStreak = 0;
+                continue;
+            }
+
+            failStreak++;
+            L($"resident: WeChat runtime down -> recover (streak={failStreak})");
+            Phase(BoxPhase.Resident, "常驻运行时恢复中…");
+            try { BoxRuntime.StartBrowser(_box, "resident-recover", BoxRuntime.LaunchMode.RuntimeOnly); }
+            catch (Exception ex) { L("resident RuntimeOnly: " + ex.Message); }
+            Thread.Sleep(5000);
+            v = new BoxView(_box);
+            if (!v.WeChatRuntimeUp)
+            {
+                try { BoxRuntime.StartBrowser(_box, "resident-recover-full", BoxRuntime.LaunchMode.Full); }
+                catch (Exception ex) { L("resident Full: " + ex.Message); }
+                Thread.Sleep(8000);
+                try { new BoxView(_box).TrimResident(); } catch { }
+            }
+
+            v = new BoxView(_box);
+            if (v.WeChatRuntimeUp)
+            {
+                failStreak = 0;
+                Phase(BoxPhase.Resident, "常驻保活中（轻量）");
+                continue;
+            }
+            if (failStreak >= 3)
+            {
+                L("resident: recover failed repeatedly -> stop, next launch needs cold start");
+                try { Ilink.Save(_box, "resident-give-up"); } catch { }
+                BoxRuntime.StopSoft(_box, true);
+                Phase(BoxPhase.Stopped, "常驻运行时已挂，下次需冷启动");
+                return false;
             }
         }
     }

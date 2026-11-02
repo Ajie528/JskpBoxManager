@@ -35,6 +35,7 @@ public sealed class BoxRow : INotifyPropertyChanged
     public Brush PhaseBrush => Summary?.Phase switch
     {
         "ingame" => Brushes.Green(),
+        "resident" => Brushes.Blue(),
         "busy" => Brushes.Blue(),
         "scan" => Brushes.Orange(),
         _ => Summary != null && Summary.PhaseText != "未运行" ? Brushes.Red() : Brushes.Gray(),

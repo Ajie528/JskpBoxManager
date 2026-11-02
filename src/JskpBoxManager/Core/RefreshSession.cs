@@ -86,6 +86,14 @@ public sealed class RefreshSession
             Ilink.WriteEvent(_box, "refresh", new JsonObject { ["result"] = "in-game", ["keySha"] = Ilink.Live(_box).KeyHash });
             return;
         }
+        // 常驻轻量运行时：微信还在就别冷启杀进程，只存凭证
+        if (cfg.For(_box).ResidentKeepalive && before.WeChatRuntimeUp)
+        {
+            Ilink.Save(_box, "refresh-resident");
+            L("refresh: resident runtime up -> keep it, credential saved, skip cold start");
+            Ilink.WriteEvent(_box, "refresh", new JsonObject { ["result"] = "resident-skip", ["keySha"] = Ilink.Live(_box).KeyHash });
+            return;
+        }
         if (NeedScan.Pending(_box))
         {
             L("refresh skipped (need QR scan — no cold start until manual login)");

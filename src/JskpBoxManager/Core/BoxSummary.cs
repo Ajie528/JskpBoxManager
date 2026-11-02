@@ -81,7 +81,8 @@ public sealed class BoxSummary
             var r = JsonFile.Str(ev, "result");
             var word = r switch
             {
-                "ok" => "成功", "in-game" => "游戏中跳过", "revoked" => "被顶掉", "qr" or "qr-seen" => "要扫码",
+                "ok" => "成功", "in-game" => "游戏中跳过", "revoked" => "被顶掉", "suspected" => "疑似失效（未确认被顶）",
+                "qr" or "qr-seen" => "要扫码",
                 "no-game" => "没进游戏", "no-rewrite" => "未换新", _ => r,
             };
             // 保活失败后又手动启动 / 扫码换新过：失败已经过时，标出来，免得和「最近免扫换新」看着矛盾

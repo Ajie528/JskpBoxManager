@@ -8,6 +8,7 @@ public sealed class LaunchSession
 {
     readonly string _box;
     DateTime _mpRetryNotBefore = DateTime.MinValue;
+    bool _suspectRetried;
 
     public LaunchSession(string box) { _box = box; }
 
@@ -135,7 +136,13 @@ public sealed class LaunchSession
                 Thread.Sleep(6000);
                 BoxRuntime.WaitRpcReady(_box, 90);
                 BoxRuntime.EnsureWxRuntimeInBox(_box);
-                if (result.CredCleared)
+                if (result.Suspected)
+                {
+                    L("suspected revoke (cleared + QR, no server reject seen) -> restore vault and retry once");
+                    VaultSync.PushVaultToLive(_box);
+                    didVaultRestore = true;
+                }
+                else if (result.CredCleared)
                     L("credential was cleared by runtime without QR -> keep runtime state (no vault restore) and retry");
                 else if (!didVaultRestore)
                 {
@@ -183,7 +190,8 @@ public sealed class LaunchSession
     }
 
     /// <param name="CredCleared">启动后运行时把凭证写成了无效，但没出现扫码页（不能算被顶掉）。</param>
-    sealed record WaitResult(bool Opened, bool NeedColdRetry, bool WaitingQr, bool SawQr, bool CredCleared = false);
+    /// <param name="Suspected">凭证被清空且出现扫码页，但启动流程看不到服务端返回，先从金库还原重试一次。</param>
+    sealed record WaitResult(bool Opened, bool NeedColdRetry, bool WaitingQr, bool SawQr, bool CredCleared = false, bool Suspected = false);
 
     WaitResult WaitForGame(LaunchBaseline baseline)
     {
@@ -228,12 +236,16 @@ public sealed class LaunchSession
                 var v = new BoxView(_box);
                 if (credCleared && !revoked && v.HasStrictQr)
                 {
-                    // 服务端拒绝了这次自动授权（被别的设备扫码顶掉，或过期）：金库同一把也没用，直接等扫码
+                    // 启动流程拿不到服务端 ret，凭证清空 + 扫码页不足以确认被顶：不登记作废，先用金库同一把再冷启一次
+                    if (savedLogin && !_suspectRetried && Ilink.VaultCanHelp(_box))
+                    {
+                        _suspectRetried = true;
+                        return new(false, true, false, true, false, true);
+                    }
                     revoked = true;
-                    Ilink.RegisterRevoked(_box, baseline, "launch");
                     savedLogin = false;
-                    NeedScan.Set(_box, "key-revoked");
-                    Phase(BoxPhase.WaitingScan, "登录已失效（可能在别的设备扫码登录过），请用微信扫码");
+                    NeedScan.Set(_box, _suspectRetried ? "suspected-revoked" : "launch-qr-after-clear");
+                    Phase(BoxPhase.WaitingScan, "登录已失效，请用微信扫码");
                 }
                 if (v.CloseRestorePage()) L("closed 要恢复页面吗 dialog");
                 if (!waitingQr && (DateTime.Now - lastTabClean).TotalSeconds >= 6)

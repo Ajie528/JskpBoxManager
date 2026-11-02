@@ -16,9 +16,12 @@ public sealed class RefreshSession
 
     sealed class ColdResult
     {
+        /// <summary>Revoked 只在服务端明确拒绝（AutoAuth ret=-13）时为 true，此时密钥登记作废。</summary>
         public bool SawGame, Renewed, Revoked, QrFail, SawQr;
         /// <summary>运行时把凭证写成了无效但没出现扫码页：不登记作废，也不拿金库旧凭证覆盖运行时自己的状态。</summary>
         public bool CredCleared;
+        /// <summary>凭证被清空且出现扫码页，但没拿到服务端 ret=-13：不能确认被顶，不烧密钥。</summary>
+        public bool Suspected;
         public DateTime LaunchUtc;
         public AuthProbe.AuthResult Auth;
     }
@@ -117,7 +120,8 @@ public sealed class RefreshSession
             {
                 r = TryCold(frozenKey, mode, leanNudge: false, timeoutMin: 2, maxAttempts: 1);
                 usedMode = mode.ToString();
-                if (r.Renewed || r.Revoked || r.QrFail) break;
+                if (r.Renewed || r.Revoked || r.QrFail || r.Suspected) break;
+                if (r.CredCleared) { L($"refresh lean {mode}: credential cleared -> stop lean chain"); break; }
                 L($"refresh lean {mode} no renew -> next candidate");
                 BoxRuntime.StopForce(_box, false);
                 BoxRuntime.RegisterLauncher(_box, "refresh");
@@ -125,7 +129,7 @@ public sealed class RefreshSession
                 BoxRuntime.EnsureWxRuntimeInBox(_box);
                 VaultSync.PushVaultToLive(_box);
             }
-            if (r != null && !r.Renewed && !r.Revoked && !r.QrFail)
+            if (r != null && !r.Renewed && !r.Revoked && !r.QrFail && !r.Suspected && !r.CredCleared)
             {
                 L("refresh lean exhausted -> fallback Full");
                 BoxRuntime.StopForce(_box, false);
@@ -145,6 +149,21 @@ public sealed class RefreshSession
         }
 
         r ??= new ColdResult { LaunchUtc = DateTime.UtcNow };
+        bool softRetry = false;
+        if (!r.Renewed && !r.Revoked && !r.SawGame && (r.Suspected || r.CredCleared))
+        {
+            softRetry = true;
+            L(r.Suspected
+                ? "refresh: credential cleared + QR without server ret=-13 -> suspected, keep key; restore vault and retry Full once"
+                : "refresh: credential cleared by runtime -> restore vault and retry Full once");
+            BoxRuntime.StopForce(_box, false);
+            BoxRuntime.RegisterLauncher(_box, "refresh");
+            Thread.Sleep(3000);
+            BoxRuntime.EnsureWxRuntimeInBox(_box);
+            VaultSync.PushVaultToLive(_box);
+            r = TryCold(frozenKey, BoxRuntime.LaunchMode.Full, leanNudge: true, timeoutMin: 6, maxAttempts: 1, suspectHoldSec: 60);
+            usedMode += "+retry";
+        }
         bool ok = false;
         if (r.SawGame || r.Renewed)
         {
@@ -158,11 +177,11 @@ public sealed class RefreshSession
             }
             else L("refresh: ilink credential not rewritten after game window");
         }
-        var outcome = ok ? "ok" : r.Revoked ? "revoked" : r.QrFail ? "qr" : r.SawQr ? "qr-seen" : r.SawGame ? "no-rewrite" : "no-game";
+        var outcome = ok ? "ok" : r.Revoked ? "revoked" : r.Suspected ? "suspected" : r.QrFail ? "qr" : r.SawQr ? "qr-seen" : r.SawGame ? "no-rewrite" : "no-game";
         Ilink.WriteEvent(_box, "refresh", new JsonObject
         {
             ["result"] = outcome, ["keySha"] = Ilink.Live(_box).KeyHash, ["frozenKey"] = frozenKey,
-            ["mode"] = usedMode, ["lean"] = lean, ["credCleared"] = r.CredCleared,
+            ["mode"] = usedMode, ["lean"] = lean, ["credCleared"] = r.CredCleared, ["softRetry"] = softRetry,
             ["auth"] = r.Auth?.Text, ["authRet"] = r.Auth?.Ret, ["authMsg"] = r.Auth?.Msg,
         });
 
@@ -181,6 +200,11 @@ public sealed class RefreshSession
                 NeedScan.Set(_box, "key-revoked");
                 L("refresh session FAIL -> key revoked by server, mark need-scan");
             }
+            else if (r.Suspected)
+            {
+                NeedScan.Set(_box, "suspected-revoked");
+                L("refresh session FAIL -> QR again after vault retry, mark need-scan (key not burned)");
+            }
             else if (r.QrFail) NeedScan.RegisterQrFailure(_box);
             else if (!r.SawGame && r.SawQr)
             {
@@ -197,7 +221,8 @@ public sealed class RefreshSession
     }
 
     /// <param name="leanNudge">Full 模式才做 CDP reload / GameUrl nudge；精简模式只等密钥换新。</param>
-    ColdResult TryCold(string frozenKey, BoxRuntime.LaunchMode mode, bool leanNudge, int timeoutMin, int maxAttempts)
+    /// <param name="suspectHoldSec">凭证清空且扫码页持续这么久仍没等到服务端 ret=-13，才算疑似失效。</param>
+    ColdResult TryCold(string frozenKey, BoxRuntime.LaunchMode mode, bool leanNudge, int timeoutMin, int maxAttempts, int suspectHoldSec = 15)
     {
         var r = new ColdResult();
         for (int attempt = 1; attempt <= maxAttempts; attempt++)
@@ -228,11 +253,18 @@ public sealed class RefreshSession
             bool needRetry = false, sawWx = false, reloadDone = false, nudged = false;
             int mpFail = 0, wxGone = 0;
             var lastTab = DateTime.MinValue;
-            DateTime? uiSince = null;
+            DateTime? uiSince = null, clearedQrSince = null;
             while (DateTime.Now < deadline)
             {
                 Thread.Sleep(3000);
                 PollAuth(probe, r);
+                if (IsHardReject(r.Auth))
+                {
+                    Ilink.RegisterRevoked(_box, baseline, "refresh");
+                    r.Revoked = true;
+                    L($"refresh: server rejected autoauth ({r.Auth.Text}) -> key revoked");
+                    break;
+                }
                 if (Ilink.RenewedSince(_box, r.LaunchUtc) && Ilink.Live(_box).KeyHash != frozenKey)
                 {
                     r.Renewed = true;
@@ -247,10 +279,17 @@ public sealed class RefreshSession
                 var v = new BoxView(_box);
                 if (r.CredCleared && v.HasStrictQr)
                 {
-                    Ilink.RegisterRevoked(_box, baseline, "refresh");
-                    r.Revoked = true;
-                    break;
+                    clearedQrSince ??= DateTime.Now;
+                    if ((DateTime.Now - clearedQrSince.Value).TotalSeconds >= suspectHoldSec)
+                    {
+                        r.Suspected = true;
+                        r.SawQr = true;
+                        L($"refresh: credential cleared + QR {suspectHoldSec}s, no server ret=-13 -> suspected (key kept)");
+                        break;
+                    }
+                    continue;
                 }
+                clearedQrSince = null;
                 v.CloseRestorePage();
                 if (leanNudge && (DateTime.Now - lastTab).TotalSeconds >= 8) { Cdp.CloseExtraTabs(_box); lastTab = DateTime.Now; }
                 if (v.HasGameWindow) { r.SawGame = true; L("refresh: game window up -> check ilink credential"); break; }
@@ -307,10 +346,20 @@ public sealed class RefreshSession
                 if (wait >= 90) { L("refresh: no process 90s -> cold retry"); needRetry = true; break; }
             }
             PollAuth(probe, r);
-            if (r.SawGame || r.Renewed || r.Revoked || r.QrFail || !needRetry) break;
+            if (!r.Revoked && IsHardReject(r.Auth))
+            {
+                Ilink.RegisterRevoked(_box, baseline, "refresh");
+                r.Revoked = true;
+                r.Suspected = false;
+                L($"refresh: server rejected autoauth ({r.Auth.Text}) -> key revoked");
+            }
+            if (r.SawGame || r.Renewed || r.Revoked || r.Suspected || r.QrFail || !needRetry) break;
         }
         return r;
     }
+
+    static bool IsHardReject(AuthProbe.AuthResult a) =>
+        a != null && a.Ret == -13 && a.Cgi.Contains("AutoAuth", StringComparison.OrdinalIgnoreCase);
 
     void PollAuth(AuthProbe probe, ColdResult r)
     {

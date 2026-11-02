@@ -10,6 +10,18 @@ public sealed class LaunchSession
     DateTime _mpRetryNotBefore = DateTime.MinValue;
     bool _suspectRetried;
 
+    /// <summary>启动/游戏中 Frida 观测（KeepPolicy.ProbeAuthLive）。箱内观测程序到时会自己退出，到点续开。</summary>
+    const int LiveProbeSeconds = 6 * 3600;
+    static readonly System.Text.RegularExpressions.Regex LiveKeyLine = new(
+        @"SessionTimeout|session timeout|require manual|autoauth_key is empty|ManualAuth|kick",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    AuthProbe.Env _probeEnv;
+    AuthProbe _probe;
+    DateTime _probeUntil;
+    int _probeNotes;
+    /// <summary>本次启动里抓到了服务端 AutoAuth ret=-13（确认作废，可以登记）。</summary>
+    bool _hardReject;
+
     public LaunchSession(string box) { _box = box; }
 
     void L(string msg) => Log.Box(_box, msg);
@@ -48,10 +60,64 @@ public sealed class LaunchSession
         }
         finally
         {
+            try { ProbeStop(); } catch { }
             BoxRuntime.UnregisterLauncher(_box);
             try { mutex.ReleaseMutex(); } catch { }
         }
         return 0;
+    }
+
+    void ProbeInit()
+    {
+        if (!Keepalive.Load().For(_box).ProbeAuthLive) return;
+        _probeEnv = AuthProbe.Resolve(false);
+        L(_probeEnv.Ok ? $"live auth probe on (frida {_probeEnv.Frida})" : "live auth probe off -> " + _probeEnv.Error);
+        if (!_probeEnv.Ok) _probeEnv = null;
+    }
+
+    /// <summary>箱内拉起观测程序：浏览器启动前调用（出生即拦截）；已在运行的微信进程也会被扫到挂上。</summary>
+    void ProbeStart(string why)
+    {
+        if (_probeEnv == null) return;
+        ProbePoll();
+        _probe = AuthProbe.Start(_box, _probeEnv, LiveProbeSeconds, out var err);
+        _probeNotes = 0;
+        if (_probe == null) { L($"live auth probe not started ({why}) -> {err}"); return; }
+        _probeUntil = DateTime.Now.AddSeconds(LiveProbeSeconds + 10);
+        L($"live auth probe started ({why})");
+    }
+
+    void ProbePoll()
+    {
+        if (_probe == null) return;
+        foreach (var a in _probe.Poll(t => { if (LiveKeyLine.IsMatch(t)) L("live auth: " + t.Trim()); }))
+        {
+            L($"live auth: 授权返回 {a.Text}");
+            if (!a.Cgi.Contains("Auth", StringComparison.OrdinalIgnoreCase)) continue;
+            if (a.Ret == -13 && a.Cgi.Contains("AutoAuth", StringComparison.OrdinalIgnoreCase)) _hardReject = true;
+            Ilink.WriteEvent(_box, "live-auth", new System.Text.Json.Nodes.JsonObject
+            {
+                ["cgi"] = a.Cgi, ["error"] = a.Error, ["ret"] = a.Ret, ["msg"] = a.Msg, ["at"] = a.Time,
+            });
+        }
+        for (; _probeNotes < _probe.Notes.Count; _probeNotes++) L("live auth: " + _probe.Notes[_probeNotes]);
+    }
+
+    /// <summary>游戏中观测程序到时自己退出：过期就续开一个（会扫到正在运行的微信进程）。</summary>
+    void ProbeTick()
+    {
+        if (_probeEnv == null) return;
+        ProbePoll();
+        if (_probe != null && DateTime.Now > _probeUntil) ProbeStart("renew");
+    }
+
+    void ProbeStop()
+    {
+        if (_probe == null) return;
+        ProbePoll();
+        foreach (var pid in Sandboxie.Pids(_box))
+            if (ProcessUtil.NameOf(pid) is "python" or "pythonw") ProcessUtil.Kill(pid);
+        _probe = null;
     }
 
     void RunLocked()
@@ -60,6 +126,7 @@ public sealed class LaunchSession
         if (!EnvDetect.QqOk) throw new InvalidOperationException("找不到 QQ 浏览器");
         Phase(BoxPhase.Starting, "正在启动…");
         if (NeedScan.Pending(_box)) L("need-scan pending -> ignore saved login, wait for WeChat QR");
+        ProbeInit();
 
         var existing = new BoxView(_box);
         bool attach = false;
@@ -67,6 +134,7 @@ public sealed class LaunchSession
         {
             L("game already running -> show + watch");
             existing.ShowGameWindow();
+            ProbeStart("attach-game");
             Watch();
             return;
         }
@@ -74,6 +142,7 @@ public sealed class LaunchSession
         {
             L("QR page already up -> show and watch");
             existing.ShowQrWindow();
+            ProbeStart("attach-qr");
             Watch();
             return;
         }
@@ -114,12 +183,14 @@ public sealed class LaunchSession
             if (attach && attempt == 1)
             {
                 L("attach existing QQBrowser (skip second launch)");
+                ProbeStart("attach-browser");
             }
             else
             {
                 BoxRuntime.Warmup(_box, attempt > 1 && !forceFullWarmup);
                 forceFullWarmup = false;
                 BoxRuntime.ClearCrashRestore(_box);
+                ProbeStart($"launch attempt={attempt}");
                 baseline = Ilink.Baseline(_box);
                 L($"launch QQBrowser attempt={attempt} credential {Ilink.Live(_box)}");
                 BoxRuntime.StartBrowser(_box, "launch");
@@ -219,6 +290,7 @@ public sealed class LaunchSession
             Thread.Sleep(2000);
             try
             {
+                ProbePoll();
                 // 运行时启动后十几秒就会完成自动授权、换掉密钥，不等游戏窗口就先存
                 if ((DateTime.Now - lastCred).TotalSeconds >= 15)
                 {
@@ -236,16 +308,29 @@ public sealed class LaunchSession
                 var v = new BoxView(_box);
                 if (credCleared && !revoked && v.HasStrictQr)
                 {
-                    // 启动流程拿不到服务端 ret，凭证清空 + 扫码页不足以确认被顶：不登记作废，先用金库同一把再冷启一次
-                    if (savedLogin && !_suspectRetried && Ilink.VaultCanHelp(_box))
+                    ProbePoll();
+                    if (_hardReject)
+                    {
+                        // 探针抓到服务端 AutoAuth ret=-13：确认作废
+                        revoked = true;
+                        savedLogin = false;
+                        Ilink.RegisterRevoked(_box, baseline, "launch");
+                        NeedScan.Set(_box, "key-revoked");
+                        Phase(BoxPhase.WaitingScan, "登录已失效（服务器拒绝授权），请用微信扫码");
+                    }
+                    // 没抓到服务端 ret，凭证清空 + 扫码页不足以确认被顶：不登记作废，先用金库同一把再冷启一次
+                    else if (savedLogin && !_suspectRetried && Ilink.VaultCanHelp(_box))
                     {
                         _suspectRetried = true;
                         return new(false, true, false, true, false, true);
                     }
-                    revoked = true;
-                    savedLogin = false;
-                    NeedScan.Set(_box, _suspectRetried ? "suspected-revoked" : "launch-qr-after-clear");
-                    Phase(BoxPhase.WaitingScan, "登录已失效，请用微信扫码");
+                    else
+                    {
+                        revoked = true;
+                        savedLogin = false;
+                        NeedScan.Set(_box, _suspectRetried ? "suspected-revoked" : "launch-qr-after-clear");
+                        Phase(BoxPhase.WaitingScan, "登录已失效，请用微信扫码");
+                    }
                 }
                 if (v.CloseRestorePage()) L("closed 要恢复页面吗 dialog");
                 if (!waitingQr && (DateTime.Now - lastTabClean).TotalSeconds >= 6)
@@ -574,6 +659,7 @@ public sealed class LaunchSession
         while (true)
         {
             Thread.Sleep(2000);
+            try { ProbeTick(); } catch { }
             BoxView v;
             try { v = new BoxView(_box); }
             catch { continue; }

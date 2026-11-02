@@ -15,6 +15,8 @@ public sealed class KeepPolicy
     public bool LeanRefresh = false;
     /// <summary>保活时在箱内挂 Frida 截授权返回（ret / error_msg），写进日志和保活结果。需要 Python + frida。默认关。</summary>
     public bool ProbeAuth = false;
+    /// <summary>手动启动和游戏中也挂 Frida 记授权返回（玩着掉线也能抓到 ret）。默认关。</summary>
+    public bool ProbeAuthLive = false;
 
     public KeepPolicy Clone() => (KeepPolicy)MemberwiseClone();
 
@@ -78,6 +80,7 @@ public static class Keepalive
             if (d.Length > 0) p.DailyTime = NormalizeClock(d, p.DailyTime);
             p.LeanRefresh = JsonFile.Bool(o, "leanRefresh") ?? false;
             p.ProbeAuth = JsonFile.Bool(o, "probeAuth") ?? false;
+            p.ProbeAuthLive = JsonFile.Bool(o, "probeAuthLive") ?? false;
         }
         return p;
     }
@@ -109,6 +112,7 @@ public static class Keepalive
                 ["dailyTime"] = kv.Value.DailyTime,
                 ["leanRefresh"] = kv.Value.LeanRefresh,
                 ["probeAuth"] = kv.Value.ProbeAuth,
+                ["probeAuthLive"] = kv.Value.ProbeAuthLive,
             };
         JsonFile.WriteObject(AppPaths.KeepaliveJson, new JsonObject
         {

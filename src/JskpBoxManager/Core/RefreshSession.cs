@@ -22,6 +22,8 @@ public sealed class RefreshSession
         public bool CredCleared;
         /// <summary>凭证被清空且出现扫码页，但没拿到服务端 ret=-13：不能确认被顶，不烧密钥。</summary>
         public bool Suspected;
+        /// <summary>收到过 AutoAuth ret=-13。单独不足以判作废（关游戏秒重启等瞬态拒绝，运行时能 ManualAuth 免扫自愈）；只有再出现二维码才确认真被顶。</summary>
+        public bool HardReject;
         public DateTime LaunchUtc;
         public AuthProbe.AuthResult Auth;
     }
@@ -161,14 +163,19 @@ public sealed class RefreshSession
         if (!r.Renewed && !r.Revoked && !r.SawGame && (r.Suspected || r.CredCleared))
         {
             softRetry = true;
+            // 收到过 ret=-13（HardReject）时，不把金库旧凭证推回去——那把 key 刚被拒，重放只会再 ret=-13；
+            // 让运行时保留自己清空后的状态，用 ManualAuth 免扫自愈（与启动流程一致）。
+            bool keepRuntimeState = r.HardReject;
             L(r.Suspected
                 ? "refresh: credential cleared + QR without server ret=-13 -> suspected, keep key; restore vault and retry Full once"
-                : "refresh: credential cleared by runtime -> restore vault and retry Full once");
+                : keepRuntimeState
+                    ? "refresh: autoauth ret=-13 -> 保留运行时状态（不还原金库）冷重试一次，等 ManualAuth 自愈"
+                    : "refresh: credential cleared by runtime -> restore vault and retry Full once");
             BoxRuntime.StopForce(_box, false);
             BoxRuntime.RegisterLauncher(_box, "refresh");
             Thread.Sleep(3000);
             BoxRuntime.EnsureWxRuntimeInBox(_box);
-            VaultSync.PushVaultToLive(_box);
+            if (!keepRuntimeState) VaultSync.PushVaultToLive(_box);
             r = TryCold(frozenKey, BoxRuntime.LaunchMode.Full, leanNudge: true, timeoutMin: 6, maxAttempts: 1, suspectHoldSec: 60);
             usedMode += "+retry";
         }
@@ -268,10 +275,11 @@ public sealed class RefreshSession
                 PollAuth(probe, r);
                 if (IsHardReject(r.Auth))
                 {
-                    Ilink.RegisterRevoked(_box, baseline, "refresh");
-                    r.Revoked = true;
-                    L($"refresh: server rejected autoauth ({r.Auth.Text}) -> key revoked");
-                    break;
+                    // ret=-13 不等于真被顶：关游戏秒重启等瞬态拒绝后，运行时常能用 ManualAuth 免扫自愈。
+                    // 当「凭证被清空」处理，继续等自愈（游戏窗/换新）或二维码；只有再出现二维码才确认作废。
+                    if (!r.HardReject) L($"refresh: autoauth {r.Auth.Text} -> 先当凭证清空，等自愈/二维码确认");
+                    r.HardReject = true;
+                    r.CredCleared = true;
                 }
                 if (Ilink.RenewedSince(_box, r.LaunchUtc) && Ilink.Live(_box).KeyHash != frozenKey)
                 {
@@ -290,9 +298,19 @@ public sealed class RefreshSession
                     clearedQrSince ??= DateTime.Now;
                     if ((DateTime.Now - clearedQrSince.Value).TotalSeconds >= suspectHoldSec)
                     {
-                        r.Suspected = true;
                         r.SawQr = true;
-                        L($"refresh: credential cleared + QR {suspectHoldSec}s, no server ret=-13 -> suspected (key kept)");
+                        if (r.HardReject)
+                        {
+                            // ret=-13 + 二维码 = 确认真被顶：登记作废
+                            Ilink.RegisterRevoked(_box, baseline, "refresh");
+                            r.Revoked = true;
+                            L($"refresh: autoauth ret=-13 + 二维码 {suspectHoldSec}s -> 确认被顶，登记作废");
+                        }
+                        else
+                        {
+                            r.Suspected = true;
+                            L($"refresh: credential cleared + QR {suspectHoldSec}s, no server ret=-13 -> suspected (key kept)");
+                        }
                         break;
                     }
                     continue;
@@ -356,10 +374,10 @@ public sealed class RefreshSession
             PollAuth(probe, r);
             if (!r.Revoked && IsHardReject(r.Auth))
             {
-                Ilink.RegisterRevoked(_box, baseline, "refresh");
-                r.Revoked = true;
-                r.Suspected = false;
-                L($"refresh: server rejected autoauth ({r.Auth.Text}) -> key revoked");
+                // 收尾时才看到 ret=-13：不立刻烧 key，当凭证清空，交给冷重试自愈 / 二维码确认
+                r.HardReject = true;
+                r.CredCleared = true;
+                L($"refresh: late autoauth {r.Auth.Text} -> 先当凭证清空（重试/二维码确认）");
             }
             if (r.SawGame || r.Renewed || r.Revoked || r.Suspected || r.QrFail || !needRetry) break;
         }

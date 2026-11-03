@@ -56,6 +56,10 @@
                                    Text="未启用" ToolTip="协议服务地址"/>
                         <Button Content="复制令牌" Style="{StaticResource LinkBtn}" Margin="0,0,12,0" Click="ProtocolToken_Click"
                                 ToolTip="复制 JSKP_PROTOCOL_TOKEN，给脚本 Authorization: Bearer 使用"/>
+                        <CheckBox x:Name="ChkAutoTrim" Content="自动压内存" VerticalAlignment="Center" Margin="0,0,4,0" Click="AutoTrim_Click"
+                                  ToolTip="每隔几分钟自动深度压缩所有在跑的沙箱（含游戏）；挂机省物理内存用，仅界面开着时生效"/>
+                        <TextBox x:Name="TxtTrimMin" Width="34" Text="10" Padding="2" HorizontalContentAlignment="Center" VerticalAlignment="Center" Margin="0,0,2,0" LostFocus="AutoTrim_Click"/>
+                        <TextBlock Text="分" VerticalAlignment="Center" Foreground="#CBD5E1" FontSize="12" Margin="0,0,12,0"/>
                         <Button Content="＋ 新建沙箱" Style="{StaticResource Btn}" Margin="0,0,8,0" Click="NewBox_Click"/>
                         <Button Content="刷新" Style="{StaticResource Btn}" Margin="0" Click="Refresh_Click"/>
                     </StackPanel>
@@ -170,6 +174,8 @@
                                     ToolTip="保存当前登录后关闭沙箱里的所有程序"/>
                             <Button x:Name="BtnMem" Content="↓  释放浏览器内存" Style="{StaticResource Btn}" Click="Mem_Click"
                                     ToolTip="隐藏 QQ 浏览器窗口、回收它的内存；不影响游戏"/>
+                            <Button x:Name="BtnDeepMem" Content="↓↓  深度压缩内存（含游戏）" Style="{StaticResource Btn}" Click="DeepMem_Click"
+                                    ToolTip="连游戏本体一起压工作集；数字大降但正玩会回升、提交不变。适合挂机腾物理内存"/>
                             <Button x:Name="BtnTools" Content="🛠  高级工具（取Token / 抓包 / 解包 / 保活…）" Style="{StaticResource Btn}" Click="Tools_Click"
                                     ToolTip="取业务 Token、抓 wx 请求、导 TLS 密钥、解包、Frida 观测、凭证导入导出等"/>
                             <Button x:Name="BtnClear" Content="⟲  清除登录 / 换号重新扫码" Style="{StaticResource DangerBtn}" Click="Clear_Click"

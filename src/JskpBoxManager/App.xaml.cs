@@ -111,7 +111,7 @@ public partial class App : Application
 
     static bool NeedsCliConsole(string cmd) => cmd.ToLowerInvariant() is
         "version" or "--version" or "update" or "server" or "getcode" or "wxcode"
-        or "capture" or "keylog" or "token" or "unpack" or "observe" or "hook" or "lean" or "status" or "role"
+        or "capture" or "keylog" or "token" or "unpack" or "observe" or "hook" or "lean" or "trim" or "status" or "role"
         or "cred-save" or "cred-load" or "help" or "/?" or "-h" or "--help";
 
     static int RunCli(string[] args)
@@ -160,6 +160,7 @@ public partial class App : Application
                 case "keylog": return new SslKeylogSession(box, args.Skip(2)).Run();
                 case "token": return new TokenSession(box, args.Skip(2)).Run();
                 case "unpack": return RunUnpack(box, args.Skip(2).ToArray());
+                case "trim": Console(BoxRuntime.DeepTrimMemory(box)); return 0;
                 case "stop": BoxRuntime.StopForce(box, true); return 0;
                 case "clear": BoxRuntime.ClearLogin(box); return 0;
                 case "delbox":

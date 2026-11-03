@@ -33,6 +33,7 @@ public static class AppPaths
     public static string PathsJson => Path.Combine(AppDir, "paths.json");
     public static string KeepaliveJson => Path.Combine(AppDir, "keepalive.json");
     public static string ProtocolJson => Path.Combine(AppDir, "protocol.json");
+    public static string TrimJson => Path.Combine(AppDir, "trim.json");
     public static string NotesJson => Path.Combine(AppDir, "box-notes.json");
     public static string MigratedJson => Path.Combine(AppDir, "migrated.json");
     public static string EventLog => Path.Combine(Logs, "ilink-events.jsonl");

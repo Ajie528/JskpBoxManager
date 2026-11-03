@@ -373,4 +373,15 @@ public static class BoxRuntime
         Log.Box(box, $"release browser memory hidden={hidden} killed={killed} workingSet {before / 1048576}MB -> {after / 1048576}MB");
         return $"隐藏了 {hidden} 个浏览器窗口，结束 {killed} 个页面进程，QQ 浏览器内存 {before / 1048576} MB → {after / 1048576} MB。";
     }
+
+    /// <summary>深度压缩：含游戏本体（WeChatAppEx）一起压工作集。工作集会大降，但正在玩时会回升、提交(私有字节)不变。</summary>
+    public static string DeepTrimMemory(string box)
+    {
+        var view = new BoxView(box);
+        if (view.Empty) return "沙箱没有在运行。";
+        try { Cdp.CloseExtraTabs(box); } catch { }
+        var (before, after) = view.TrimAllMemory();
+        Log.Box(box, $"deep trim memory (incl game) workingSet {before / 1048576}MB -> {after / 1048576}MB");
+        return $"工作集 {before / 1048576} MB → {after / 1048576} MB（含游戏，正玩会回升；提交不变）";
+    }
 }

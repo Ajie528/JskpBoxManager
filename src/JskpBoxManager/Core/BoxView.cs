@@ -340,6 +340,25 @@ public sealed class BoxView
         return (before, after);
     }
 
+    /// <summary>深度压缩：QQ 浏览器 + WeChatAppEx（游戏本体）都压工作集。数字会大降，但正玩时会回升、提交不变。</summary>
+    public (long Before, long After) TrimAllMemory()
+    {
+        long before = 0, after = 0;
+        foreach (var p in _procs.Where(p => IsQq(p.Name) || IsWx(p.Name)))
+        {
+            try
+            {
+                using var proc = Process.GetProcessById(p.Pid);
+                before += proc.WorkingSet64;
+                Win32.EmptyWorkingSet(proc.Handle);
+                proc.Refresh();
+                after += proc.WorkingSet64;
+            }
+            catch { }
+        }
+        return (before, after);
+    }
+
     /// <summary>
     /// 常驻轻量：藏 QQ/微信壳（扫码窗除外）、关残留游戏标题窗、杀渲染进程、压 QQ 工作集。不 Terminate。
     /// </summary>

@@ -25,7 +25,8 @@ public partial class MainWindow : Window
         Grid.ItemsSource = _rows;
         ChkGlobalKeep.IsChecked = Keepalive.Load().Enabled;
         SyncProtocolUi();
-        _timer.Tick += async (_, _) => await RefreshAsync();
+        LoadTrimConfig();
+        _timer.Tick += async (_, _) => { await RefreshAsync(); MaybeAutoTrim(); };
         Loaded += async (_, _) => await StartupAsync();
         Closed += (_, _) => { try { ProtocolServer.StopCurrent(); } catch { } };
         UpdateDetail(true);
@@ -210,7 +211,7 @@ public partial class MainWindow : Window
         var sel = Selected;
         var cur = Current;
         bool any = sel.Count > 0;
-        foreach (var b in new[] { BtnStart, BtnStop, BtnMem, BtnKeepSave }) b.IsEnabled = any && _busy == 0;
+        foreach (var b in new[] { BtnStart, BtnStop, BtnMem, BtnDeepMem, BtnKeepSave }) b.IsEnabled = any && _busy == 0;
         BtnClear.IsEnabled = BtnDelete.IsEnabled = sel.Count == 1 && _busy == 0;
         BtnNote.IsEnabled = TxtNote.IsEnabled = sel.Count == 1;
         if (!any || cur == null)
@@ -377,6 +378,50 @@ public partial class MainWindow : Window
         var boxes = Selected.Select(r => r.Box).ToList();
         var msgs = await RunBusy("正在释放浏览器内存…", () => boxes.Select(b => b + "：" + BoxRuntime.ReleaseBrowserMemory(b)).ToList());
         SetStatus(string.Join("  ", msgs));
+    }
+
+    async void DeepMem_Click(object sender, RoutedEventArgs e)
+    {
+        var boxes = Selected.Select(r => r.Box).ToList();
+        if (boxes.Count == 0) return;
+        var msgs = await RunBusy("正在深度压缩内存（含游戏）…", () => boxes.Select(b => b + "：" + BoxRuntime.DeepTrimMemory(b)).ToList());
+        SetStatus(string.Join("  ", msgs));
+    }
+
+    // ---------- 自动深度压缩（仅界面开着时生效） ----------
+
+    DateTime _lastAutoTrim = DateTime.Now;
+
+    void LoadTrimConfig()
+    {
+        var c = JsonFile.ReadObject(AppPaths.TrimJson);
+        ChkAutoTrim.IsChecked = JsonFile.Bool(c, "enabled") ?? false;
+        TxtTrimMin.Text = (JsonFile.Int(c, "minutes") ?? 10).ToString();
+    }
+
+    void AutoTrim_Click(object sender, RoutedEventArgs e)
+    {
+        int m = int.TryParse(TxtTrimMin.Text.Trim(), out var v) && v >= 1 ? Math.Min(v, 240) : 10;
+        TxtTrimMin.Text = m.ToString();
+        JsonFile.WriteObject(AppPaths.TrimJson, new System.Text.Json.Nodes.JsonObject
+        {
+            ["enabled"] = ChkAutoTrim.IsChecked == true,
+            ["minutes"] = m,
+        });
+        _lastAutoTrim = DateTime.Now;
+        SetStatus(ChkAutoTrim.IsChecked == true ? $"自动压内存已开：每 {m} 分钟压一次在跑的沙箱（含游戏）" : "自动压内存已关");
+    }
+
+    void MaybeAutoTrim()
+    {
+        if (ChkAutoTrim.IsChecked != true) return;
+        if (!int.TryParse(TxtTrimMin.Text.Trim(), out var m) || m < 1) m = 10;
+        if ((DateTime.Now - _lastAutoTrim).TotalMinutes < m) return;
+        _lastAutoTrim = DateTime.Now;
+        var boxes = _rows.Where(r => r.Summary != null && r.Summary.Running).Select(r => r.Box).ToList();
+        if (boxes.Count == 0) return;
+        _ = Task.Run(() => { foreach (var b in boxes) { try { BoxRuntime.DeepTrimMemory(b); } catch { } } });
+        SetStatus($"自动深度压缩 {boxes.Count} 个在跑的沙箱（{DateTime.Now:HH:mm}）");
     }
 
     void Tools_Click(object sender, RoutedEventArgs e)

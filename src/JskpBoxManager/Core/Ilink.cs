@@ -386,6 +386,12 @@ public static class Ilink
         catch { return false; }
     }
 
+    /// <summary>撤销全部作废登记（用户手动「免扫重试」时用：赌这次扫码框是本地损坏而非真被顶）。</summary>
+    public static void ClearRevoked(string box)
+    {
+        try { File.Delete(BoxPaths.RevokedFile(box)); } catch { }
+    }
+
     /// <summary>启动浏览器前调用：记下这次要拿去自动授权的那把密钥。</summary>
     public static LaunchBaseline Baseline(string box)
     {

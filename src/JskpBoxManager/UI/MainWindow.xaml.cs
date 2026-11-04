@@ -444,6 +444,17 @@ public partial class MainWindow : Window
         SetStatus($"已清除 {cur.Box} 的登录，下次启动扫码即可");
     }
 
+    async void ScanFree_Click(object sender, RoutedEventArgs e)
+    {
+        var cur = Current;
+        if (cur == null || Selected.Count != 1) return;
+        var (ok, msg) = await RunBusy($"正在清缓存并还原 {cur.Box} 的免扫凭证…", () => BoxRuntime.ScanFreeRelogin(cur.Box));
+        if (!ok) { SetStatus(msg); return; }
+        BoxStatusFile.Write(cur.Box, BoxPhase.Starting, "免扫重试：正在重新进入…");
+        _ = Task.Run(() => LaunchProcess("launch", cur.Box));
+        SetStatus(msg + "（若仍弹扫码，说明是真被顶/过期，只能重新扫码）");
+    }
+
     async void DeleteBox_Click(object sender, RoutedEventArgs e)
     {
         var cur = Current;

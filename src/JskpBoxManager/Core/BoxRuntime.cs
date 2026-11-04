@@ -396,4 +396,51 @@ public static class BoxRuntime
         Log.Box(box, $"auto trim memory (QQ only) workingSet {before / 1048576}MB -> {after / 1048576}MB");
         return $"QQ 浏览器工作集 {before / 1048576} MB → {after / 1048576} MB（不含游戏）";
     }
+
+    /// <summary>删掉 QQ 浏览器的纯缓存目录（HTTP 缓存 / 代码缓存 / GPU 缓存 / Service Worker）。不动登录凭证、cookies、游戏包。</summary>
+    static int ClearBrowserCache(string box)
+    {
+        var def = Path.Combine(BoxPaths.UserData(box), "Default");
+        int n = 0;
+        foreach (var rel in new[] { "Cache", "Code Cache", "GPUCache", "Service Worker", "Service Worker\\CacheStorage", "DawnCache", "GrShaderCache" })
+        {
+            var p = Path.Combine(def, rel);
+            try { if (Directory.Exists(p)) { Directory.Delete(p, true); n++; } } catch { }
+        }
+        foreach (var rel in new[] { "ShaderCache", "GrShaderCache", "GraphiteDawnCache" })
+        {
+            var p = Path.Combine(BoxPaths.UserData(box), rel);
+            try { if (Directory.Exists(p)) { Directory.Delete(p, true); n++; } } catch { }
+        }
+        return n;
+    }
+
+    /// <summary>
+    /// 免扫重试：停箱 → 清本地会话/浏览器缓存（保留金库免扫凭证）→ 清需扫码/作废标记 → 还原金库凭证。
+    /// 处理「本地缓存/凭证损坏弹扫码，但服务器上的 AutoAuthKey 其实还有效」的情况；真被顶（服务端 ret=-13 / 自然过期）时冷启后仍会弹扫码。
+    /// 返回 (Ok, Message)：Ok=false 表示金库里根本没有可用免扫凭证，这次只能重新扫码。
+    /// </summary>
+    public static (bool Ok, string Message) ScanFreeRelogin(string box)
+    {
+        var vault = Ilink.VaultState(box);
+        if (!vault.Valid)
+            return (false, "金库里没有可用的免扫凭证，这次只能重新扫码。");
+
+        Log.Box(box, "scan-free relogin: terminate, clear local session/cache, clear need-scan+revoked, restore vault");
+        StopLaunchers(box);
+        Sandboxie.Terminate(box);
+        Thread.Sleep(1500);
+
+        ClearCrashRestore(box);
+        int cleared = ClearBrowserCache(box);
+
+        // 用户明确赌这次扫码框是本地损坏：清需扫码标记 + 撤销作废登记，真被顶的话冷启后会重新弹出来
+        NeedScan.Clear(box);
+        NeedScan.ClearQrStreak(box);
+        Ilink.ClearRevoked(box);
+
+        var cred = Ilink.Restore(box, "scan-free-relogin");
+        Log.Box(box, $"scan-free relogin ready: cleared {cleared} cache dirs, vault key {vault.KeyHash} restore={cred}");
+        return (true, $"已清本地会话与缓存、还原免扫凭证（key {vault.KeyHash}），正在重新免扫进入…");
+    }
 }

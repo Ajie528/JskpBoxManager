@@ -178,6 +178,8 @@
                                     ToolTip="连游戏本体一起压工作集；数字大降但正玩会回升、提交不变。适合挂机腾物理内存"/>
                             <Button x:Name="BtnTools" Content="🛠  高级工具（取Token / 抓包 / 解包 / 保活…）" Style="{StaticResource Btn}" Click="Tools_Click"
                                     ToolTip="取业务 Token、抓 wx 请求、导 TLS 密钥、解包、Frida 观测、凭证导入导出等"/>
+                            <Button x:Name="BtnScanFree" Content="⟲  免扫重试（清缓存·不重扫）" Style="{StaticResource Btn}" Click="ScanFree_Click"
+                                    ToolTip="弹扫码框但其实没被顶时用：清本地会话缓存、还原金库里的免扫凭证再冷启，尽量免扫进入。若是真被顶/过期，仍会要求扫码。不会删除你的登录"/>
                             <Button x:Name="BtnClear" Content="⟲  清除登录 / 换号重新扫码" Style="{StaticResource DangerBtn}" Click="Clear_Click"
                                     ToolTip="删除这个沙箱保存的登录，下次启动要重新扫码；游戏包和备注保留"/>
                             <Button x:Name="BtnDelete" Content="🗑  删除这个沙箱" Style="{StaticResource DangerBtn}" Click="DeleteBox_Click"

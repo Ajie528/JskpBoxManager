@@ -87,6 +87,14 @@ public static class Win32
         {
             if (System.Console.IsOutputRedirected)
             {
+                // 被重定向（如「高级工具」用管道读）：重绑成 UTF-8，否则中文按 GBK 写出又按 UTF-8 读会乱码
+                try
+                {
+                    System.Console.SetOut(new StreamWriter(System.Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = true });
+                    if (System.Console.IsErrorRedirected)
+                        System.Console.SetError(new StreamWriter(System.Console.OpenStandardError(), new UTF8Encoding(false)) { AutoFlush = true });
+                }
+                catch { }
                 _cliConsoleReady = true;
                 return;
             }

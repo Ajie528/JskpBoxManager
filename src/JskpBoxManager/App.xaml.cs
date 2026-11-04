@@ -332,7 +332,7 @@ public partial class App : Application
         }
     }
 
-    /// <summary>WinExe CLI 输出：已 EnsureCliConsole 时直接写；否则尽力挂父控制台。</summary>
+    /// <summary>WinExe CLI 输出：EnsureCliConsole 会把 stdout 统一绑成 UTF-8（被重定向或弹控制台都是），避免中文乱码。</summary>
     static void Console(string text)
     {
         try
@@ -344,11 +344,8 @@ public partial class App : Application
         {
             try
             {
-                if (System.Console.IsOutputRedirected)
-                {
-                    using var w = new StreamWriter(System.Console.OpenStandardOutput(), new System.Text.UTF8Encoding(false));
-                    w.WriteLine(text);
-                }
+                using var w = new StreamWriter(System.Console.OpenStandardOutput(), new System.Text.UTF8Encoding(false));
+                w.WriteLine(text);
             }
             catch { }
         }

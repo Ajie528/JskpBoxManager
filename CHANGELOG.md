@@ -3,6 +3,58 @@
 版本号规则：`主版本.次版本.修订号`。只修 bug 加修订号；加功能加次版本号；数据格式或用法有不兼容变化加主版本号。
 每次发版在最上面新增一节，并同步修改 `Directory.Build.props` 里的 `<Version>`。
 
+## [1.5.10] - 2026-11-04
+
+### 新增
+- **保活被服务端拒绝授权时，界面上提前告警**：以前保活拿到 `AutoAuth ret=-13`（密钥被作废）只写进日志，要等下次启动弹扫码才发现。现在：
+  - 「登录」列新增黄色状态 **`疑似失效`**（区别于红色的 `需要扫码`）；
+  - 表格 ⚠ 列直接显示原因，例如「11-04 17:36 保活时密钥已被服务端作废（多半是同一微信号在别处扫码顶掉），ret=-13。本地这把凭证已不可用，建议尽快重新扫码」；
+  - 判定为「之后又写过更新的凭证 = 已恢复」时不告警（覆盖 `ret=-13` 但运行时用 `ManualAuth` 自愈的情况，实测 qb16 10-30 就是这样）。
+
+### 修复
+- **观测日志里 DNS 主机名大量乱码**：`hook_ilink.js` 的 `u16()` / `u8()` 直接调 `readUtf16String(max)`，内存里没有 NUL 结尾时会一路读越界，把堆上的垃圾数据一起返回，日志里就出现 `wpad����…`、`cdn-t5game1.scgame.com.cn�ۺ��ۺ…` 这种。现在先按上限读固定长度、在块内找 NUL 截断，再用 `normHost()` 按白名单（字母/数字/`-`/`.`/`_`/`:`）截到第一个非法字符。
+- **ilink 进程永远挂不上 longlink hook（「看不到会话超时」的真正原因）**：`scan()` 在进程刚 fork、`cmdline` 还没读全时把 `role` 算成空串，随即 `self.done.add(pid)` **永久放弃**；稍后 frida 的 `child-added` 到来时 `claim()` 发现已在 `done` 里返回 `False`，于是只 resume 不 attach，且不写任何错误日志。现在改为连续 10 轮读不出角色才放弃，并让 `scan()` 重试「已 claim 但无活跃 session」的 pid。
+- `handle_child` 跑在 daemon 线程里，异常在 `pythonw` 下完全不可见；现在加 `child-handler-err` 兜底记录（含 traceback）。
+- `scan()` 抛异常会中断整个观测循环（外层只有 `except KeyboardInterrupt`）；现在包了 try 并记 `scan-err`，同时每 60 秒写一行 `[心跳] 观测中：已挂 N 个进程…`，用来区分「在扫但没目标」和「卡死」。
+
+### 更正（重要）
+- **`sessiontimeout` 不是「关游戏」触发的**。1.5.9 文档里「关游戏 → 服务端下发 `App layer sessiontimeout` → ilink 自杀」的因果链**不成立**。
+  2026-11-04 用 qb15 做对照实验（常驻 + 实验拦截，正常进游戏后手动关游戏窗、箱保持运行）：
+  关游戏后 **35 分钟** ilink 进程持续存活（CPU 仍在增长），心跳 `cmdid:6` noop 稳定 180 秒一次、服务端正常回应，`session-timeout` 事件 **0 次**。
+  所以 qb4 反复掉线的真因是「**程序自己停箱把进程杀了 + 每日保活被跳过**」，不是服务端踢人。详见 `docs/ilink长连接与免扫掉线.md` 第 4.1 节。
+- 因此「实验拦截（`--block-timeout`）」在实际场景可能用不上——没有 `sessiontimeout` 需要拦。开关保留，用于将来验证其他路径。
+- **「低成本探测凭证有效性」这条路确认走不通**：`RuntimeOnly` 能把 `WeChatAppEx` 拉起来（实测 `wxPid` 正常、`boxPids` 稳定），但 120 秒内一次 `AutoAuth` 都不发、密钥不变（1.5.6 与 1.5.9 两个版本复现）。`AutoAuth` 必须由游戏中心页面触发，所以检查有效性只能真进一次游戏——就是每日保活本身。详见 `docs/mmtls直连可行性研究.md`「复测结论」。
+- 评估结论：**用 appid 直接从微信拉起小游戏没有实际收益**（AutoAuth 触发点仍在游戏中心授权链路，绕过它属于协议仿冒、有风控风险，而省下的只是几秒后台加载时间）。不做。
+
+### 说明
+- **那个心跳是微信服务器的**，不是游戏服务器的：目标 `longcloud.weixin.com`（实测握手到 `101.226.142.220:80`），协议栈 `mars::stn::` + `LongLinkWithMMTLS`（微信私有 mmtls），报文 `cmdid:6`。
+  要区分两层：微信层（ilink）管登录态与免扫续期；游戏层（`tunnel-dga.scgame.com.cn` 等）管游戏在线。关游戏窗只断游戏层，微信层的 ilink 可以继续活着。
+
+### 研究：「不冷启动也能续期」三条路全部验证完毕，都不通
+详见 `docs/ilink长连接与免扫掉线.md` 第 9A 节。
+
+| 路径 | 结果 |
+|------|------|
+| CDP 调 `wx.login` | ❌ WebSocket 升级被拒（`status 500 when 101 expected`），停观测器、换标签页均无效 |
+| RuntimeOnly / 重开 GameUrl / CDP reload | ❌ 微信进程与游戏窗都能起来，但 **AutoAuth 0 次**、key 不变（运行时自认 session 仍有效） |
+| Frida 主动调内部函数 | ⚠️ 机制可行（能安全调用、进程不崩），但**函数定位失败** |
+
+- **Frida 这轮的错误与教训（已写进文档，避免重犯）**：曾从调用栈反推认定 `ilink2.dll+0x229B70` 是
+  `SendAutoAuthRequestAsync`，并按这个结论做了 `hookAutoAuth` / `invokeAutoAuth`。实测推翻：
+  该函数被 **37 个不同 this** 调用共 **638 次**，主动调用它 `ok: true` 但**不产生任何 `AutoAuthResponse`**、key 不变。
+  它是个**通用请求发送/日志包装**（清一个 `std::string` + 调通用发送 `0x225130`）。
+  教训：**栈上出现某地址只说明它在调用链上，不能说明它就是那个函数**；正确做法是只挑「调用次数少、`this` 唯一、紧邻 `cmdid 3198`」的函数，并用「调完是否出现新的 `AutoAuthResponse`」验证。
+- 工具已相应回调：`longlink_locate.py` 的 `DYN_RVA` 把该 RVA 改名为 `auth_chain_leaf` 并注明「不是 AutoAuth」；`hook_watch.py` 的 `--invoke-autoauth` 只在显式开启时传 RVA，且会写一条警告日志。
+- 同时修复了一个真实回归：`hookAutoAuth` 在 ilink 进程刚创建时就 `Interceptor.attach` 有竞态，会 `ProcessNotRespondingError`（ilink 起不来、游戏进不去）。现在延后 1.5 秒再挂。
+- **静态定位突破（新增工具 `locate_autoauth_static.py`）**：不再用「日志采栈反推」（采到的是日志输出的栈，不是构造请求的栈），
+  改为**找业务标识串的代码引用**——`/ilink/ilinkapp/sys/ilinkapp_autoauth` 这个 URL 在构造请求时必被引用。
+  结果：`0xD7710`(161B) 构造 AutoAuth（内含 `mov dword [rbx+10h], 0xC7E` 即 cmdid 3198 + URL 引用），
+  它只被 `0xD4390`(895B) 调用 **1 次**，而 `0xD4390` 是完整流程（构造 → 设凭证 `0xB41C0` → 发送 `0x224F60`）。
+  对比旧误判的 `0x229B70`：被 638 次/37 个 this 调用、不含 cmdid 3198 —— 静态定位明显更准。
+  **但 `0xD4390` 尚未在运行中的 ilink 进程上实测**：卡在观测器注入竞态（18:16 ilink 失败、22:25 main+network 均失败），
+  与 RVA 无关。详见文档 9A.4。
+- **结论**：冷启动仍是最可靠的续期方式，实测 24 秒完成（`AutoAuth ret=0` + 换新 key）。
+
 ## [1.5.9] - 2026-11-04
 
 ### 修复

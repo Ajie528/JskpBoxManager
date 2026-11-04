@@ -9,7 +9,8 @@
  */
 'use strict';
 
-let cfg = { xlogRva: null, role: '' };
+let cfg = { xlogRva: null, role: '', stackOnAuth: true, autoAuthRva: null };
+const authState = { thisPtr: null, calls: 0 };
 let xlogHooked = false;
 let sslHooked = false;
 const seenNet = new Set();
@@ -21,14 +22,93 @@ function emit(obj) {
   send(Object.assign({ ts: Date.now(), pid: Process.id, role: cfg.role }, obj));
 }
 
-function u16(p, max) {
-  try { return p.isNull() ? '' : (p.readUtf16String(max || 1024) || ''); } catch (_) { return ''; }
+/**
+ * 读一个以 NUL 结尾的 UTF-16 字符串，最多 maxChars 个字符。
+ *
+ * 直接用 `readUtf16String(max)` 在内存里没有 NUL 时会一路读下去、把堆上的垃圾
+ * 一起返回（实测 GetAddrInfoW 的参数常出现这种情况，日志里就是一大串乱码）。
+ * 这里先按 maxChars*2 字节读一块，在块内找 NUL 截断；找不到就返回这段并标记。
+ */
+function u16(p, maxChars) {
+  const limit = Math.max(1, maxChars || 260);
+  try {
+    if (p.isNull()) return '';
+    let buf;
+    try { buf = p.readByteArray(limit * 2); } catch (_) { buf = p.readByteArray(64); }
+    if (!buf) return '';
+    const view = new Uint16Array(buf);
+    let end = view.length;
+    for (let i = 0; i < view.length; i++) {
+      if (view[i] === 0) { end = i; break; }
+    }
+    if (end === 0) return '';
+    return String.fromCharCode.apply(null, view.subarray(0, end));
+  } catch (_) { return ''; }
 }
 
-function u8(p, max) {
-  try { return p.isNull() ? '' : (p.readUtf8String(max || 4096) || ''); } catch (_) {
-    try { return p.readCString(max || 4096) || ''; } catch (__) { return ''; }
+/**
+ * 读一个以 NUL 结尾的 UTF-8 / ANSI 字符串。
+ *
+ * 同样的问题：`readUtf8String(max)` 在没有 NUL 时会读越界。而且 GetAddrInfoW 之外的
+ * 路径偶尔给的是 ANSI（本地代码页），UTF-8 解出来会变问号——两种都试一下，取更"干净"的那个。
+ */
+function u8(p, maxBytes) {
+  const limit = Math.max(1, maxBytes || 512);
+  try {
+    if (p.isNull()) return '';
+    let buf;
+    try { buf = p.readByteArray(limit); } catch (_) { buf = p.readByteArray(64); }
+    if (!buf) return '';
+    const bytes = new Uint8Array(buf);
+    let end = bytes.length;
+    for (let i = 0; i < bytes.length; i++) {
+      if (bytes[i] === 0) { end = i; break; }
+    }
+    if (end === 0) return '';
+    const slice = bytes.subarray(0, end);
+    let sUtf8;
+    try { sUtf8 = new TextDecoder('utf-8', { fatal: false }).decode(slice); } catch (_) { sUtf8 = ''; }
+    let sAnsi;
+    try { sAnsi = new TextDecoder('gbk', { fatal: false }).decode(slice); } catch (_) { sAnsi = ''; }
+    // 选替换字符更少的那个；一样多就用 UTF-8
+    const bad = (s) => (s.match(/\uFFFD/g) || []).length;
+    if (sAnsi && bad(sAnsi) < bad(sUtf8)) return sAnsi;
+    return sUtf8;
+  } catch (_) { return ''; }
+}
+
+/** 只保留可打印字符，域名/路径这类值用得上（避免把二进制垃圾写进日志）。 */
+function cleanText(s, maxLen) {
+  if (!s) return '';
+  let out = '';
+  for (const ch of s) {
+    const c = ch.codePointAt(0);
+    if (c < 0x20 || c === 0x7F) continue;          // 控制字符
+    if (c >= 0x80 && c < 0xA0) continue;           // C1 控制字符
+    out += ch;
   }
+  const lim = maxLen || 200;
+  return out.length > lim ? out.slice(0, lim) + '…' : out;
+}
+
+/**
+ * 校验并规整一个主机名。
+ *
+ * 实测 GetAddrInfoW 的 pNodeName 有时指向不带 NUL 的缓冲区，越界读出来的尾巴会变成
+ * 一长串乱码（日志里 `wpad����…`、`cdn-t5game1.scgame.com.cn�ۺ��ۺ…` 都是这样）。
+ * 合法主机名只允许字母/数字/`-`/`.`/`_` 和 IPv6 的 `:`，所以按白名单截断到第一个非法字符。
+ */
+function normHost(raw) {
+  if (!raw) return '';
+  let s = String(raw).trim();
+  const bad = /[^A-Za-z0-9._:\-\[\]]/;
+  const m = bad.exec(s);
+  if (m) s = s.slice(0, m.index);
+  if (!s) return '';
+  if (s.length > 253) s = s.slice(0, 253);
+  // 至少要像个主机名：含字母，或以数字点分（IP）
+  if (!/[A-Za-z]/.test(s) && !/^\d{1,3}(\.\d{1,3}){3}$/.test(s)) return '';
+  return s;
 }
 
 function interestingPath(s) {
@@ -70,9 +150,83 @@ function hookXlog(mod) {
       const m = LINE.exec(text);
       if (m) emit({ ev: 'xlog', t: m[1], tid: +m[3], lvl: m[4], tag: m[5], file: m[6], line: +m[7], msg: m[8] });
       else emit({ ev: 'xlog', msg: text });
+
+      // 动态定位：命中 AutoAuth 时把 ilink2.dll 内的调用栈打出来。
+      // AutoAuth 那几个函数没有可用于静态定位的日志宏字面量（字符串是死的符号名、无代码引用），
+      // 只能趁它真的被调用时，从栈上的返回地址反推函数入口。
+      if (cfg.stackOnAuth && AUTH_TRACE.test(text)) {
+        try {
+          const frames = [];
+          let depth = 0;
+          for (const f of Thread.backtrace(this.context, Backtracer.FUZZY)) {
+            if (depth++ > 24) break;
+            const mod2 = Process.findModuleByAddress(f);
+            if (!mod2 || mod2.name.toLowerCase() !== 'ilink2.dll') continue;
+            frames.push('0x' + f.sub(mod2.base).toString(16));
+          }
+          emit({ ev: 'auth-stack', msg: text.slice(0, 160), frames });
+        } catch (e) { }
+      }
     }
   });
   emit({ ev: 'xlog-hooked', module: mod.name, at: fn.toString(), rva: '0x' + cfg.xlogRva.toString(16) });
+}
+
+// 命中这些日志行就采栈（AutoAuth 的发送 / 返回 / ManualAuth）
+const AUTH_TRACE = /SendAutoAuthRequest|AutoAuthResponse|SendManualAuthRequest|ilinkapp_autoauth|TdiCheckCgiResponse/;
+
+/**
+ * AutoAuth 主动续期实验（默认关闭）。
+ *
+ * 背景：AutoAuth 只在「冷启动 / session 失效」时由运行时自己发，常驻态下不会发。
+ * 想让它提前发生，就得自己调 SendAutoAuthRequestAsync。
+ *
+ * 该函数的地址是通过调用栈动态定位出来的（没有可静态定位的日志字面量）：
+ *   0x229B70  只做「打日志 -> 调 SendRequestEx(0x225130)」，
+ *             签名 = void SendAutoAuthRequestAsync(TdiAuthManager* this)
+ *             rcx 必须是有效的 TdiAuthManager 实例（会写 [rcx+48h]、清空 [rcx+38h] 的 std::string）
+ *
+ * 所以这里做两件事：
+ *   1. observe：在 0x229B70 上挂 Interceptor，记下被调用时的 rcx（= this），供后续复用
+ *   2. call：   用记下的 this 主动调一次，观察是否真的会发 AutoAuth 并换新 key
+ */
+function hookAutoAuth(mod) {
+  const rva = cfg.autoAuthRva;
+  if (rva == null) return false;
+  try {
+    Interceptor.attach(mod.base.add(rva), {
+      onEnter(args) {
+        const self = args[0];
+        authState.thisPtr = self;
+        authState.calls++;
+        emit({
+          ev: 'autoauth-call', who: 'runtime', thisPtr: self.toString(),
+          n: authState.calls, tid: this.threadId,
+        });
+      }
+    });
+    emit({ ev: 'autoauth-hooked', rva: '0x' + rva.toString(16), ready: true });
+    return true;
+  } catch (e) {
+    emit({ ev: 'autoauth-hook-error', err: String(e) });
+    return false;
+  }
+}
+
+/** 用已知的 this 指针主动调一次 SendAutoAuthRequestAsync。返回是否成功调用。 */
+function invokeAutoAuth() {
+  if (cfg.autoAuthRva == null) return { ok: false, why: 'rva 未知' };
+  if (!authState.thisPtr) return { ok: false, why: '还没有抓到 this 指针（需要先有一次真实 AutoAuth）' };
+  const mod = Process.findModuleByName('ilink2.dll');
+  if (!mod) return { ok: false, why: 'ilink2.dll 未加载' };
+  const before = authState.calls;
+  try {
+    const fn = new NativeFunction(mod.base.add(cfg.autoAuthRva), 'pointer', ['pointer']);
+    const r = fn(authState.thisPtr);
+    return { ok: true, thisPtr: authState.thisPtr.toString(), ret: r.toString(), callsBefore: before };
+  } catch (e) {
+    return { ok: false, why: String(e) };
+  }
 }
 
 function watchIlinkModule() {
@@ -178,11 +332,17 @@ function hookNet() {
   }
   const gaiW = exp('ws2_32.dll', 'GetAddrInfoW');
   if (gaiW) Interceptor.attach(gaiW, {
-    onEnter(a) { const h = u16(a[0], 256); if (h && once('dns', h)) emit({ ev: 'net', op: 'dns', host: h, from: caller(this) }); }
+    onEnter(a) {
+      const h = normHost(u16(a[0], 256));
+      if (h && once('dns', h)) emit({ ev: 'net', op: 'dns', host: h, from: caller(this) });
+    }
   });
   const gai = exp('ws2_32.dll', 'getaddrinfo');
   if (gai) Interceptor.attach(gai, {
-    onEnter(a) { const h = u8(a[0], 256); if (h && once('dns', h)) emit({ ev: 'net', op: 'dns', host: h, from: caller(this) }); }
+    onEnter(a) {
+      const h = normHost(u8(a[0], 256));
+      if (h && once('dns', h)) emit({ ev: 'net', op: 'dns', host: h, from: caller(this) });
+    }
   });
   return true;
 }
@@ -281,8 +441,39 @@ rpc.exports = {
     const net = hookNet();
     watchIlinkModule();
     hookSsl();
+    // ilink2.dll 可能比本脚本晚加载：watchIlinkModule 里会回调 hookXlog，
+    // AutoAuth 的 hook 要单独等模块出现。
+    //
+    // 注意时序：ilink 进程刚创建时注入 frida-agent + 立刻 Interceptor.attach 有竞态，
+    // 实测会 ProcessNotRespondingError（进程卡死、ilink 起不来、游戏进不去）。
+    // 所以延后 1.5 秒再挂，等运行时初始化完。
+    const tryAutoAuth = () => {
+      const m = Process.findModuleByName('ilink2.dll');
+      if (m && hookAutoAuth(m)) return true;
+      return false;
+    };
+    if (cfg.autoAuthRva != null) {
+      const arm = () => setTimeout(() => {
+        if (!tryAutoAuth() && typeof Process.attachModuleObserver === 'function') {
+          Process.attachModuleObserver({
+            onAdded(m) { if (m.name.toLowerCase() === 'ilink2.dll') setTimeout(tryAutoAuth, 1500); }
+          });
+        }
+      }, 1500);
+      arm();
+    }
     emit({ ev: 'script-load', arch: Process.arch, fileLib, net, modules: interestingModules() });
     return true;
   },
-  ping() { return 'pong'; }
+  ping() { return 'pong'; },
+  /** 查当前状态：是否已抓到 this 指针、AutoAuth 被调用过几次。 */
+  autoAuthState() {
+    return {
+      rva: cfg.autoAuthRva == null ? null : '0x' + cfg.autoAuthRva.toString(16),
+      thisPtr: authState.thisPtr ? authState.thisPtr.toString() : null,
+      calls: authState.calls,
+    };
+  },
+  /** 主动调一次 SendAutoAuthRequestAsync（实验：可能破坏运行时状态，谨慎使用）。 */
+  invokeAutoAuth() { return invokeAutoAuth(); },
 };

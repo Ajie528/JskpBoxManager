@@ -123,6 +123,26 @@ WANTED = {
     "unpack_response": "UnPackResponse",
 }
 
+# 静态定位（推荐）：找代码引用 `/ilink/ilinkapp/sys/ilinkapp_autoauth` 的函数。
+# 这个 URL 在构造请求时必被引用，比日志字面量可靠得多。
+#
+# 2026-11-04 用 locate_autoauth_static.py + 手工分析（WXRuntime_V22346514299）：
+#   0xD7710  (161B)  构造 AutoAuth 请求：引用 AutoAuth URL + `mov dword [rbx+10h], 0xC7E`（cmdid 3198）
+#   0xD4390  (895B)  0xD7710 的唯一调用者，是**完整的 AutoAuth 流程**：
+#                    构造(0xD7710) -> 设置凭证(0xB41C0) -> 发送(0x224F60) …
+#                    只被上层调用 1 次，符合 AutoAuth 特征
+#
+# 对比：早前误判的 0x229B70 被 37 个 this 调用共 638 次、且不含 cmdid 3198，
+#       已改名为 auth_chain_leaf（通用发送包装，不是 AutoAuth）。
+#
+# ⚠️ 换 WXRuntime 版本必须重新跑 locate_autoauth_static.py 确认。
+DYN_RVA = {
+    "auto_auth": 0xD4390,          # 完整 AutoAuth 流程（推荐 hook / 调用这个）
+    "auto_auth_build": 0xD7710,    # 其中的请求构造（写 cmdid 3198 + URL）
+    "auth_chain_leaf": 0x229B70,   # 通用发送包装（不是 AutoAuth，勿用）
+    "auto_auth_switch": 0x222FF0,  # 日志名为 __SendAutoAuthRequestWithIDCSwitch（未验证）
+}
+
 # 说明：TdiClearLoginStatus / OnAppSessionTimeout 在 ilink2.dll 里只以「字符串表」形式出现
 # （紧挨着 TdiClearSession / TdiLogoutAsync），不是日志宏字面量，按引用定位到的是数据表而非函数。
 # 因此这两个不列为可拦截目标：清登录态的时机改为从日志流里观测（TdiClearLoginStatus 行）。
@@ -151,6 +171,8 @@ def locate_all(dll: Path) -> dict:
         out[name] = rva
         if rva is not None:
             out[name + "_tag"] = tag   # 记录这次用的是哪个 tag，便于排查
+    # 动态定位的那几个（换版本必须重新采栈确认，见 DYN_RVA 注释）
+    out.update(DYN_RVA)
     # 只有全部定位成功才缓存：部分失败多为版本差异或探测 bug，下次应该重算而不是沿用空值
     if all(isinstance(v, int) and v > 0 for k, v in out.items() if not k.endswith(("_error", "_tag"))):
         cache[key] = out

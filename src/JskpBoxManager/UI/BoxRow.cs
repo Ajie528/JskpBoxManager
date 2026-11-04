@@ -44,6 +44,7 @@ public sealed class BoxRow : INotifyPropertyChanged
     public Brush LoginBg => Summary?.Login switch
     {
         LoginLevel.Ok => Brushes.Hex("#DCFCE7"),
+        LoginLevel.Suspect => Brushes.Hex("#FEF3C7"),
         LoginLevel.NeedScan => Brushes.Hex("#FEE2E2"),
         _ => Brushes.Hex("#F3F4F6"),
     };
@@ -51,6 +52,7 @@ public sealed class BoxRow : INotifyPropertyChanged
     public Brush LoginFg => Summary?.Login switch
     {
         LoginLevel.Ok => Brushes.Hex("#166534"),
+        LoginLevel.Suspect => Brushes.Hex("#92400E"),
         LoginLevel.NeedScan => Brushes.Hex("#991B1B"),
         _ => Brushes.Hex("#4B5563"),
     };

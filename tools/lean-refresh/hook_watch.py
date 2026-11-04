@@ -91,10 +91,14 @@ class Watcher:
         if self.longlink_path and self.longlink_path.exists():
             self.longlink_source = self.longlink_path.read_text(encoding="utf-8")
         self.longlink_at = {}
+        # 抓到 this 指针后是否立刻主动再调一次 AutoAuth（实验开关）
+        self.invoke_after_capture = False
+        self.auto_invoked_pids: set[int] = set()
         self.sbie = Sbie(a.sbie_dir)
         self.device = frida.get_local_device()
         self.done: set[int] = set()
         self.roles: dict[int, tuple[str, str]] = {}
+        self.emptyRoleHits: dict[int, int] = {}
         self.sessions = {}
         self.rva_cache: dict[str, int | None] = {}
         self.longlink_cache: dict[str, dict] = {}
@@ -155,7 +159,34 @@ class Watcher:
             text = f"{now()} [会话超时] {p.get('action')} #{p.get('total')} 调用栈={p.get('stack')}"
         elif ev == "longlink-hooked":
             text = f"{now()} [长连接观测已装] rva={p.get('rva')} 拦截={p.get('blockSessionTimeout')}"
+        elif ev == "autoauth-hooked":
+            text = f"{now()} [已挂上 AutoAuth] rva={p.get('rva')}"
+        elif ev == "autoauth-call":
+            text = f"{now()} [运行时自己发了 AutoAuth] this={p.get('thisPtr')} 第 {p.get('n')} 次"
+            self.write({"ev": "frida", **p}, text)
+            # 抓到 this 之后（如果开了实验开关）立刻再主动调一次，验证能不能靠它续期
+            if self.invoke_after_capture and pid not in self.auto_invoked_pids:
+                self.auto_invoked_pids.add(pid)
+                threading.Thread(target=self._invoke_autoauth, args=(pid, p.get("thisPtr")), daemon=True).start()
+            return
+        elif ev == "autoauth-invoke-result":
+            text = f"{now()} [主动调用结果] ok={p.get('ok')} {p.get('why') or p.get('ret')}"
         self.write({"ev": "frida", **p}, text)
+
+    def _invoke_autoauth(self, pid: int, this_ptr):
+        """抓到 this 后主动调一次 SendAutoAuthRequestAsync（实验）。"""
+        try:
+            sc = self.sessions.get(pid, (None, None))[1]
+            if sc is None:
+                self.write({"ev": "autoauth-invoke", "pid": pid, "ok": False, "why": "session 已不在"})
+                return
+            time.sleep(2)   # 等运行时自己的那次 AutoAuth 收尾
+            r = sc.exports_sync.invokeAutoAuth()
+            self.write({"ev": "autoauth-invoke", "pid": pid, "thisPtr": this_ptr, **r},
+                       f"{now()} [主动调用 AutoAuth] this={this_ptr} -> {r}")
+        except Exception as exc:
+            self.write({"ev": "autoauth-invoke", "pid": pid, "ok": False, "why": str(exc)},
+                       f"{now()} [主动调用 AutoAuth 失败] {exc}")
 
     # ---------- attach ----------
 
@@ -175,8 +206,9 @@ class Watcher:
                        None if rva is not None else f"{now()} [警告] {dll} 里没找到 ilink 日志函数，只记文件/网络")
         return self.rva_cache[key]
 
-    def attach(self, pid: int, role: str, exe: str, resume: bool = False):
+    def attach(self, pid: int, role: str, exe: str, resume: bool = False) -> bool:
         t0 = time.time()
+        ok = False
         try:
             s = self.device.attach(pid)
             if role == "main":
@@ -185,16 +217,29 @@ class Watcher:
             sc.on("message", lambda m, d, pid=pid, role=role: self.on_message(pid, role, m, d))
             sc.load()
             rva = self.rva_for(exe) if role in HOOK_ROLES else None
-            sc.exports_sync.init({"xlogRva": rva, "role": role})
+            # AutoAuth 的 RVA 来自 longlink_locate，只在 ilink 角色上有意义。
+            # 静态定位已找到真正的构造点：0xD7710（引用 AutoAuth URL + 写 cmdid 3198）。
+            # 但仍只在显式要求实验时才 hook / 主动调用，避免影响正常保活。
+            aa = None
+            if role == "ilink" and self.invoke_after_capture:
+                try:
+                    aa = self.longlink_rva(exe).get("auto_auth")
+                except Exception:
+                    aa = None
+                if aa:
+                    self.write({"ev": "autoauth-rva", "rva": hex(aa)},
+                               f"{now()} [实验] AutoAuth 构造点 RVA {hex(aa)}（cmdid 3198 + URL 引用）")
+            sc.exports_sync.init({"xlogRva": rva, "role": role, "autoAuthRva": aa})
             self.sessions[pid] = (s, sc)
             ms = int((time.time() - t0) * 1000)
             self.write({"ev": "frida-attached", "pid": pid, "role": role, "ms": ms, "resumed": resume},
                        f"{now()} [attach] pid={pid} role={role} {ms}ms" + (" (出生即拦截)" if resume else ""))
+            ok = True
             # ilink 角色额外挂长连接观测脚本（心跳 / 会话超时）
             if role == "ilink" and self.longlink_source:
                 self.attach_longlink(pid, exe, s)
         except Exception as exc:
-            self.write({"ev": "frida-err", "pid": pid, "role": role, "line": str(exc)},
+            self.write({"ev": "frida-err", "pid": pid, "role": role, "line": f"{type(exc).__name__}: {exc}"},
                        f"{now()} [attach 失败] pid={pid} role={role}: {exc}")
         finally:
             if resume:
@@ -202,16 +247,21 @@ class Watcher:
                     self.device.resume(pid)
                 except Exception:
                     pass
+        return ok
 
     def attach_longlink(self, pid: int, exe: str, session):
         try:
             lrv = self.longlink_rva(exe)
+            if not lrv or lrv.get("on_session_timeout") is None:
+                self.write({"ev": "longlink-err", "pid": pid, "err": "on_session_timeout RVA 未定位到", "rva": lrv},
+                           f"{now()} [长连接观测失败] pid={pid}: on_session_timeout RVA 未定位到（缓存可能过期）")
+                return
             sc = session.create_script(self.longlink_source)
             sc.on("message", lambda m, d, pid=pid: self.on_message(pid, "ilink", m, d))
             sc.load()
-            sc.exports_sync.init({"rva": lrv, "role": "ilink", "blockSessionTimeout": self.block_timeout})
+            res = sc.exports_sync.init({"rva": lrv, "role": "ilink", "blockSessionTimeout": self.block_timeout})
             self.longlink_at[pid] = sc
-            self.write({"ev": "longlink-attached", "pid": pid, "rva": lrv, "block": self.block_timeout},
+            self.write({"ev": "longlink-attached", "pid": pid, "rva": lrv, "block": self.block_timeout, "init": res},
                        f"{now()} [长连接观测] pid={pid} {'(已拦截会话超时)' if self.block_timeout else '(只观测)'}")
         except Exception as exc:
             self.write({"ev": "longlink-err", "pid": pid, "err": str(exc)},
@@ -245,15 +295,33 @@ class Watcher:
 
     def handle_child(self, child):
         path = child.path or ""
-        role = role_of(Path(path).name, " ".join(child.argv or []))
-        self.write({"ev": "child", "pid": child.pid, "parent": child.parent_pid, "role": role or "-", "path": path})
-        if role and self.claim(child.pid):
-            self.attach(child.pid, role, path, True)
-            return
         try:
-            self.device.resume(child.pid)
-        except Exception as exc:
-            self.write({"ev": "resume-err", "pid": child.pid, "err": str(exc)})
+            role = role_of(Path(path).name, " ".join(child.argv or []))
+            self.write({"ev": "child", "pid": child.pid, "parent": child.parent_pid, "role": role or "-", "path": path})
+            if role and self.claim(child.pid):
+                ok = self.attach(child.pid, role, path, True)
+                if not ok:
+                    with self.lock:
+                        self.done.discard(child.pid)   # 允许 scan() 稍后重试
+                return
+            try:
+                self.device.resume(child.pid)
+            except Exception as exc:
+                self.write({"ev": "resume-err", "pid": child.pid, "err": str(exc)})
+        except BaseException as exc:
+            # 线程里的异常默认只打到 stderr（pythonw 下等于丢失），必须自己记下来
+            import traceback
+            try:
+                self.write({"ev": "child-handler-err", "pid": getattr(child, "pid", 0),
+                            "err": f"{type(exc).__name__}: {exc}",
+                            "tb": traceback.format_exc()[-1200:]})
+            except Exception:
+                pass
+            try:
+                if getattr(child, "pid", 0):
+                    self.device.resume(child.pid)
+            except Exception:
+                pass
 
     def scan(self):
         found = []
@@ -262,8 +330,13 @@ class Watcher:
             if name.lower() != "wechatappex.exe":
                 continue
             pid = p.info["pid"]
-            if pid in self.done:
+            # 已挂上的跳过；但「被 child-added 抢先后 attach 失败」的 pid 要允许重试，
+            # 判据是它没有活跃 session —— 否则 ilink 一失败就永久错过。
+            if pid in self.done and pid in self.sessions:
                 continue
+            if pid in self.done and pid not in self.sessions:
+                with self.lock:
+                    self.done.discard(pid)
             # 归属检查必须每轮都做，不能只做一次就缓存进 roles：
             # 箱内能看到所有沙箱的 WeChatAppEx（Windows 进程表全局可见），
             # 一旦把别箱的 pid 记进 roles 就再也不会校验，之后可能跨箱 attach 被拒。
@@ -276,21 +349,40 @@ class Watcher:
                     self.done.add(pid)
                 continue
             if pid not in self.roles:
+                # cmdline 在进程刚创建时常常还读不全（尤其 box 内刚 fork），此时 role 会算成空。
+                # 以前这里直接 self.done.add(pid) 永久放弃，导致稍后 child-added 事件来时
+                # claim() 返回 False、只 resume 不 attach —— ilink 就这样永远挂不上。
+                # 现在按「连续读到空 role 的次数」判断，超过阈值才真放弃。
                 try:
                     cmd = " ".join(p.cmdline())
                     exe = p.exe()
                 except Exception:
+                    self.emptyRoleHits[pid] = self.emptyRoleHits.get(pid, 0) + 1
                     continue
-                self.roles[pid] = (role_of(name, cmd), exe)
+                role = role_of(name, cmd)
+                if not role:
+                    n = self.emptyRoleHits.get(pid, 0) + 1
+                    self.emptyRoleHits[pid] = n
+                    if n >= 10:      # 约 1 秒仍读不出角色，才当成「不需要挂」的进程
+                        with self.lock:
+                            self.done.add(pid)
+                    continue
+                self.emptyRoleHits.pop(pid, None)
+                self.roles[pid] = (role, exe)
             role, exe = self.roles[pid]
-            if not role:
-                with self.lock:
-                    self.done.add(pid)
-                continue
             found.append((0 if role == "main" else 1 if role == "ilink" else 2, pid, role, exe))
         for _, pid, role, exe in sorted(found):
-            if self.claim(pid):
-                self.attach(pid, role, exe)
+            # 注意顺序：先 attach 成功再占位。
+            # 以前是 claim() 先把 pid 记进 done，attach 失败也不回滚，
+            # 于是那个进程（尤其 ilink）永远补挂不上——qb15 16:00 那次「没抓到会话超时」就是这个原因。
+            if pid in self.done:
+                continue
+            ok = self.attach(pid, role, exe)
+            with self.lock:
+                if ok:
+                    self.done.add(pid)
+                else:
+                    self.roles.pop(pid, None)   # 下轮重新取命令行/再试
 
     def prewarm(self):
         # 第一次注入要 0.6 秒以上，先在箱内一个空闲的 python 子进程上付掉，免得付在微信主进程上
@@ -313,9 +405,29 @@ class Watcher:
         self.write({"ev": "watch-start", "frida": frida.__version__, "seconds": self.seconds},
                    f"{now()} 开始观测 {self.box}，{self.seconds} 秒，frida {frida.__version__}")
         deadline = time.time() + self.seconds
+        # 每 60 秒写一行心跳，用来区分「在 scan 但没找到目标」和「卡死在某个调用里」
+        nextBeat = time.time() + 60
+        scanErrors = 0
         try:
             while time.time() < deadline:
-                self.scan()
+                try:
+                    self.scan()
+                except BaseException as exc:
+                    import traceback
+                    scanErrors += 1
+                    if scanErrors <= 10:
+                        self.write({"ev": "scan-err", "n": scanErrors,
+                                    "err": f"{type(exc).__name__}: {exc}",
+                                    "tb": traceback.format_exc()[-800:]},
+                                   f"{now()} [警告] scan 出错 #{scanErrors}: {exc}")
+                if time.time() >= nextBeat:
+                    nextBeat = time.time() + 60
+                    try:
+                        self.write_text_only(
+                            f"{now()} [心跳] 观测中：已挂 {len(self.sessions)} 个进程，"
+                            f"ilink日志 {self.counts['xlog']} 行，scan错误 {scanErrors}")
+                    except Exception:
+                        pass
                 time.sleep(0.1)
         except KeyboardInterrupt:
             pass
@@ -346,6 +458,8 @@ def main() -> int:
                     help="长连接观测脚本；传空字符串可关闭")
     ap.add_argument("--block-timeout", action="store_true",
                     help="拦截 ilink 的会话超时回调（实验用；默认只观测，进程仍会被运行时收掉）")
+    ap.add_argument("--invoke-autoauth", action="store_true",
+                    help="抓到 TdiAuthManager 的 this 指针后立刻主动再调一次 SendAutoAuthRequestAsync（实验用）")
     a = ap.parse_args()
 
     # 同一个沙箱只允许一个观测器：两个同时跑会各自 attach、日志每行写两遍，
@@ -366,7 +480,9 @@ def main() -> int:
         print(f"{a.box} 已经有一个观测器在运行，本进程退出")
         return 0
 
-    return Watcher(a).run()
+    w = Watcher(a)
+    w.invoke_after_capture = bool(getattr(a, "invoke_autoauth", False))
+    return w.run()
 
 
 if __name__ == "__main__":

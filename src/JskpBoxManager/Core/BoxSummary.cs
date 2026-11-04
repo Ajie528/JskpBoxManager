@@ -2,7 +2,15 @@ using System.Text.Json.Nodes;
 
 namespace JskpBoxManager.Core;
 
-public enum LoginLevel { Ok, Unknown, NeedScan, None }
+public enum LoginLevel
+{
+    Ok,
+    Unknown,
+    /// <summary>保活时服务端回过 AutoAuth ret=-13：凭证大概率已失效，但还没到「必须扫码」那一步。</summary>
+    Suspect,
+    NeedScan,
+    None
+}
 
 /// <summary>界面上一行沙箱的状态汇总（只读文件和进程，不改任何东西）。</summary>
 public sealed class BoxSummary
@@ -31,6 +39,11 @@ public sealed class BoxSummary
     /// <summary>最近一次被服务端判死（key-revoked）的说明；没有则空。</summary>
     public string LastRevoke = "";
 
+    /// <summary>保活时服务端回过拒绝授权（AutoAuth ret≠0）且之后没有恢复：给出醒目告警。</summary>
+    public string AuthRejectAlert = "";
+    /// <summary>告警级别的服务器返回码（通常是 -13 = 密钥已被作废）。</summary>
+    public int AuthRejectRet = 0;
+
     public static BoxSummary Build(string box, Dictionary<string, string> notes, KeepConfig keep, Dictionary<string, JsonObject> lastRefresh,
         Dictionary<string, AuthChain> chains, Dictionary<string, JsonObject> revokes = null)
     {
@@ -42,6 +55,31 @@ public sealed class BoxSummary
         s.Uin = best.Valid ? best.Uin : "";
         s.LastRenewUtc = best.Valid ? best.WriteUtc : DateTime.MinValue;
 
+        // 先在算登录状态之前解析「上次保活被服务端拒绝授权」，因为登录状态要用它决定「疑似失效」。
+        JsonObject refreshEv = lastRefresh.TryGetValue(box, out var re) ? re : null;
+        DateTime? refreshAt = null;
+        if (refreshEv != null
+            && DateTime.TryParseExact(JsonFile.Str(refreshEv, "at"), "yyyy-MM-dd HH:mm:ss", null, System.Globalization.DateTimeStyles.None, out var rat))
+            refreshAt = rat;
+        if (refreshEv != null && refreshAt != null
+            && JsonFile.Int(refreshEv, "authRet") is int earlyRet && earlyRet != 0
+            && JsonFile.Str(refreshEv, "result") is not "ok")
+        {
+            // 之后又写过更新的凭证 = 已恢复，不算告警
+            bool recoveredNow = s.LastRenewUtc > refreshAt.Value.ToUniversalTime();
+            if (!recoveredNow)
+            {
+                s.AuthRejectRet = earlyRet;
+                var kind = earlyRet == -13 ? "密钥已被服务端作废（多半是同一微信号在别处扫码顶掉）"
+                                           : "服务端拒绝了自动授权";
+                var msg0 = JsonFile.Str(refreshEv, "authMsg");
+                s.AuthRejectAlert =
+                    $"{refreshAt.Value:MM-dd HH:mm} 保活时{kind}，ret={earlyRet}"
+                    + (msg0.Length > 0 ? $"（{msg0}）" : "")
+                    + "。本地这把凭证已不可用，建议尽快重新扫码；在此之前保活会一直失败。";
+            }
+        }
+
         bool revoked = s.Vault.Valid && Ilink.IsRevoked(box, s.Vault.KeyHash) && !(s.Live.Valid && s.Live.KeyHash != s.Vault.KeyHash);
         if ((NeedScan.Pending(box) && !NeedScan.Superseded(box, s.Live)) || revoked)
         {
@@ -50,8 +88,18 @@ public sealed class BoxSummary
         }
         else if (s.Vault.Valid || s.Live.Valid)
         {
-            s.Login = LoginLevel.Ok;
-            s.LoginText = "免扫可用";
+            // 有凭证，但保活时服务端明确拒绝过授权且之后没恢复：标成「疑似失效」而不是「免扫可用」，
+            // 让人早点知道这把钥匙已经不能用了（否则要等下次启动弹扫码才会发现）。
+            if (s.AuthRejectAlert.Length > 0)
+            {
+                s.Login = LoginLevel.Suspect;
+                s.LoginText = "疑似失效";
+            }
+            else
+            {
+                s.Login = LoginLevel.Ok;
+                s.LoginText = "免扫可用";
+            }
             if (chains.TryGetValue(box, out var chain) && chain.Uin == s.Uin) s.Chain = chain;
         }
         else
@@ -165,7 +213,18 @@ public sealed class BoxSummary
         foreach (var g in list.Where(s => s.Uin.Length > 0).GroupBy(s => s.Uin).Where(g => g.Count() > 1))
         {
             var names = string.Join("、", g.Select(x => x.Box));
-            foreach (var s in g) s.Warning = $"与 {names} 是同一个微信号，会互相顶掉";
+            foreach (var s in g)
+                s.Warning = s.Warning.Length > 0
+                    ? $"与 {names} 是同一个微信号，会互相顶掉\n{s.Warning}"
+                    : $"与 {names} 是同一个微信号，会互相顶掉";
         }
+    }
+
+    /// <summary>把「保活被服务端拒绝授权」的告警并入表格的 ⚠ 列。</summary>
+    public static void MarkAuthRejects(List<BoxSummary> list)
+    {
+        foreach (var s in list)
+            if (s.AuthRejectAlert.Length > 0)
+                s.Warning = s.Warning.Length > 0 ? s.AuthRejectAlert + "\n" + s.Warning : s.AuthRejectAlert;
     }
 }

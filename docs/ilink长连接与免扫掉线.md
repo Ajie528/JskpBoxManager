@@ -12,11 +12,35 @@
 
 | 问题 | 结论 |
 |------|------|
-| ilink 长连接本身稳不稳 | **很稳**。实测 qb4 连续 17.8 小时、每小时约 20 次 noop 心跳，零中断 |
-| 心跳间隔是多少 | **210 秒（3.5 分钟）**，由 mars 的 `LongLinkWithMMTLS::__RunReadWrite` 布闹钟 |
-| 关游戏后为什么必须重扫 | 服务端在业务层回 **`App layer sessiontimeout!`**，运行时随即 `TdiClearLoginStatus` → `Uninit` → **进程自杀** |
-| 「Hook 保住 noop 心跳」能解决吗 | **不能**。心跳本来就没断过，踢人的不是心跳超时，而是服务端在业务响应里判会话失效 |
-| 常驻保活能不能保住长连接 | **旧版本不能**（见第 4 节：主进程活着但 ilink 早死了，整段常驻是「假长连接」）；1.5.9 起会检测并重连 |
+| ilink 长连接本身稳不稳 | **很稳**。实测 qb4 连续 17.8 小时、qb15 关游戏后仍持续，零中断 |
+| 心跳间隔是多少 | **210 秒**（`next:210000`），由 mars 的 `LongLinkWithMMTLS::__RunReadWrite` 布闹钟 |
+| **这个心跳是谁的心跳** | **是微信服务器（腾讯 `longcloud.weixin.com`）的 noop 心跳**，不是游戏服务器的。详见第 1.1 节 |
+| 关游戏后为什么必须重扫 | **不是关游戏本身导致的**（见第 3 节 2026-11-04 常驻实测：关游戏后 35 分钟长连接与心跳均正常，`sessiontimeout` 零次）。真正原因是**整箱被停掉时进程被杀**，以及保活被跳过 |
+| 「Hook 保住 noop 心跳」能解决吗 | **前提不成立**：心跳从来没断过，所以「保心跳」不是问题所在 |
+| 常驻保活能不能保住长连接 | **旧版本不能**（主进程活着但 ilink 早死了，见第 4 节）；1.5.9 起会检测并重连。**1.5.9 实测：常驻确实能保住长连接** |
+
+### 1.1 这个心跳是微信服务器的心跳吗？
+
+**是。** 证据链：
+
+| 证据 | 内容 |
+|------|------|
+| 连接目标 | `_configMarsNetcore: m_longlink_host_ = longcloud.weixin.com`<br>`SetLongLink: host:longcloud.weixin.com port:80 port:443 port:5000 port:8080` |
+| 实际握手服务器 | `task end callback long cmdid:10724, err(0,0,0), svr(101.226.142.220:80, NewDNSIP, longcloud.weixin.com)` |
+| 心跳报文 | `start noop taskid:4294967295, cmdid:6, next:210000` → `__NoopResp: noop succ, interval:210000` |
+| 协议栈 | `mars::stn::`（腾讯开源的 mars 网络库）+ `LongLinkWithMMTLS`（微信私有 mmtls 传输层） |
+| 进程 | `WeChatAppEx.exe --type=utility --... ILinkServiceHost`（微信运行时 WMPF 的 ilink 服务宿主） |
+
+所以要分清两层：
+
+1. **微信层（ilink / mars / mmtls）** —— 连 `longcloud.weixin.com`，管登录态、AutoAuthKey 续期、心跳（`cmdid:6` noop）。**这才是决定「要不要重新扫码」的那一层。**
+2. **游戏层** —— 连 `tunnel-dga.scgame.com.cn`、`ws82-t5game2.scgame.com.cn` 等，管游戏内在线状态。
+
+**长连接存活 ≠ 游戏在线。** 关掉游戏窗后游戏层的连接会断（所以游戏里会掉线），但微信层的 ilink 连接可以继续活着——这正是 2026-11-04 实测到的现象。
+
+> 补充：`cmdid:6` 在 mars 里是标准的 **noop（空操作）心跳**，由 `LongLink::__NoopResp` 处理响应。
+> 它的作用是让 NAT/防火墙不回收连接、让服务端知道客户端还活着；它**不是**在验证「这个账号的登录凭据是否仍然有效」——
+> 后者由业务请求（如 `/ilink/ilinkapp/sys/ilinkapp_autoauth`）的返回决定。
 
 ---
 
@@ -36,7 +60,7 @@
 要点：
 
 - 通道是 **mars + mmtls**（`longcloud.weixin.com`，443 / 5000 / 80），不是标准 WebSocket；
-- 心跳是 `cmdid:6` 的 noop，`next:210000` 毫秒 = **210 秒**；
+- 心跳是 `cmdid:6` 的 noop，`next:210000` 毫秒 = **210 秒**；实测常驻期间有时会降到 **180 秒**（服务端在响应里回 `interval`，客户端照此调整）；
 - 连上之后 93 分钟内**没有任何重连或断开**记录。
 
 ## 3. 心跳是健康的：qb4 连续 17.8 小时的证据
@@ -49,7 +73,7 @@
 
 每小时约 20 次 = 每 3 分钟一次，**没有任何一小时掉链子**。
 
-## 4. 真正的原因：服务端在业务层判会话失效
+## 4. 那次「会话失效」的完整时序（qb4，11-03）
 
 死亡前 4 秒的完整时序（`frida-ilink-qb4.jsonl`，pid 37656）：
 
@@ -73,25 +97,51 @@
 
 1. **不是心跳超时**。`err(0, 0, 0)` 说明这条请求的链路层完全成功，心跳在此前刚成功发过（11:23:57.057）。
 2. **是业务层拒绝**。`datalen:0` + `App layer sessiontimeout!`，即服务端回了「这个 app 会话已失效」。
-3. **触发点在数据上报**（`aereportkvcomm`），不是纯心跳。也就是说服务端在「你还有没有在真正使用」这件事上有独立判定。
+3. **触发点在数据上报**（`aereportkvcomm`），不是纯心跳。
 4. **死亡是运行时主动自杀**。`TdiClearLoginStatus` 之后 `Uninit`、`Stop`，130ms 内退出，不是崩溃。
-
-对照：关游戏发生在 `11:23:46`，`sessiontimeout` 在 `11:23:57`，相隔 11 秒。时间上确实紧跟关游戏，
-但**直接扳机是那次上报的响应**，这也解释了为什么有时关游戏后还能撑一阵。
 
 > 顺带纠正一个早前的误判：11-03 10:59 那次「深度压缩内存（含游戏）」**没有**压断长连接——
 > 压完之后 ilink 又正常跑了 24 分钟（10:5x 段 254 行、11:0x 段 253 行日志）。当时的 CHANGELOG 归因不准，1.5.8 已改正。
 
-## 5. 为什么「Hook 保存 noop 心跳」救不了
+### 4.1 关键更正（2026-11-04 常驻实测）：`sessiontimeout` 不是「关游戏」触发的
 
-想用 Hook 维持长连接，前提是「心跳断了导致被踢」。事实不是这样：
+上面 11-03 那次看起来像「关游戏 11 秒后被踢」，于是当时判定为「关游戏 → 服务端下发 sessiontimeout」。
+**这个因果链是错的**，2026-11-04 的对照实验推翻了它。
 
-- 心跳全程健康，服务端仍然踢；
-- 踢的信号来自**业务响应**，与心跳无关；
-- 就算拦掉 `__OnAppSessionTimeout` 让进程不自杀（`--block-timeout`），服务端已经判定会话失效，
-  后续业务请求大概率仍被拒——只是把「进程退出」变成「僵尸连接」。
+实验设置：qb15 开启「常驻 + 实验拦截」，正常进游戏后**手动关掉游戏窗口**，让箱子保持运行。
 
-所以这条路的价值是**观测**，不是**修复**。
+| 时刻 | 事件 |
+|------|------|
+| 16:14:10 | 观测器启动（`block session timeout is ON`），三个 hook 全挂上 |
+| 16:14:28 | 进游戏，新 key `b1605ba5` |
+| **16:16:08** | **关游戏 → `game closed -> enter resident (hide+trim, keep ilink runtime)`**（箱没停） |
+| 16:16:17 | `[心跳] noop 发送 #1`（关游戏后 9 秒，心跳照常） |
+| 16:17:24 | `noop #2  间隔=67.1s` |
+| 16:20:24 | `noop #3  间隔=180.3s` |
+| 16:23:24 | `noop #4  间隔=180.3s` |
+| 16:24:25 | `noop #5  间隔=60.2s` |
+| **16:48:14** | **ilink 进程 24572 仍存活**（关游戏后 32 分钟），CPU 11.28s→12.81s 仍在增长 |
+| 16:50:27 | 重启观测器后再次捕获 `noop #1`（ilink 35 分钟仍活跃） |
+| 全程 | **`session-timeout` 事件 0 次** |
+
+结论：
+
+- **关游戏本身不会让服务端下发 `sessiontimeout`。** 常驻模式下 ilink 活了 35 分钟以上，心跳（`cmdid:6` noop）稳定 180 秒一次、服务端正常回应，一次 `sessiontimeout` 都没出现。
+- 11-03 那次的真相更可能是：**程序在 `game closed -> stop box` 后 7 秒就整箱停掉**，ilink 被 `Sandboxie.Terminate` 强杀；那次 `aereportkvcomm` 上报在进程被杀前后收到了异常响应，才触发 `sessiontimeout` 分支。
+- 也就是说：**qb4 反复掉线的真因是「程序自己停箱 + 每日保活被跳过」，而不是服务端踢人。**
+
+> 这也意味着「实验拦截（`--block-timeout`）」在实际场景里可能根本用不上——没有 `sessiontimeout` 需要拦。
+> 开关保留，用于将来验证其他路径是否有该回调。
+
+## 5. 为什么「Hook 保存 noop 心跳」救不了（前提本身不成立）
+
+想用 Hook 维持长连接，逻辑前提是「心跳断了导致被踢」。事实不是这样：
+
+- 心跳全程健康（qb4 连续 17.8 小时、qb15 关游戏后 35 分钟，都是 180～210 秒一次、零中断）；
+- 真正的失效来自**业务请求**的响应（`App layer sessiontimeout`），与心跳无关；
+- 因此「给心跳续命」并不能延长免扫寿命，它守的是连接不断，而不是登录态有效。
+
+这条路的实际价值是**观测**（看清连接与心跳的真实状态），不是**修复**。
 
 ## 6. 现在能做什么（按有效性排序）
 
@@ -113,10 +163,24 @@ qb4 常驻期间 Frida 只挂到 main / network 两个角色，ilink 角色再�
 现在新增 `BoxView.IlinkConnected`（按 `ILinkServiceHost` 命令行判断），常驻循环每轮检查；
 发现 ilink 没了就重开 GameUrl 让它重新拉起来并顺带滚一次 key。
 
-### 6.3 最省心的方案
+### 6.3 常驻到底有没有用（2026-11-04 实测结论）
 
-**不用常驻。** qb1 已经用 5 天证明「常驻关 + 每天一次冷启 + 日常正常玩」是最稳的组合。
-常驻只在必须省内存时才开，且要知道它的长连接随时可能已经断了。
+**有用，而且比之前判断的更可靠。** 常驻模式下：
+
+- 关游戏后 ilink 进程持续存活（实测 35 分钟以上，CPU 仍在增长）；
+- 心跳（`cmdid:6` noop）稳定维持，服务端正常回应；
+- `sessiontimeout` **零次**。
+
+前提是 1.5.9 修的「ilink 存活检测」要生效——旧版常驻会掉进「主进程活着但 ilink 早死了」的假象里。
+
+### 6.4 最省心的方案
+
+两种都可以，按内存预算选：
+
+| 方案 | 适用 | 说明 |
+|------|------|------|
+| **每日一次冷启**（推荐） | 内存紧、号多 | qb1 用这套连续免扫 5 天 1 小时。常驻关掉即可 |
+| **常驻轻量运行时** | 想让连接一直不断 | 1.5.9 起会检测 ilink 存活并自动重连；关游戏后勤滚 key（6 小时节流 / 20 小时强制） |
 
 ---
 
@@ -264,7 +328,7 @@ pid=19552   box=qb15   本箱      role=network
 所以数据不会串，但「看得见」这件事要正确处理。原来 `scan()` 只在 `pid not in self.roles` 时才校验归属，
 一旦某个 pid 被记进 `roles` 就不再校验——多开时这是隐患。已改为**每轮都校验归属**。
 
-### 8.5 两个实测踩到的真 bug（已修）
+### 8.5 实测踩到的真 bug（已修）
 
 **bug 1：RVA 缓存被旧结果污染**
 
@@ -286,6 +350,45 @@ $ python hook_watch.py --box qbX --out ...   # 第二个进程会打印并退出
 qbX 已经有一个观测器在运行，本进程退出
 ```
 
+**bug 3：`scan()` 读到空 role 就永久放弃该进程（ilink 永远挂不上的元凶）**
+
+进程刚被 fork 出来时 `cmdline` 常常还读不全，`role_of()` 返回空串。旧代码：
+
+```python
+if not role:
+    self.done.add(pid)     # 永久放弃
+    continue
+```
+
+于是该 pid 进了 `done`。稍后 frida 的 `child-added` 事件到来，`claim()` 发现已在 `done` 里，返回 `False`，
+结果**只 resume、不 attach**，而且一条错误日志都不写。表现就是：`child` 事件有 ilink，但永远没有 `frida-attached`。
+
+现在改为：连续 10 轮（约 1 秒）读不出角色才放弃；并且 `scan()` 会重试「已 claim 但无活跃 session」的 pid。
+
+**bug 4：`handle_child` 的异常被静默吞掉**
+
+它跑在 daemon 线程里，`pythonw` 下 stderr 不可见，异常等于消失。现在加了 `child-handler-err` 兜底记录（含 traceback）。
+
+**bug 5：`scan()` 抛异常会中断整个观测循环**
+
+外层只有 `except KeyboardInterrupt`。现在包了 try + `scan-err` 记录，并每 60 秒写一行心跳
+（`[心跳] 观测中：已挂 N 个进程…`），用来区分「在扫但没目标」和「卡死在某个调用里」。
+
+**bug 6：DNS 主机名乱码（`hook_ilink.js`）**
+
+`u16()` / `u8()` 直接调 `readUtf16String(max)`，内存里没有 NUL 结尾时会一路读越界，把堆上的垃圾一起返回。
+日志里 `wpad����…`、`cdn-t5game1.scgame.com.cn�ۺ��ۺ…` 就是这么来的。
+
+现在先按上限读一块固定长度、在块内找 NUL 截断；再用 `normHost()` 按白名单
+（字母 / 数字 / `-` / `.` / `_` / `:`）截到第一个非法字符。实测：
+
+```
+'wpad\x00x'                        -> 'wpad'
+'cdn-t5game1.scgame.com.cn\x01\x02' -> 'cdn-t5game1.scgame.com.cn'
+'cdn-t5game1.scgame.com.cn纵纵'      -> 'cdn-t5game1.scgame.com.cn'
+'\x01\x02'                          -> ''
+```
+
 ### 8.6 观测器必须在微信运行之后再启动（否则白跑）
 
 `hook_watch.py` 靠 `scan()` 轮询发现 `WeChatAppEx`。如果观测器比浏览器先启动，
@@ -301,15 +404,209 @@ qbX 已经有一个观测器在运行，本进程退出
 
 ## 9. 下一步值得测的
 
-1. **`--block-timeout` 实跑一次**，确认是「僵尸连接」还是「能自愈」——这决定这条路彻底否掉还是留一线。
-2. **对比「关游戏」与「上报触发」的先后**：在不动游戏、只让它挂着的情况下，是否也会被 sessiontimeout？
-   如果只有关游戏才触发，那常驻的目标应该是「别让游戏窗真的关掉」（最小化而非关闭）。
-3. **测 `aereportkvcomm` 上报频率**与 `SmcCore hit freqlimit` 积压的关系：
-   qb4 死亡前 1 分钟有大量上报积压，是否是「长时间不活跃 → 集中补报 → 撞上会话失效判定」。
+1. **常驻扛不扛得过 24 小时**（最关键的待验证项）。2026-11-04 已确认常驻 35 分钟内心跳与连接全正常，
+   但还没跑满一天。如果常驻能扛过，就可以替代每日冷启。
+2. **`aereportkvcomm` 上报频率**与 `SmcCore hit freqlimit` 积压的关系：
+   qb4 那次 `sessiontimeout` 前 1 分钟有大量上报积压，是否与「长时间不活跃 → 集中补报」有关。
+3. **`--block-timeout` 是否还有必要**：本次实测 `sessiontimeout` 零次，说明正常场景用不上；
+   保留它用于将来验证其他路径是否会触发该回调。
 
-## 10. 观测已跑通（2026-11-04 15:30，qb1）
+## 9A. 主动触发 AutoAuth 的三条路（2026-11-04 全部试过，结论：都不通）
 
-三个 hook 全部挂上并抓到心跳：
+目标：不冷启动也能让运行时发一次 `AutoAuth` 来续期。逐条验证如下。
+
+### 9A.1 CDP 调 `wx.login` —— 握手被拒
+
+```
+getcode qb15 --no-ensure  →  取码失败：The operation was canceled.
+qb15.log                  →  wx.login getCode failed: The server returned status code '500'
+                              when status code '101' was expected.
+```
+
+`status 500 when 101 expected` = **WebSocket 升级被拒**，不是页面没 `wx`。
+停掉 Frida 观测器后重试仍失败，排除注入干扰；两个游戏中心标签页都试过。
+
+> 附带发现：`getcode` 的 `ensure` 逻辑会把 resident 状态的箱重新拉进游戏
+> （`17:50:35 wx.login: game not up -> ensure running` → `17:50:43 resident: game window back`），
+> 但那次并没有触发 AutoAuth。
+
+### 9A.2 重开 GameUrl / RuntimeOnly —— 不触发
+
+| 做法 | 结果 |
+|------|------|
+| `RuntimeOnly`（只启 WeChatAppEx） | 微信进程起来（`wxPid` 正常、`boxPids` 稳定），120 秒内 **AutoAuth 0 次** |
+| resident 态 `StartBrowser(GameUrl)` | 游戏窗回来了、ilink CPU 涨了，**AutoAuth 0 次**，key 不变 |
+| CDP `Page.reload` 游戏中心 | 命令发出但页面未重载（ws id 未变），**AutoAuth 0 次** |
+
+原因一致：**运行时自认为 app session 仍然有效**（ilink 进程活着、心跳正常），不需要重新授权。
+它只在 session 失效或进程冷启动时才发。
+
+### 9A.3 Frida 主动调 —— 机制可行，但函数定位失败（附错误教训）
+
+**定位方法（可复用）**：给 `hook_ilink.js` 加 `stackOnAuth`，命中 AutoAuth 相关日志时用
+`Thread.backtrace` 采栈，再用 `.pdata` 异常目录把返回地址归属到函数。
+
+冷启动一次拿到的 `SendAutoAuthRequestAsync` 调用栈（ilink2.dll 内 RVA）：
+
+```
+0x2269FA -> func 0x2269CB  (52B)    ← 日志包装
+0x22CAF2 -> func 0x22C9D0  (347B)
+0x229BAD -> func 0x229B70  (70B)
+0x22267A -> func 0x2224D0  (498B)
+0x2224AA -> func 0x2223C0  (268B)
+0xD6097  -> func 0xD5FE0   (559B)   ← 顶层调度
+```
+
+`0x229B70` 的反汇编（当时据此判定它是 `SendAutoAuthRequestAsync` 本体）：
+
+```asm
+48 89 54 24 10   mov [rsp+10h], rdx
+4c 89 44 24 18   mov [rsp+18h], r8
+4c 89 4c 24 20   mov [rsp+20h], r9
+53               push rbx
+48 83 ec 20      sub rsp, 20h
+48 8b d9         mov rbx, rcx            ; rcx = this
+48 c7 41 48 00…  mov qword [rcx+48h], 0
+48 83 c1 38      add rcx, 38h
+…                ; 清空 [rcx+38h] 的 std::string
+e8 83 b5 ff ff   call 0x225130           ; 疑似 SendRequestEx
+48 8b c3         mov rax, rbx
+```
+
+#### 实测验证：这个判断是错的
+
+第一次尝试「抓 this 后主动调用」时，直接 hook `0x229B70` 观察，结果：
+
+```
+autoauth-call 事件 638 次，来自 37 个不同的 this 指针：
+  0x13548140, 0x13548270, 0x135483a0, 0x135484d0, ...（每次 +0x130，疑似数组）
+  0x1359e4a0, 0x1359e5d0, ...（另一段）
+```
+
+再用 `NativeFunction` 主动调用一次：
+
+```json
+{"ev": "autoauth-invoke", "thisPtr": "0x49674f0", "ok": true, "ret": "0x49674f0", "callsBefore": 234}
+```
+
+**调用本身成功、进程没崩、返回值正常**（符合 `mov rax, rbx`），但：
+
+| 观察 | 结果 |
+|------|------|
+| 新增 `AutoAuthResponse` | ❌ **0 次**（唯一那条是运行时自己在 18:18:34 发的） |
+| key 变化 | ❌ 仍是 `23853ed2`（18:15:31） |
+| 游戏窗口 | ✅ 仍在，进程正常 |
+
+**三条证据推翻原判断**：
+
+1. 被 **37 个不同 `this`** 调用 —— AutoAuth 应该只有一个 `TdiAuthManager` 实例；
+2. 调用 **638 次** —— AutoAuth 不可能这么频繁；
+3. 主动调用后**没有产生任何 AutoAuth 请求**。
+
+结论：`0x229B70` 是个**通用的请求发送/日志包装函数**（清一个 string + 调通用发送），
+**不是 `SendAutoAuthRequestAsync`**。
+
+#### 教训：从调用栈反推函数是错的
+
+「栈上出现了这个地址」只能说明它在调用链上，**不能说明它就是那个函数**。
+我当初直接从栈帧推出「`0x229B70` = `SendAutoAuthRequestAsync`」，这个推断不成立。
+
+正确的定位思路应该是：**只挑「调用次数少（1–2 次）、`this` 唯一、且紧邻 `cmdid 3198` 发送点」的函数**，
+再用「调用它之后是否出现新的 `AutoAuthResponse`」来验证。
+
+#### 但这轮验证了一个有价值的事实
+
+**Frida 能在运行中的 ilink 进程里安全调用内部函数而不崩溃**（`ok: true`、进程存活、游戏在跑）。
+也就是说机制可行，只是**没调对函数**。这条路技术上没被堵死，但需要更精确的定位，
+且即使找到，常驻态下调用是否被服务端接受仍未验证。
+
+### 9A.4 静态定位的正确方法：找 URL 字符串的代码引用（2026-11-04 突破）
+
+前面 9A.3 的失败暴露了一个方法论错误：**用「日志采栈」反推函数**。
+采到的是「日志输出时」的栈，而我们要找的是「构造请求时」的函数——两者完全不同的调用路径。
+
+**正确做法：找业务标识串（URL / cmdid）在代码里的引用。**
+
+`/ilink/ilinkapp/sys/ilinkapp_autoauth` 这个 URL 在构造请求时**一定被引用**，
+比日志字面量（死符号、无引用）可靠得多。工具：`tools/lean-refresh/locate_autoauth_static.py`。
+
+定位结果（`WXRuntime_V22346514299`）：
+
+```
+"/ilink/ilinkapp/sys/ilinkapp_autoauth"  fileoff=0x770258
+    ↓ 代码引用（lea rip+disp32）仅 1 处
+0xD7710  (161B)   构造 AutoAuth 请求
+    ├─ 引用该 URL
+    └─ mov dword [rbx+10h], 0xC7E    ← 0xC7E = 3198 = AutoAuth 的 cmdid
+    ↓ 唯一调用者（仅 1 处）
+0xD4390  (895B)   完整的 AutoAuth 流程
+    ├─ call 0xD7710   ← 构造请求
+    ├─ call 0xB41C0   ← 设置凭证
+    ├─ call 0x224F60  ← 发送
+    └─ call 0x222D50
+```
+
+**`0xD7710` 的关键反汇编片段**：
+
+```asm
++025  c7 43 10 7e 0c 00 00   mov dword [rbx+10h], 0xC7E   ; cmdid = 3198
++034  48 8d 0d 75 4b 83 00   lea rcx, [全局]
++066  41 b8 25 00 00 00      mov r8d, 25h                ; 长度 37 = URL 字节数
++06D  48 8d 15 d6 9a 69 00   lea rdx, [AutoAuth URL]     ; ← URL
++078  e8 86 96 fd ff         call 0xB0E10                ; 赋值
+```
+
+**与误判函数的对比（说明静态定位更准）**：
+
+| 函数 | 被调用 | 不同 this | 含 cmdid 3198 | 结论 |
+|------|--------|-----------|----------------|------|
+| `0x229B70`（旧误判，来自采栈） | 638 次 | **37 个** | ❌ | 通用发送包装 |
+| **`0xD4390`（静态定位）** | **1 次** | 1 个 | ✅ | **真正的 AutoAuth** |
+
+#### 尚未完成的验证
+
+**`0xD4390` / `0xD7710` 还没有在运行中的 ilink 进程上实测过。** 卡在观测器注入不稳定：
+
+| 时间 | 失败表现 |
+|------|----------|
+| 18:16 | ilink 注入 `ProcessNotRespondingError` |
+| 22:25 | **main + network 都失败** |
+
+这是**观测器在进程创建瞬间注入的竞态**（`hookAutoAuth` 即便延后 1.5 秒仍不充分），
+与 RVA 无关——已确认 `--invoke-autoauth` 关闭时不会 hook 这段。
+
+**下一步如果要继续**：
+
+1. 先单独把注入竞态修稳（例如完全不在 init 阶段做任何 attach，改为「模块加载后 + 延时 3 秒」）。
+2. 再 hook `0xD4390`（不是 `0xD7710`）观察：真 AutoAuth 时是否只触发 1 次。
+3. 最后才尝试用它的 `this` 主动调用，并**以「是否出现新的 `AutoAuthResponse` + key 是否换新」为唯一判据**。
+
+> 注意：`0xD4390` 接受的是完整的 AutoAuth 上下文（含凭证、回调等），
+> 主动调用它需要比单个 `this` 更多的参数，难度高于之前设想的「调一个 `void(this)` 函数」。
+
+### 9A.5 结论
+
+**目前没有任何可行手段让常驻态「主动续期」。** 冷启动仍是最可靠的方式，实测 24 秒完成：
+
+```
+18:06:26  冷启动（key = 16:14 的 b1605ba5）
+18:06:49  SendAutoAuthRequestAsync
+18:06:52  AutoAuthResponse error=0 ret=0
+18:06:50  key → 23853ed2   ← 换新
+```
+
+保留的工具（`tools/lean-refresh/`）：
+
+| 文件 | 用途 |
+|------|------|
+| `hook_ilink.js` 的 `stackOnAuth` | 命中 AutoAuth 日志时采栈，用于动态定位未知函数 |
+| `hook_ilink.js` 的 `invokeAutoAuth()` / `autoAuthState()` | RPC：查看是否抓到 this、主动调用（仅在有 this 时安全） |
+| `autoauth_probe.py` | 箱内独立实验脚本，验证上述流程 |
+| `longlink_locate.py` 的 `DYN_RVA` | 记录动态定位出的 RVA（**换 WXRuntime 版本必须重新采栈确认**） |
+
+## 10. 观测已跑通（2026-11-04）
+
+### 10.1 qb1：三个 hook 全挂上（15:30）
 
 ```json
 {"ev": "longlink-hooked", "pid": 59348, "role": "ilink",
@@ -325,5 +622,31 @@ qbX 已经有一个观测器在运行，本进程退出
 2026-11-04 15:32:21 [心跳] noop 发送 #2 间隔=47.0s
 ```
 
-间隔 47 秒是因为观测器 attach 时心跳闹钟已经在跑，第一个事件不算基准。
-之后应稳定在 **210 秒**（见第 2 节）。
+（47 秒是首个基准，之后稳定在 180～210 秒。）
+
+### 10.2 qb15：常驻 + 拦截，关游戏后 35 分钟实测（16:14–16:51）
+
+```json
+{"ev": "frida-attached", "pid": 24572, "role": "ilink", "ms": 51}
+{"ev": "longlink-hooked", "pid": 24572, "on_session_timeout": 1481104, ...,
+ "results": {"noop_resp": true, "on_session_timeout": true, "run_read_write": true}}
+{"ev": "longlink-attached", "pid": 24572}
+```
+
+完整时间线：
+
+| 时刻 | 事件 |
+|------|------|
+| 16:14:10 | 观测器启动，`block session timeout is ON` |
+| 16:14:28 | 进游戏，新 key `b1605ba5` |
+| **16:16:08** | 手动关游戏 → `enter resident`（箱没停） |
+| 16:16:17 | `noop #1`（关游戏后 9 秒） |
+| 16:17:24 | `noop #2` 间隔 67.1s |
+| 16:20:24 | `noop #3` 间隔 180.3s |
+| 16:23:24 | `noop #4` 间隔 180.3s |
+| 16:24:25 | `noop #5` 间隔 60.2s |
+| **16:48:14** | **ilink 24572 仍存活**（32 分钟），CPU 11.28s→12.81s |
+| 16:50:27 | 重启观测器，再次捕获 `noop #1` |
+| **16:51:49** | **ilink 存活 35 分钟**，CPU 13.11s，`session-timeout` 计数 **0** |
+
+**结论：关游戏不会导致 `sessiontimeout`；常驻能维持 ilink 长连接与心跳。** 详见第 4.1 节的更正说明。

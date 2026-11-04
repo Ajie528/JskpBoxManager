@@ -162,6 +162,7 @@ public partial class MainWindow : Window
                 var chains = AuthChain.Load();
                 var res = boxes.Select(b => BoxSummary.Build(b, notes, keep, ev, chains, rev)).ToList();
                 BoxSummary.MarkDuplicates(res);
+                BoxSummary.MarkAuthRejects(res);
                 return res;
             });
             var names = list.Select(s => s.Box).ToHashSet();

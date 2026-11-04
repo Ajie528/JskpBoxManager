@@ -160,6 +160,23 @@ public sealed class BoxView
         return true;
     }
 
+    /// <summary>
+    /// 关掉授权扫码层：先关 CDP 里的扫码标签，关不掉再按窗口发 WM_CLOSE。
+    /// 用于「有可用免扫凭证、但加载期就先弹了授权页」时，把挡住 GameUrl 的这层挪开让运行时去自动授权。
+    /// </summary>
+    public bool CloseQrPage()
+    {
+        int n = 0;
+        try { n = Cdp.CloseQrTabs(Box); } catch { }
+        var h = FindTitle(Titles.IsStrictQr, true);
+        if (h != IntPtr.Zero)
+        {
+            Win32.PostMessage(h, Win32.WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+            n++;
+        }
+        return n > 0;
+    }
+
     public bool ShowGameWindow()
     {
         var h = GameHwnd;

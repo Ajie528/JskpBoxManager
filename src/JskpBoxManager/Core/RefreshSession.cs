@@ -41,7 +41,20 @@ public sealed class RefreshSession
         try
         {
             using var boxLock = LaunchSession.TryLock(_box, out bool gotBox);
-            if (!gotBox) { L("refresh skipped (box is being launched / watched)"); return 0; }
+            if (!gotBox)
+            {
+                // 沙箱被启动/看门进程占着。常驻态下这是常态：常驻进程要一直留着 ilink 长连接，
+                // 不能为了保活把箱停掉。以前这里直接 return，等于开常驻的号「每天一次续期」从来没跑过，
+                // 密钥只能靠自然寿命（qb4 就是这样约一天后弹码）。
+                // 现在改成给常驻进程留一张续期请求，由它在循环里做一次真实 AutoAuth。
+                if (RequestRenewFromWatchdog())
+                {
+                    L("refresh skipped (box is being watched) -> asked the watchdog to renew the key in place");
+                    return 0;
+                }
+                L("refresh skipped (box is being launched / watched)");
+                return 0;
+            }
             try
             {
                 BoxRuntime.RegisterLauncher(_box, "refresh");
@@ -64,6 +77,32 @@ public sealed class RefreshSession
         }
         finally { try { global.ReleaseMutex(); } catch { } }
         return 0;
+    }
+
+    /// <summary>
+    /// 沙箱被看门进程占着时，不能冷启续期。只有「确实有个看门进程活着、且开了常驻」才值得留续期请求，
+    /// 免得在别人手动玩的时候多写一个文件。
+    /// </summary>
+    bool RequestRenewFromWatchdog()
+    {
+        try
+        {
+            if (!Keepalive.Load().For(_box).ResidentKeepalive) return false;
+            var mode = BoxRuntime.LauncherMode(_box);
+            if (mode is not ("launch" or "resident")) return false;
+
+            // 游戏正开着时看门循环本身每 30 秒就在存凭证，游戏里的会话是有效的，不必再滚一次。
+            // 只有常驻（只剩运行时、没有游戏窗）才需要按请求做真实 AutoAuth，否则密钥会一路放到自然寿命。
+            var phase = BoxStatusFile.Read(_box)?.Phase;
+            if (phase == BoxPhase.InGame)
+            {
+                L("refresh: game is running in a watched box -> its session is live, no renew needed");
+                return true;
+            }
+            File.WriteAllText(AppPaths.BoxRenewRequest(_box), $"requested {DateTime.Now:o} pid={Environment.ProcessId}\r\n");
+            return true;
+        }
+        catch { return false; }
     }
 
     void RepairInterrupted()
@@ -96,6 +135,8 @@ public sealed class RefreshSession
             Ilink.WriteEvent(_box, "refresh", new JsonObject { ["result"] = "resident-skip", ["keySha"] = Ilink.Live(_box).KeyHash });
             return;
         }
+        // 标记可能已经过时（之后又扫过码 / 直接开过沙箱 / 导入过凭证），先按「沙箱里是否已有更新的有效凭证」清一次
+        try { NeedScan.ClearIfRenewed(_box); } catch { }
         if (NeedScan.Pending(_box))
         {
             L("refresh skipped (need QR scan — no cold start until manual login)");
@@ -390,10 +431,20 @@ public sealed class RefreshSession
     void PollAuth(AuthProbe probe, ColdResult r)
     {
         if (probe == null) return;
-        foreach (var a in probe.Poll())
+        foreach (var a in probe.Poll(t =>
+                 {
+                     if (t.Contains("ManualAuth", StringComparison.OrdinalIgnoreCase))
+                     {
+                         L("refresh: 抓到 ManualAuth（手机扫码登录）");
+                         ScanHint.MarkManualAuth(_box);
+                     }
+                 }))
         {
             L($"refresh: 授权返回 {a.Text}");
-            if (a.Cgi.Contains("Auth", StringComparison.OrdinalIgnoreCase)) r.Auth = a;
+            if (!a.Cgi.Contains("Auth", StringComparison.OrdinalIgnoreCase)) continue;
+            if (a.Cgi.Contains("ManualAuth", StringComparison.OrdinalIgnoreCase)) ScanHint.MarkManualAuth(_box);
+            if (a.Cgi.Contains("AutoAuth", StringComparison.OrdinalIgnoreCase) && a.Ok) ScanHint.MarkAutoAuthOk(_box);
+            r.Auth = a;
         }
     }
 }

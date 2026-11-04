@@ -298,13 +298,22 @@ public static class Ilink
         if (!vault.Valid || vault.KeyHash != live.KeyHash)
         {
             SaveHistorySnapshot(box, vaultRoot, reason);
-            bool scanned = File.Exists(BoxPaths.NeedScanFile(box));
+            // 是「扫码登录」还是「免扫换新」要看授权证据，不能只看 need-scan 文件是否还在：
+            // 加载期过早弹出的授权页 + 之后 AutoAuth ret=0 也被误记成扫码，免扫链寿命因此被不断重置。
+            // 证据窗口从上一把钥匙的写入时间算起；上一把未知时看最近 6 小时。
+            // 证据窗口从上一把钥匙的写入时间算起（都是 UTC ticks）；上一把未知时看最近 6 小时。
+            var since = vault.Valid ? vault.WriteUtc : DateTime.UtcNow.AddHours(-6);
+            bool manual = ScanHint.ManualSince(box, since);
+            bool scannedQr = ScanHint.QrScanSince(box, since);
+            // 只有加载期授权层（overlay）不算扫码：那是程序自己关掉、运行时随后 AutoAuth 成功的挡板
+            bool scanned = manual || scannedQr;
             if (vault.Valid && vault.Uin == live.Uin && scanned)
             {
                 WriteEvent(box, "scan-login", new JsonObject
                 {
                     ["uin"] = live.Uin, ["keySha"] = live.KeyHash, ["writtenAt"] = live.WriteLocal,
                     ["prevAt"] = vault.WriteLocal, ["reason"] = reason,
+                    ["manualAuth"] = manual, ["qrScan"] = scannedQr,
                 });
             }
             else if (vault.Valid && vault.Uin == live.Uin)

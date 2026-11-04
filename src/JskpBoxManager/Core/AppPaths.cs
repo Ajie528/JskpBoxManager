@@ -43,6 +43,9 @@ public static class AppPaths
     public static string BoxLauncherPid(string box) => Path.Combine(Logs, box + ".launcher");
     public static string BoxRefreshPhase(string box) => Path.Combine(Logs, box + ".refresh");
 
+    /// <summary>保活到点但沙箱被常驻看门进程占着时写的续期请求，由常驻循环执行真实 AutoAuth 后续期。</summary>
+    public static string BoxRenewRequest(string box) => Path.Combine(Logs, box + ".renew");
+
     public static void EnsureDirs()
     {
         Directory.CreateDirectory(Profiles);

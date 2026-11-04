@@ -56,8 +56,9 @@ public sealed class LaunchSession
         BoxRuntime.RegisterLauncher(_box, "launch");
         try
         {
-            RunLocked();
-        }
+            // 上一次没被常驻进程取走的续期请求已经没意义了（这次是完整启动，会自己续）
+            try { File.Delete(AppPaths.BoxRenewRequest(_box)); } catch { }
+            RunLocked();        }
         catch (Exception ex)
         {
             L("launch EXCEPTION: " + ex);
@@ -95,11 +96,20 @@ public sealed class LaunchSession
     void ProbePoll()
     {
         if (_probe == null) return;
-        foreach (var a in _probe.Poll(t => { if (LiveKeyLine.IsMatch(t)) L("live auth: " + t.Trim()); }))
+        foreach (var a in _probe.Poll(t =>
+                 {
+                     if (LiveKeyLine.IsMatch(t)) L("live auth: " + t.Trim());
+                     if (t.Contains("ManualAuth", StringComparison.OrdinalIgnoreCase)) ScanHint.MarkManualAuth(_box);
+                 }))
         {
             L($"live auth: 授权返回 {a.Text}");
             if (!a.Cgi.Contains("Auth", StringComparison.OrdinalIgnoreCase)) continue;
-            if (a.Ret == -13 && a.Cgi.Contains("AutoAuth", StringComparison.OrdinalIgnoreCase)) _hardReject = true;
+            if (a.Cgi.Contains("ManualAuth", StringComparison.OrdinalIgnoreCase)) ScanHint.MarkManualAuth(_box);
+            if (a.Cgi.Contains("AutoAuth", StringComparison.OrdinalIgnoreCase))
+            {
+                if (a.Ret == -13) _hardReject = true;
+                else if (a.Ok) ScanHint.MarkAutoAuthOk(_box);
+            }
             Ilink.WriteEvent(_box, "live-auth", new System.Text.Json.Nodes.JsonObject
             {
                 ["cgi"] = a.Cgi, ["error"] = a.Error, ["ret"] = a.Ret, ["msg"] = a.Msg, ["at"] = a.Time,
@@ -130,6 +140,10 @@ public sealed class LaunchSession
         if (!EnvDetect.SbieOk) throw new InvalidOperationException("找不到 Sandboxie-Plus");
         if (!EnvDetect.QqOk) throw new InvalidOperationException("找不到 QQ 浏览器");
         Phase(BoxPhase.Starting, "正在启动…");
+        // 先看标记是不是过时了：标记之后沙箱里已经出现更新的有效凭证（重新扫码、直接开沙箱、导入凭证）
+        // 就不该再拿旧标记降级成「必须扫码」。以前只在进游戏后才清，结果钥匙已经换了还按需扫码处理
+        // （qb15 11-04 12:07：钥匙 12:04:44 就换新了，标记停在 11:28:55，启动照样干等扫码框）。
+        try { NeedScan.ClearIfRenewed(_box); } catch { }
         if (NeedScan.Pending(_box)) L("need-scan pending -> ignore saved login, wait for WeChat QR");
         ProbeInit();
 
@@ -186,6 +200,8 @@ public sealed class LaunchSession
         {
             BoxRuntime.EnsureWxRuntimeInBox(_box);
             VaultSync.PrepareBeforeLaunch(_box);
+            // 启动前准备刚把沙箱里更新的凭证收进金库，标记可能就此过时（同上，不能等到进游戏才清）
+            try { NeedScan.ClearIfRenewed(_box); } catch { }
         }
 
         bool opened = false, waitingQrAtEnd = false, didVaultRestore = false, forceFullWarmup = false;
@@ -290,6 +306,13 @@ public sealed class LaunchSession
         bool sawApp = false, sawWx = false, gameUrlNudged = false, pageReloadDone = false;
         int mpFailTicks = 0, wxGoneAfterSeen = 0, missingAfterSeen = 0;
         DateTime? noUiSince = null, gameSince = null;
+        // 有可用免扫凭证时，授权扫码层只是加载期过早弹出来的挡板：关掉它让 GameUrl 去自动授权。
+        // 以前是原地等 60 秒就判「必须扫码」，但扫码层不下线时 ilink 根本不启动，AutoAuth 永远不会发出，
+        // 等于必然失败（qb15 11-04 12:07 就是这样：手动关掉扫码框后 6 秒 AutoAuth ret=0 进游戏）。
+        DateTime qrOverlaySince = DateTime.MinValue;
+        int qrOverlayRounds = 0;
+        const int qrOverlayMaxRounds = 2;
+        const int qrOverlayWaitSec = 12;
 
         bool LogDue(int sec)
         {
@@ -390,25 +413,42 @@ public sealed class LaunchSession
                     sawQr = true;
                     if (savedLogin && !waitingQr)
                     {
-                        // 有可用备份时扫码层先忽略一会儿（真能免扫会自己进游戏）
-                        if (!notedSavedQr)
+                        // 有可用免扫凭证时，这层授权页只是加载期过早弹出来的挡板：
+                        // 它不下线，ilink 就不会启动，AutoAuth 永远发不出去，原地等必然失败。
+                        // 所以先给运行时十几秒自己的机会，仍挡着就主动关掉并重开 GameUrl。
+                        if (qrOverlaySince == DateTime.MinValue)
                         {
                             L("saved login: QR overlay ignored briefly, waiting for game window");
                             notedSavedQr = true;
-                            launchStarted = DateTime.Now;
+                            qrOverlaySince = DateTime.Now;
                         }
-                        else if ((DateTime.Now - launchStarted).TotalSeconds >= 60)
+                        else if ((DateTime.Now - qrOverlaySince).TotalSeconds >= qrOverlayWaitSec)
                         {
+                            if (qrOverlayRounds < qrOverlayMaxRounds)
+                            {
+                                qrOverlayRounds++;
+                                L($"saved login: QR overlay still up {qrOverlayWaitSec}s -> close it and reopen GameUrl (round {qrOverlayRounds}/{qrOverlayMaxRounds})");
+                                // 到这里才算「授权层挡住了免扫」：用户没扫码，程序主动关掉它。
+                                // 不必在这里重开 GameUrl——下面「扫码层消失」分支会做，避免重复拉起。
+                                ScanHint.MarkOverlay(_box);
+                                try { v.CloseQrPage(); } catch (Exception ex) { L("close QR page failed: " + ex.Message); }
+                                qrOverlaySince = DateTime.Now;
+                                launchStarted = DateTime.Now;
+                                qrResumed = false;   // 关掉后由「扫码层消失」分支重开 GameUrl，允许每轮都重开
+                                continue;
+                            }
+                            // 关掉两轮仍回来，才认为这次真的需要扫码
                             if (!revoked && Ilink.VaultCanHelp(_box))
                             {
-                                L("QR still up 60s -> restore vault login and cold retry");
+                                L("saved login: QR overlay came back after dismiss -> cold retry once");
                                 return new(false, true, false, sawQr, credCleared && !revoked);
                             }
-                            L("saved login stale: QR still up 60s with no game -> require WeChat scan");
+                            L("saved login stale: QR overlay kept coming back -> require WeChat scan");
                             savedLogin = false;
                             waitingQr = true;
                             qrResumed = false;
                             NeedScan.Set(_box, "saved-login-stale-qr");
+                            ScanHint.MarkQrScan(_box);
                             Phase(BoxPhase.WaitingScan, "需要用微信扫码登录");
                             v.ShowQrWindow();
                         }
@@ -421,6 +461,7 @@ public sealed class LaunchSession
                         L("strict QR auth page detected -> wait for WeChat scan | titles=" + v.TitlesSample());
                         v.ShowQrWindow();
                         NeedScan.Set(_box, revoked ? "key-revoked" : "strict-qr-auth-page");
+                        ScanHint.MarkQrScan(_box);
                         Phase(BoxPhase.WaitingScan, "需要用微信扫码登录");
                     }
                     else if (LogDue(60))
@@ -431,11 +472,14 @@ public sealed class LaunchSession
                     continue;
                 }
 
-                // 扫码页消失：通常表示已扫码，要重新打开游戏页，否则会卡在授权后的空白页
+                // 扫码页消失：通常表示已扫码（或程序刚把加载期授权层关掉），要重新打开游戏页，
+                // 否则会卡在授权后的空白页
                 if ((waitingQr || notedSavedQr) && !qrResumed)
                 {
-                    L("QR page gone (scanned) -> reopen GameUrl and wait for game (no sandbox restart needed)");
-                    Phase(BoxPhase.Starting, "已扫码，正在进入游戏…");
+                    L(waitingQr
+                        ? "QR page gone (scanned) -> reopen GameUrl and wait for game (no sandbox restart needed)"
+                        : "QR overlay gone -> reopen GameUrl and wait for game");
+                    Phase(BoxPhase.Starting, waitingQr ? "已扫码，正在进入游戏…" : "正在进入游戏…");
                     try { BoxRuntime.StartBrowser(_box, "post-scan"); } catch (Exception ex) { L("post-scan reopen failed: " + ex.Message); }
                     qrResumed = true;
                     waitingQr = false;
@@ -770,6 +814,7 @@ public sealed class LaunchSession
                 {
                     sawQr = true;
                     NeedScan.Set(_box, "watch-qr");
+                    ScanHint.MarkQrScan(_box);
                     Phase(BoxPhase.WaitingScan, "需要用微信扫码登录");
                 }
                 if ((DateTime.Now - lastLog).TotalSeconds >= 60)
@@ -782,8 +827,7 @@ public sealed class LaunchSession
             }
             if (sawQr && !qrResumed)
             {
-                L("watch: QR gone after scan -> reopen GameUrl");
-                Phase(BoxPhase.Starting, "已扫码，正在进入游戏…");
+                L("watch: QR gone after scan -> reopen GameUrl");                Phase(BoxPhase.Starting, "已扫码，正在进入游戏…");
                 try { BoxRuntime.StartBrowser(_box, "post-scan"); } catch { }
                 qrResumed = true;
                 waitGameDeadline = DateTime.Now.AddMinutes(15);
@@ -843,9 +887,20 @@ public sealed class LaunchSession
         var lastTrim = DateTime.MinValue;
         var lastCred = DateTime.MinValue;
         var lastLog = DateTime.MinValue;
-        // 刚进常驻时密钥还新鲜（游戏中一直在滚），从现在起算，每 6 小时主动重开游戏做一次真实 AutoAuth 把密钥往前滚，
-        // 远在免扫链约一天的自然寿命内，避免「只藏窗不续期、过一天就得扫码」。
+        // 常驻期间要周期性做一次真实 AutoAuth 把密钥往前滚，否则只存 psk、密钥一路放到自然寿命就弹码
+        // （qb4 在 1.5.3 上就是这样：11-03 11:23 进常驻，此后从不滚 key，11-04 08:40 弹扫码）。
+        // 计时从「密钥实际写入时间」起算：从游戏里滚出来的新钥匙不必刚进常驻就再滚一次。
         var lastRenew = DateTime.Now;
+        try
+        {
+            var st = Ilink.Live(_box);
+            if (st.Valid && st.WriteUtc != DateTime.MinValue)
+            {
+                var age = DateTime.UtcNow - st.WriteUtc;
+                if (age > TimeSpan.Zero) lastRenew = DateTime.Now - age;
+            }
+        }
+        catch { }
         bool sawQr = false;
 
         while (true)
@@ -920,8 +975,11 @@ public sealed class LaunchSession
                 Phase(BoxPhase.Resident, "常驻保活中（轻量）");
             }
 
-            if ((DateTime.Now - lastRenew).TotalHours >= ResidentRenewHours)
+            var keyAge = LiveKeyAgeHours();
+            bool keyAging = keyAge != null && keyAge.Value >= ResidentKeyMaxAgeHours;
+            if ((DateTime.Now - lastRenew).TotalHours >= ResidentRenewHours || keyAging || TakeRenewRequest())
             {
+                if (keyAging) L($"resident: key is {keyAge:F1}h old (limit {ResidentKeyMaxAgeHours}h) -> renew now");
                 lastRenew = DateTime.Now;
                 ResidentRenew(); // 出扫码页时不藏窗，主循环下一轮看到扫码页转入 need-scan
                 continue;
@@ -966,8 +1024,45 @@ public sealed class LaunchSession
         }
     }
 
-    /// <summary>常驻每隔多少小时主动重开游戏做一次真实 AutoAuth（远小于免扫链约一天的寿命）。</summary>
+    /// <summary>
+    /// 常驻每隔多少小时主动重开游戏做一次真实 AutoAuth（远小于免扫链约一天的寿命）。
+    /// </summary>
     const double ResidentRenewHours = 6;
+
+    /// <summary>
+    /// 密钥年龄到这个阈值就必须续期：实测免扫链约一天就撞墙，留 4 小时余量。
+    /// 常驻进程每轮都会检查，比「进常驻后每 6 小时」更稳——刚进常驻时密钥可能已经很老了。
+    /// </summary>
+    const double ResidentKeyMaxAgeHours = 20;
+
+    /// <summary>当前这把密钥空闲多久了（小时）；没有有效凭证时返回 null。</summary>
+    double? LiveKeyAgeHours()
+    {
+        try
+        {
+            var st = Ilink.Live(_box);
+            if (!st.Valid || st.WriteUtc == DateTime.MinValue) return null;
+            return (DateTime.UtcNow - st.WriteUtc).TotalHours;
+        }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// 取一次保活计划任务留下的续期请求（logs\qbN.renew）：有就删掉并返回 true。
+    /// 计划任务拿不到沙箱锁时会写这个文件，让常驻进程代替它做一次真实 AutoAuth。
+    /// </summary>
+    bool TakeRenewRequest()
+    {
+        var p = AppPaths.BoxRenewRequest(_box);
+        try
+        {
+            if (!File.Exists(p)) return false;
+            File.Delete(p);
+            L("resident: keepalive task asked for a renew -> doing it now");
+            return true;
+        }
+        catch { return false; }
+    }
 
     enum ResidentRenewResult { Rolled, NotRolled, NeedScan }
 

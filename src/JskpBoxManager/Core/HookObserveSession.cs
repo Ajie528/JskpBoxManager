@@ -146,6 +146,8 @@ public sealed class HookObserveSession
 
     void PrintKeyLine(string line)
     {
+        if (line.Contains("ManualAuth", StringComparison.OrdinalIgnoreCase)) ScanHint.MarkManualAuth(_box);
+        if (line.Contains("AutoAuthResponse") && line.Contains("ret = 0")) ScanHint.MarkAutoAuthOk(_box);
         if (line.Contains("[attach") || line.Contains("[已挂上") || line.Contains("[警告]") || line.Contains("[脚本错误]")
             || line.Contains("tdi_account") || KeyLine.IsMatch(line))
             Out(line.Length > 300 ? line[..300] : line);

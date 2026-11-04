@@ -175,7 +175,7 @@
                             <Button x:Name="BtnMem" Content="↓  释放浏览器内存" Style="{StaticResource Btn}" Click="Mem_Click"
                                     ToolTip="隐藏 QQ 浏览器窗口、回收它的内存；不影响游戏"/>
                             <Button x:Name="BtnDeepMem" Content="↓↓  深度压缩内存（含游戏）" Style="{StaticResource Btn}" Click="DeepMem_Click"
-                                    ToolTip="连游戏本体一起压工作集；数字大降但正玩会回升、提交不变。适合挂机腾物理内存"/>
+                                    ToolTip="连游戏本体一起压工作集；数字大降但正玩会回升、提交不变。会拖断 ilink 长连接，所以常驻保活中的沙箱只压浏览器"/>
                             <Button x:Name="BtnTools" Content="🛠  高级工具（取Token / 抓包 / 解包 / 保活…）" Style="{StaticResource Btn}" Click="Tools_Click"
                                     ToolTip="取业务 Token、抓 wx 请求、导 TLS 密钥、解包、Frida 观测、凭证导入导出等"/>
                             <Button x:Name="BtnScanFree" Content="⟲  免扫重试（清缓存·不重扫）" Style="{StaticResource Btn}" Click="ScanFree_Click"

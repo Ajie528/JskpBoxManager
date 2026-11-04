@@ -350,6 +350,7 @@ public static class BoxRuntime
                      "refresh-qr-streak.txt", "cookie-count.txt", "cookie-memory.txt", @"wmpf\device_uuid_0", @"wmpf\psk.key",
                  })
             try { File.Delete(Path.Combine(prof, rel)); } catch { }
+        ScanHint.Clear(box);
         foreach (var f in Directory.GetFiles(prof, "login-ok.txt*")) try { File.Delete(f); } catch { }
         Directory.CreateDirectory(BoxPaths.WmpfVault(box));
         try { File.Delete(AppPaths.BoxRefreshPhase(box)); } catch { }
@@ -380,6 +381,15 @@ public static class BoxRuntime
     {
         var view = new BoxView(box);
         if (view.Empty) return "沙箱没有在运行。";
+        // 常驻态靠 ilink 长连接活着：压掉游戏本体等于把心跳线程换出，实测会直接 AppSessionTimeout 掉线，
+        // 之后只能重新扫码（qb4 11-03 压完 24 分钟内就 sessiontimeout，第二天要扫码）。这种情况只压浏览器。
+        if (BoxStatusFile.Read(box)?.Phase == BoxPhase.Resident)
+        {
+            try { Cdp.CloseExtraTabs(box); } catch { }
+            var (b0, a0) = view.TrimBrowserMemory();
+            Log.Box(box, $"deep trim refused (resident keeps long link) -> QQ only {b0 / 1048576}MB -> {a0 / 1048576}MB");
+            return $"常驻保活中，为保住 ilink 长连接只压了 QQ 浏览器：{b0 / 1048576} MB → {a0 / 1048576} MB。要压游戏请先停掉常驻。";
+        }
         try { Cdp.CloseExtraTabs(box); } catch { }
         var (before, after) = view.TrimAllMemory();
         Log.Box(box, $"deep trim memory (incl game) workingSet {before / 1048576}MB -> {after / 1048576}MB");
@@ -395,9 +405,7 @@ public static class BoxRuntime
         var (before, after) = view.TrimBrowserMemory();
         Log.Box(box, $"auto trim memory (QQ only) workingSet {before / 1048576}MB -> {after / 1048576}MB");
         return $"QQ 浏览器工作集 {before / 1048576} MB → {after / 1048576} MB（不含游戏）";
-    }
-
-    /// <summary>删掉 QQ 浏览器的纯缓存目录（HTTP 缓存 / 代码缓存 / GPU 缓存 / Service Worker）。不动登录凭证、cookies、游戏包。</summary>
+    }    /// <summary>删掉 QQ 浏览器的纯缓存目录（HTTP 缓存 / 代码缓存 / GPU 缓存 / Service Worker）。不动登录凭证、cookies、游戏包。</summary>
     static int ClearBrowserCache(string box)
     {
         var def = Path.Combine(BoxPaths.UserData(box), "Default");
@@ -438,6 +446,7 @@ public static class BoxRuntime
         NeedScan.Clear(box);
         NeedScan.ClearQrStreak(box);
         Ilink.ClearRevoked(box);
+        ScanHint.ClearQrScanMarks(box);
 
         var cred = Ilink.Restore(box, "scan-free-relogin");
         Log.Box(box, $"scan-free relogin ready: cleared {cleared} cache dirs, vault key {vault.KeyHash} restore={cred}");
@@ -459,6 +468,7 @@ public static class BoxRuntime
         NeedScan.Clear(box);
         NeedScan.ClearQrStreak(box);
         Ilink.ClearRevokedKey(box, keyHash);
+        ScanHint.ClearQrScanMarks(box);
 
         if (!Ilink.RestoreCredentialSet(box, srcDir))
             return (false, "这份备份读不出有效凭证。");

@@ -1,0 +1,73 @@
+<Window x:Class="JskpBoxManager.UI.RecoverWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="历史凭证恢复" Width="820" Height="620" MinWidth="680" MinHeight="480"
+        WindowStartupLocation="CenterOwner" FontFamily="Microsoft YaHei UI" FontSize="13"
+        Background="White" Icon="/app.ico">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="160"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- 顶栏 -->
+        <Border Grid.Row="0" Background="#0F172A" Padding="18,12">
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                <TextBlock x:Name="TxtTitle" Text="历史凭证恢复" Foreground="White" FontSize="16" FontWeight="SemiBold"/>
+                <TextBlock x:Name="TxtSub" Foreground="#94A3B8" Margin="12,3,0,0"/>
+            </StackPanel>
+        </Border>
+
+        <!-- 说明 -->
+        <TextBlock Grid.Row="1" Margin="16,12,16,0" TextWrapping="Wrap" Foreground="{StaticResource Muted}"
+                   Text="弹扫码框、但可能只是本地凭证坏了时用：拿备份的历史 key 逐一冷启验证，能免扫进游戏就停。真被顶/过期（服务端 ret=-13）救不回来，会提示重新扫码。每把约 1~2 分钟。"/>
+
+        <!-- 操作栏 -->
+        <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="16,12,16,8">
+            <Button x:Name="BtnAuto" Content="⟲ 自动逐个试（到成功为止）" Style="{StaticResource PrimaryBtn}" Margin="0,0,8,0" Click="Auto_Click"/>
+            <Button x:Name="BtnStop" Content="■ 停止" Style="{StaticResource Btn}" Margin="0,0,8,0" Click="Stop_Click" IsEnabled="False"/>
+            <Button Content="刷新列表" Style="{StaticResource Btn}" Margin="0" Click="Refresh_Click"/>
+        </StackPanel>
+
+        <!-- 候选列表 -->
+        <Border Grid.Row="3" Margin="16,0,16,0" BorderBrush="{StaticResource Border}" BorderThickness="1" CornerRadius="6">
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <ItemsControl x:Name="List">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Border BorderBrush="{StaticResource Border}" BorderThickness="0,0,0,1" Padding="12,8">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="{Binding Title}" FontWeight="SemiBold"/>
+                                        <TextBlock Text="{Binding Sub}" Foreground="{StaticResource Muted}" FontSize="12" Margin="0,2,0,0"/>
+                                    </StackPanel>
+                                    <Button Grid.Column="1" Content="试这把" Style="{StaticResource Btn}" Margin="0" Padding="12,5"
+                                            VerticalAlignment="Center" IsEnabled="{Binding CanTry}" Tag="{Binding}" Click="TryRow_Click"/>
+                                </Grid>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </ScrollViewer>
+        </Border>
+
+        <!-- 输出 -->
+        <TextBox x:Name="TxtOut" Grid.Row="4" Margin="16,10,16,0" IsReadOnly="True"
+                 FontFamily="Consolas, Microsoft YaHei UI" FontSize="12" Background="#0B1020" Foreground="#D1FAE5"
+                 TextWrapping="NoWrap" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"/>
+
+        <!-- 底栏 -->
+        <DockPanel Grid.Row="5" Margin="16,10,16,12" LastChildFill="False">
+            <TextBlock x:Name="TxtStatus" DockPanel.Dock="Left" VerticalAlignment="Center" Foreground="{StaticResource Muted}"/>
+            <Button DockPanel.Dock="Right" Content="关闭" Style="{StaticResource Btn}" Margin="8,0,0,0" Padding="16,6" Click="Close_Click"/>
+        </DockPanel>
+    </Grid>
+</Window>

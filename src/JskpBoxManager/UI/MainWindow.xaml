@@ -180,6 +180,8 @@
                                     ToolTip="取业务 Token、抓 wx 请求、导 TLS 密钥、解包、Frida 观测、凭证导入导出等"/>
                             <Button x:Name="BtnScanFree" Content="⟲  免扫重试（清缓存·不重扫）" Style="{StaticResource Btn}" Click="ScanFree_Click"
                                     ToolTip="弹扫码框但其实没被顶时用：清本地会话缓存、还原金库里的免扫凭证再冷启，尽量免扫进入。若是真被顶/过期，仍会要求扫码。不会删除你的登录"/>
+                            <Button x:Name="BtnRecover" Content="⟲  用历史凭证恢复（免扫·逐个试）" Style="{StaticResource Btn}" Click="Recover_Click"
+                                    ToolTip="免扫重试还不行时用：列出金库+最近 12 份历史 key，可单点某把试，或自动从新到旧逐个冷启验证，第一把能免扫就停。真被顶/过期仍要扫码"/>
                             <Button x:Name="BtnClear" Content="⟲  清除登录 / 换号重新扫码" Style="{StaticResource DangerBtn}" Click="Clear_Click"
                                     ToolTip="删除这个沙箱保存的登录，下次启动要重新扫码；游戏包和备注保留"/>
                             <Button x:Name="BtnDelete" Content="🗑  删除这个沙箱" Style="{StaticResource DangerBtn}" Click="DeleteBox_Click"

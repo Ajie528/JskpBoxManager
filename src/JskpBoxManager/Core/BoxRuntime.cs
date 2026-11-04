@@ -443,4 +443,25 @@ public static class BoxRuntime
         Log.Box(box, $"scan-free relogin ready: cleared {cleared} cache dirs, vault key {vault.KeyHash} restore={cred}");
         return (true, $"已清本地会话与缓存、还原免扫凭证（key {vault.KeyHash}），正在重新免扫进入…");
     }
+
+    /// <summary>
+    /// 手动试某一把历史 key：停箱 → 清本地会话/缓存 → 撤销这把 key 的作废登记 → 把它写进 live。之后由调用方冷启验证。
+    /// </summary>
+    public static (bool Ok, string Message) TryHistoryKey(string box, string srcDir, string keyHash)
+    {
+        Log.Box(box, $"try history key {keyHash}: terminate, clear cache, write key to live");
+        StopLaunchers(box);
+        Sandboxie.Terminate(box);
+        Thread.Sleep(1500);
+
+        ClearCrashRestore(box);
+        ClearBrowserCache(box);
+        NeedScan.Clear(box);
+        NeedScan.ClearQrStreak(box);
+        Ilink.ClearRevokedKey(box, keyHash);
+
+        if (!Ilink.RestoreCredentialSet(box, srcDir))
+            return (false, "这份备份读不出有效凭证。");
+        return (true, $"已写入历史 key {(keyHash.Length >= 8 ? keyHash[..8] : keyHash)}，正在冷启动验证…");
+    }
 }

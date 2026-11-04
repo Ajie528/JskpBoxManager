@@ -455,6 +455,13 @@ public partial class MainWindow : Window
         SetStatus(msg + "（若仍弹扫码，说明是真被顶/过期，只能重新扫码）");
     }
 
+    void Recover_Click(object sender, RoutedEventArgs e)
+    {
+        var cur = Current;
+        if (cur == null || Selected.Count != 1) { SetStatus("请先选择一个沙箱"); return; }
+        new RecoverWindow(cur.Box) { Owner = this }.Show();
+    }
+
     async void DeleteBox_Click(object sender, RoutedEventArgs e)
     {
         var cur = Current;

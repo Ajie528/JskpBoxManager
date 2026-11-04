@@ -31,6 +31,12 @@ public sealed class LaunchBaseline
     public DateTime LaunchUtc;
 }
 
+/// <summary>一份可用来尝试免扫恢复的凭证：当前金库或历史快照。</summary>
+public sealed record CredCandidate(string Dir, string KeyHash, string Uin, DateTime SavedAt, string Tag, bool Revoked, bool IsVault)
+{
+    public string KeyShort => KeyHash.Length >= 8 ? KeyHash[..8] : KeyHash;
+}
+
 /// <summary>
 /// 微信运行时 ilink 登录凭证守护。
 ///
@@ -390,6 +396,71 @@ public static class Ilink
     public static void ClearRevoked(string box)
     {
         try { File.Delete(BoxPaths.RevokedFile(box)); } catch { }
+    }
+
+    /// <summary>只撤销某一把 key 的作废登记（手动试这把历史 key 时用）。</summary>
+    public static void ClearRevokedKey(string box, string keyHash)
+    {
+        var p = BoxPaths.RevokedFile(box);
+        try
+        {
+            if (!File.Exists(p) || string.IsNullOrWhiteSpace(keyHash)) return;
+            var keep = File.ReadAllLines(p)
+                .Where(l => l.Split((char[])null, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() != keyHash)
+                .ToArray();
+            File.WriteAllLines(p, keep);
+        }
+        catch { }
+    }
+
+    /// <summary>列出可尝试恢复的凭证：当前金库 + 历史快照（按 key 去重，新→旧）。</summary>
+    public static List<CredCandidate> CredentialHistory(string box)
+    {
+        var list = new List<CredCandidate>();
+        var seen = new HashSet<string>();
+
+        var vault = Read(BoxPaths.WmpfVault(box));
+        if (vault.Valid)
+        {
+            list.Add(new CredCandidate(BoxPaths.WmpfVault(box), vault.KeyHash, vault.Uin,
+                vault.WriteUtc.ToLocalTime(), "当前金库", IsRevoked(box, vault.KeyHash), true));
+            seen.Add(vault.KeyHash);
+        }
+
+        var histRoot = System.IO.Path.Combine(BoxPaths.CredentialDir(box), "history");
+        if (Directory.Exists(histRoot))
+        {
+            foreach (var d in new DirectoryInfo(histRoot).GetDirectories().OrderByDescending(d => d.Name))
+            {
+                IlinkState st;
+                try { st = Read(d.FullName); } catch { continue; }
+                if (!st.Valid || !seen.Add(st.KeyHash)) continue;
+                var tag = d.Name.Split('-').Skip(3).FirstOrDefault() ?? "";
+                list.Add(new CredCandidate(d.FullName, st.KeyHash, st.Uin,
+                    st.WriteUtc.ToLocalTime(), tag, IsRevoked(box, st.KeyHash), false));
+            }
+        }
+        return list.OrderByDescending(c => c.IsVault).ThenByDescending(c => c.SavedAt).ToList();
+    }
+
+    /// <summary>把某份凭证（金库或历史快照目录）里的 key/psk/配套文件写进 live（不删除 live 的 host 等其它文件）。</summary>
+    public static bool RestoreCredentialSet(string box, string srcDir)
+    {
+        IlinkState st;
+        try { st = Read(srcDir); } catch { return false; }
+        if (!st.Valid) return false;
+
+        var liveRoot = BoxPaths.WmpfLive(box);
+        if (Read(liveRoot).Valid) SaveHistorySnapshot(box, liveRoot, "pre-recover");
+
+        var rels = new List<string>();
+        var acct = AccountFile(srcDir);
+        if (acct != null) rels.Add(acct.FullName[srcDir.TrimEnd('\\').Length..].TrimStart('\\'));
+        rels.Add(@"ilink\default\psk.key");
+        rels.AddRange(CompanionRels);
+        int n = CopyFileSet(srcDir, liveRoot, rels);
+        Log.Box(box, $"restore credential set from {System.IO.Path.GetFileName(srcDir)} (key {st.KeyHash}) -> live files={n}");
+        return n > 0;
     }
 
     /// <summary>启动浏览器前调用：记下这次要拿去自动授权的那把密钥。</summary>

@@ -374,7 +374,8 @@ public static class BoxRuntime
         return $"隐藏了 {hidden} 个浏览器窗口，结束 {killed} 个页面进程，QQ 浏览器内存 {before / 1048576} MB → {after / 1048576} MB。";
     }
 
-    /// <summary>深度压缩：含游戏本体（WeChatAppEx）一起压工作集。工作集会大降，但正在玩时会回升、提交(私有字节)不变。</summary>
+    /// <summary>深度压缩：含游戏本体（WeChatAppEx）一起压工作集。工作集会大降，但正在玩时会回升、提交(私有字节)不变。
+    /// 注意：压游戏本体会把 ilink 心跳/网络线程换出，可能拖断长连接——仅供手动点一下看效果，别用在保活/常驻上。</summary>
     public static string DeepTrimMemory(string box)
     {
         var view = new BoxView(box);
@@ -383,5 +384,16 @@ public static class BoxRuntime
         var (before, after) = view.TrimAllMemory();
         Log.Box(box, $"deep trim memory (incl game) workingSet {before / 1048576}MB -> {after / 1048576}MB");
         return $"工作集 {before / 1048576} MB → {after / 1048576} MB（含游戏，正玩会回升；提交不变）";
+    }
+
+    /// <summary>自动压内存：只压 QQ 浏览器工作集，**不动**游戏本体 WeChatAppEx（避免把心跳/长连接线程换出）。</summary>
+    public static string AutoTrimMemory(string box)
+    {
+        var view = new BoxView(box);
+        if (view.Empty) return "沙箱没有在运行。";
+        try { Cdp.CloseExtraTabs(box); } catch { }
+        var (before, after) = view.TrimBrowserMemory();
+        Log.Box(box, $"auto trim memory (QQ only) workingSet {before / 1048576}MB -> {after / 1048576}MB");
+        return $"QQ 浏览器工作集 {before / 1048576} MB → {after / 1048576} MB（不含游戏）";
     }
 }

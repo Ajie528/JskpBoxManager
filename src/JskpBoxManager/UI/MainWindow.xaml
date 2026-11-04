@@ -57,7 +57,7 @@
                         <Button Content="复制令牌" Style="{StaticResource LinkBtn}" Margin="0,0,12,0" Click="ProtocolToken_Click"
                                 ToolTip="复制 JSKP_PROTOCOL_TOKEN，给脚本 Authorization: Bearer 使用"/>
                         <CheckBox x:Name="ChkAutoTrim" Content="自动压内存" VerticalAlignment="Center" Margin="0,0,4,0" Click="AutoTrim_Click"
-                                  ToolTip="每隔几分钟自动深度压缩所有在跑的沙箱（含游戏）；挂机省物理内存用，仅界面开着时生效"/>
+                                  ToolTip="每隔几分钟自动压一次所有在跑的沙箱（仅 QQ 浏览器，不动游戏本体以免拖断长连接）；挂机省物理内存用，仅界面开着时生效"/>
                         <TextBox x:Name="TxtTrimMin" Width="34" Text="10" Padding="2" HorizontalContentAlignment="Center" VerticalAlignment="Center" Margin="0,0,2,0" LostFocus="AutoTrim_Click"/>
                         <TextBlock Text="分" VerticalAlignment="Center" Foreground="#CBD5E1" FontSize="12" Margin="0,0,12,0"/>
                         <Button Content="＋ 新建沙箱" Style="{StaticResource Btn}" Margin="0,0,8,0" Click="NewBox_Click"/>

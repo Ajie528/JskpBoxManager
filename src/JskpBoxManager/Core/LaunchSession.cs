@@ -843,6 +843,9 @@ public sealed class LaunchSession
         var lastTrim = DateTime.MinValue;
         var lastCred = DateTime.MinValue;
         var lastLog = DateTime.MinValue;
+        // 刚进常驻时密钥还新鲜（游戏中一直在滚），从现在起算，每 6 小时主动重开游戏做一次真实 AutoAuth 把密钥往前滚，
+        // 远在免扫链约一天的自然寿命内，避免「只藏窗不续期、过一天就得扫码」。
+        var lastRenew = DateTime.Now;
         bool sawQr = false;
 
         while (true)
@@ -917,6 +920,13 @@ public sealed class LaunchSession
                 Phase(BoxPhase.Resident, "常驻保活中（轻量）");
             }
 
+            if ((DateTime.Now - lastRenew).TotalHours >= ResidentRenewHours)
+            {
+                lastRenew = DateTime.Now;
+                ResidentRenew(); // 出扫码页时不藏窗，主循环下一轮看到扫码页转入 need-scan
+                continue;
+            }
+
             if (v.WeChatRuntimeUp)
             {
                 failStreak = 0;
@@ -954,6 +964,61 @@ public sealed class LaunchSession
                 return false;
             }
         }
+    }
+
+    /// <summary>常驻每隔多少小时主动重开游戏做一次真实 AutoAuth（远小于免扫链约一天的寿命）。</summary>
+    const double ResidentRenewHours = 6;
+
+    enum ResidentRenewResult { Rolled, NotRolled, NeedScan }
+
+    /// <summary>
+    /// 常驻真实续期：重开游戏让运行时发一次 AutoAuth，把 AutoAuthKey 往前滚并存金库，再藏回去。
+    /// 关游戏窗时 app 会话本就会超时，真正决定能不能免扫重进的是这把 key 还在不在寿命内——所以常驻必须周期性真滚它，而不是只存 psk。
+    /// </summary>
+    ResidentRenewResult ResidentRenew()
+    {
+        L("resident: periodic renew -> reopen game to roll AutoAuthKey");
+        Phase(BoxPhase.Resident, "常驻续期中…");
+        var frozen = Ilink.Live(_box).KeyHash;
+        try { BoxRuntime.StartBrowser(_box, "resident-renew"); }
+        catch (Exception ex) { L("resident renew start: " + ex.Message); }
+
+        var deadline = DateTime.Now.AddSeconds(120);
+        var result = ResidentRenewResult.NotRolled;
+        while (DateTime.Now < deadline)
+        {
+            Thread.Sleep(3000);
+            try { ProbeTick(); } catch { }
+            if (_hardReject)
+            {
+                L("resident renew: hard AutoAuth reject (ret=-13)");
+                return ResidentRenewResult.NeedScan;
+            }
+            BoxView v;
+            try { v = new BoxView(_box); }
+            catch { continue; }
+            if (v.HasStrictQr)
+            {
+                L("resident renew: QR appeared -> key dead, need scan");
+                return ResidentRenewResult.NeedScan; // 不藏窗，留着扫码页让主循环接手
+            }
+            var live = Ilink.Live(_box);
+            if (live.Valid && live.KeyHash.Length > 0 && live.KeyHash != frozen)
+            {
+                Ilink.Save(_box, "resident-renew");
+                L($"resident renew: key rolled {frozen} -> {live.KeyHash}");
+                result = ResidentRenewResult.Rolled;
+                break;
+            }
+        }
+        if (result != ResidentRenewResult.Rolled)
+        {
+            try { Ilink.Save(_box, "resident-renew-nokeyroll"); } catch { }
+            L("resident renew: key not rolled within window (will retry next cycle)");
+        }
+        try { new BoxView(_box).TrimResident(); } catch { } // 关游戏窗 + 藏壳 + 压 QQ 内存，回到轻量态
+        Phase(BoxPhase.Resident, "常驻保活中（轻量）");
+        return result;
     }
 
     /// <summary>游戏弹「版本已经更新，请重启」：确认 → 关微信运行时 → 重新打开游戏。</summary>

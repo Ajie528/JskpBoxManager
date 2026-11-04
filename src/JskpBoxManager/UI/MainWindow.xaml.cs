@@ -409,7 +409,7 @@ public partial class MainWindow : Window
             ["minutes"] = m,
         });
         _lastAutoTrim = DateTime.Now;
-        SetStatus(ChkAutoTrim.IsChecked == true ? $"自动压内存已开：每 {m} 分钟压一次在跑的沙箱（含游戏）" : "自动压内存已关");
+        SetStatus(ChkAutoTrim.IsChecked == true ? $"自动压内存已开：每 {m} 分钟压一次在跑的沙箱（仅 QQ 浏览器，不含游戏）" : "自动压内存已关");
     }
 
     void MaybeAutoTrim()
@@ -420,8 +420,8 @@ public partial class MainWindow : Window
         _lastAutoTrim = DateTime.Now;
         var boxes = _rows.Where(r => r.Summary != null && r.Summary.Running).Select(r => r.Box).ToList();
         if (boxes.Count == 0) return;
-        _ = Task.Run(() => { foreach (var b in boxes) { try { BoxRuntime.DeepTrimMemory(b); } catch { } } });
-        SetStatus($"自动深度压缩 {boxes.Count} 个在跑的沙箱（{DateTime.Now:HH:mm}）");
+        _ = Task.Run(() => { foreach (var b in boxes) { try { BoxRuntime.AutoTrimMemory(b); } catch { } } });
+        SetStatus($"自动压内存 {boxes.Count} 个在跑的沙箱（仅 QQ 浏览器，不含游戏，{DateTime.Now:HH:mm}）");
     }
 
     void Tools_Click(object sender, RoutedEventArgs e)

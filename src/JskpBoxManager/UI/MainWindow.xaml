@@ -224,6 +224,10 @@
                         <CheckBox x:Name="ChkResidentKeep" Margin="0,0,0,8">
                             <TextBlock Text="关游戏后常驻轻量运行时（保留 ilink 长连接；藏窗压内存，不整箱停掉）" TextWrapping="Wrap"/>
                         </CheckBox>
+                        <CheckBox x:Name="ChkBlockSessionTimeout" Margin="0,0,0,8" Foreground="#B45309">
+                            <TextBlock Text="实验：拦截会话超时不让运行时退出（只用于验证；默认只观测）" TextWrapping="Wrap"
+                                       ToolTip="勾上后，运行时收到服务端 App layer sessiontimeout 也不会清登录态/退出进程。用来验证「长连接还在时业务是否真不可用」。可能产生僵尸连接，别在重要的号上开。"/>
+                        </CheckBox>
                         <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
                             <RadioButton x:Name="RadDaily" Content="每天" VerticalAlignment="Center" GroupName="sched" Checked="Sched_Changed"/>
                             <TextBox x:Name="TxtHour" Width="38" Margin="6,0,2,0" Padding="3" HorizontalContentAlignment="Center"/>

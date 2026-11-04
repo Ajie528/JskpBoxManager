@@ -118,6 +118,25 @@ public sealed class BoxView
         }
     }
 
+    /// <summary>
+    /// ilink 长连接进程（WeChatAppEx 的 ILinkServiceHost 角色）是否在跑。
+    /// **必须单独判断**：主进程活着不代表长连接还在——关游戏后服务端下发 App layer sessiontimeout，
+    /// ilink 会 TdiClearLoginStatus → Uninit 自行退出，而主进程还在空转。
+    /// 实测 qb4：11-03 11:23:46 关游戏，11:23:57 ilink 退出，之后近 21 小时「常驻」里根本没有长连接，
+    /// 这就是常驻保不住免扫状态的真正原因。
+    /// </summary>
+    public bool IlinkConnected
+    {
+        get
+        {
+            foreach (var (pid, (name, cmd)) in Cmds)
+                if (name.Equals("WeChatAppEx.exe", StringComparison.OrdinalIgnoreCase)
+                    && cmd.Contains("ILinkServiceHost", StringComparison.OrdinalIgnoreCase))
+                    return true;
+            return false;
+        }
+    }
+
     public bool HasVisibleUi
     {
         get

@@ -245,6 +245,7 @@ public partial class MainWindow : Window
             ChkProbeAuth.IsChecked = pol.ProbeAuth;
             ChkProbeAuthLive.IsChecked = pol.ProbeAuthLive;
             ChkResidentKeep.IsChecked = pol.ResidentKeepalive;
+            ChkBlockSessionTimeout.IsChecked = pol.BlockSessionTimeout;
             TxtHours.Text = pol.IntervalHours.ToString();
             var hm = pol.DailyTime.Split(':');
             TxtHour.Text = hm[0];
@@ -519,6 +520,7 @@ public partial class MainWindow : Window
         bool probe = ChkProbeAuth.IsChecked == true;
         bool probeLive = ChkProbeAuthLive.IsChecked == true;
         bool resident = ChkResidentKeep.IsChecked == true;
+        bool blockTimeout = ChkBlockSessionTimeout.IsChecked == true;
         bool daily = RadDaily.IsChecked == true;
         var errors = await RunBusy("正在保存保活设置并同步计划任务…", () =>
         {
@@ -528,7 +530,7 @@ public partial class MainWindow : Window
                 {
                     Enabled = enabled, Schedule = daily ? "daily" : "interval",
                     IntervalHours = hours, DailyTime = $"{hh:D2}:{mm:D2}", LeanRefresh = lean, ProbeAuth = probe,
-                    ProbeAuthLive = probeLive, ResidentKeepalive = resident,
+                    ProbeAuthLive = probeLive, ResidentKeepalive = resident, BlockSessionTimeout = blockTimeout,
                 };
             Keepalive.Save(cfg);
             var errs = new List<string>();

@@ -19,6 +19,12 @@ public sealed class KeepPolicy
     public bool ProbeAuthLive = false;
     /// <summary>关游戏窗后不整箱停，藏窗压内存，保留 QQBrowser+WeChatAppEx 上的 ilink 长连接。默认关。</summary>
     public bool ResidentKeepalive = false;
+    /// <summary>
+    /// 拦截 ilink 的会话超时回调（实验用）。默认关：只观测。
+    /// 打开后运行时收到 `App layer sessiontimeout` 不会自杀（跳过 TdiClearLoginStatus / Uninit），
+    /// 用来验证「连接还在的情况下业务是否真的不可用了」。风险未知，别在重要的号上开。
+    /// </summary>
+    public bool BlockSessionTimeout = false;
 
     public KeepPolicy Clone() => (KeepPolicy)MemberwiseClone();
 
@@ -86,6 +92,7 @@ public static class Keepalive
             p.ProbeAuth = JsonFile.Bool(o, "probeAuth") ?? false;
             p.ProbeAuthLive = JsonFile.Bool(o, "probeAuthLive") ?? false;
             p.ResidentKeepalive = JsonFile.Bool(o, "residentKeepalive") ?? false;
+            p.BlockSessionTimeout = JsonFile.Bool(o, "blockSessionTimeout") ?? false;
         }
         return p;
     }
@@ -120,6 +127,7 @@ public static class Keepalive
                 ["probeAuth"] = kv.Value.ProbeAuth,
                 ["probeAuthLive"] = kv.Value.ProbeAuthLive,
                 ["residentKeepalive"] = kv.Value.ResidentKeepalive,
+                ["blockSessionTimeout"] = kv.Value.BlockSessionTimeout,
             };
         JsonFile.WriteObject(AppPaths.KeepaliveJson, new JsonObject
         {

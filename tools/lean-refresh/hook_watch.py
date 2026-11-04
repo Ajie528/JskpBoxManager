@@ -84,15 +84,22 @@ class Watcher:
         self.txt = self.out.with_suffix(".txt")
         self.seconds = a.seconds
         self.source = Path(a.script).read_text(encoding="utf-8")
+        # 长连接观测脚本（可选）：独立注入 ilink 角色，hook 心跳 / 会话超时
+        self.longlink_path = Path(a.longlink_script) if a.longlink_script else None
+        self.block_timeout = bool(a.block_timeout)
+        self.longlink_source = None
+        if self.longlink_path and self.longlink_path.exists():
+            self.longlink_source = self.longlink_path.read_text(encoding="utf-8")
+        self.longlink_at = {}
         self.sbie = Sbie(a.sbie_dir)
         self.device = frida.get_local_device()
         self.done: set[int] = set()
         self.roles: dict[int, tuple[str, str]] = {}
-        self.unknown: dict[int, float] = {}
         self.sessions = {}
         self.rva_cache: dict[str, int | None] = {}
+        self.longlink_cache: dict[str, dict] = {}
         self.lock = threading.Lock()
-        self.counts = {"xlog": 0, "file": 0, "net": 0, "http": 0}
+        self.counts = {"xlog": 0, "file": 0, "net": 0}
         self.device.on("child-added", self.on_child)
 
     # ---------- output ----------
@@ -106,6 +113,12 @@ class Watcher:
             if text:
                 with self.txt.open("a", encoding="utf-8") as f:
                     f.write(text + "\n")
+
+    def write_text_only(self, text: str):
+        """只写可读 txt（用于高频事件，如 noop 心跳）。"""
+        with self.lock:
+            with self.txt.open("a", encoding="utf-8") as f:
+                f.write(text + "\n")
 
     def on_message(self, pid: int, role: str, message, data):
         if message.get("type") == "error":
@@ -128,17 +141,20 @@ class Watcher:
             text = f"{now()} [文件] [{role}] {p.get('op')} ok={p.get('ok')} {p.get('path')}"
         elif ev == "net":
             text = f"{now()} [网络] [{role}] {p.get('op')} {p.get('to') or p.get('host')} ({p.get('from')})"
-        elif ev == "http":
-            snippet = (p.get("text") or "").replace("\r\n", " ").replace("\n", " ")
-            if len(snippet) > 300:
-                snippet = snippet[:300] + "..."
-            text = f"{now()} [HTTP明文] [{role}] {p.get('dir')} len={p.get('len')} {snippet}"
-        elif ev == "ssl-hooked":
-            text = f"{now()} [已挂上 SSL 明文] pid={pid} role={role} {p.get('funcs')}"
-        elif ev == "ssl-missing":
-            text = f"{now()} [警告] pid={pid} role={role} {p.get('note')}"
         elif ev == "xlog-hooked":
             text = f"{now()} [已挂上 ilink 日志] pid={pid} role={role} {p.get('rva')}"
+        elif ev == "noop":
+            if p.get("kind") == "enter":
+                text = f"{now()} [心跳] noop 发送 #{p.get('total')} 间隔={p.get('gapSec')}s"
+            else:
+                text = f"{now()} [心跳] noop 完成 #{p.get('total')} 耗时={p.get('tookMs')}ms"
+            # 心跳每 3 分钟一次、一天近 500 次，只写 txt 不写 jsonl，避免把 jsonl 撑大
+            self.write_text_only(text)
+            return
+        elif ev == "session-timeout":
+            text = f"{now()} [会话超时] {p.get('action')} #{p.get('total')} 调用栈={p.get('stack')}"
+        elif ev == "longlink-hooked":
+            text = f"{now()} [长连接观测已装] rva={p.get('rva')} 拦截={p.get('blockSessionTimeout')}"
         self.write({"ev": "frida", **p}, text)
 
     # ---------- attach ----------
@@ -174,6 +190,9 @@ class Watcher:
             ms = int((time.time() - t0) * 1000)
             self.write({"ev": "frida-attached", "pid": pid, "role": role, "ms": ms, "resumed": resume},
                        f"{now()} [attach] pid={pid} role={role} {ms}ms" + (" (出生即拦截)" if resume else ""))
+            # ilink 角色额外挂长连接观测脚本（心跳 / 会话超时）
+            if role == "ilink" and self.longlink_source:
+                self.attach_longlink(pid, exe, s)
         except Exception as exc:
             self.write({"ev": "frida-err", "pid": pid, "role": role, "line": str(exc)},
                        f"{now()} [attach 失败] pid={pid} role={role}: {exc}")
@@ -183,6 +202,35 @@ class Watcher:
                     self.device.resume(pid)
                 except Exception:
                     pass
+
+    def attach_longlink(self, pid: int, exe: str, session):
+        try:
+            lrv = self.longlink_rva(exe)
+            sc = session.create_script(self.longlink_source)
+            sc.on("message", lambda m, d, pid=pid: self.on_message(pid, "ilink", m, d))
+            sc.load()
+            sc.exports_sync.init({"rva": lrv, "role": "ilink", "blockSessionTimeout": self.block_timeout})
+            self.longlink_at[pid] = sc
+            self.write({"ev": "longlink-attached", "pid": pid, "rva": lrv, "block": self.block_timeout},
+                       f"{now()} [长连接观测] pid={pid} {'(已拦截会话超时)' if self.block_timeout else '(只观测)'}")
+        except Exception as exc:
+            self.write({"ev": "longlink-err", "pid": pid, "err": str(exc)},
+                       f"{now()} [长连接观测失败] pid={pid}: {exc}")
+
+    def longlink_rva(self, exe: str):
+        rt = Path(exe).parent
+        key = str(rt).lower()
+        if key in self.longlink_cache:
+            return self.longlink_cache[key]
+        res = {}
+        try:
+            from longlink_locate import locate_all
+            res = locate_all(rt / "ilink2.dll")
+        except Exception as exc:
+            self.write({"ev": "longlink-locate-error", "err": str(exc)})
+        self.longlink_cache[key] = res
+        self.write({"ev": "longlink-locate", "rva": res})
+        return res
 
     def claim(self, pid: int) -> bool:
         with self.lock:
@@ -216,17 +264,18 @@ class Watcher:
             pid = p.info["pid"]
             if pid in self.done:
                 continue
+            # 归属检查必须每轮都做，不能只做一次就缓存进 roles：
+            # 箱内能看到所有沙箱的 WeChatAppEx（Windows 进程表全局可见），
+            # 一旦把别箱的 pid 记进 roles 就再也不会校验，之后可能跨箱 attach 被拒。
+            try:
+                owner = self.sbie.box_of(pid).lower()
+            except Exception:
+                continue
+            if owner != self.box.lower():
+                with self.lock:
+                    self.done.add(pid)
+                continue
             if pid not in self.roles:
-                box = self.sbie.box_of(pid).lower()
-                if box != self.box.lower():
-                    # 刚创建的进程 SbieApi 可能还查不到所属沙箱（返回空）；主机上的进程也返回空。
-                    # 空的先多查几秒再放弃，否则沙箱里刚起来的微信主进程会被永久跳过
-                    first = self.unknown.setdefault(pid, time.time())
-                    if box or time.time() - first > 5:
-                        with self.lock:
-                            self.done.add(pid)
-                        self.write({"ev": "skip-other-box", "pid": pid, "sbieBox": box})
-                    continue
                 try:
                     cmd = " ".join(p.cmdline())
                     exe = p.exe()
@@ -278,7 +327,7 @@ class Watcher:
                     pass
         self.write({"ev": "watch-end", **self.counts, "attached": len(self.sessions)},
                    f"{now()} 结束：attach {len(self.sessions)} 个进程；ilink 日志 {self.counts['xlog']} 行，"
-                   f"文件 {self.counts['file']}，网络 {self.counts['net']}，HTTP明文 {self.counts['http']}")
+                   f"文件 {self.counts['file']}，网络 {self.counts['net']}")
         return 0 if self.sessions else 1
 
 
@@ -293,7 +342,31 @@ def main() -> int:
     ap.add_argument("--seconds", type=int, default=240)
     ap.add_argument("--sbie-dir", default=r"C:\Program Files\Sandboxie-Plus")
     ap.add_argument("--script", default=str(Path(__file__).with_name("hook_ilink.js")))
-    return Watcher(ap.parse_args()).run()
+    ap.add_argument("--longlink-script", default=str(Path(__file__).with_name("hook_longlink.js")),
+                    help="长连接观测脚本；传空字符串可关闭")
+    ap.add_argument("--block-timeout", action="store_true",
+                    help="拦截 ilink 的会话超时回调（实验用；默认只观测，进程仍会被运行时收掉）")
+    a = ap.parse_args()
+
+    # 同一个沙箱只允许一个观测器：两个同时跑会各自 attach、日志每行写两遍，
+    # 而且后启动的会把前一个的输出文件删掉（实测踩过）。
+    import ctypes
+    from ctypes import wintypes
+    kernel32 = ctypes.WinDLL("kernel32.dll", use_last_error=True)
+    kernel32.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel32.CreateMutexW.restype = wintypes.HANDLE
+    ERR_ALREADY_EXISTS = 183
+    name = "Local\\JskpFridaWatch_" + a.box
+    ctypes.set_last_error(0)
+    handle = kernel32.CreateMutexW(None, True, name)
+    err = ctypes.get_last_error()
+    if not handle:
+        print(f"创建互斥量失败 (err={err})，继续运行")
+    elif err == ERR_ALREADY_EXISTS:
+        print(f"{a.box} 已经有一个观测器在运行，本进程退出")
+        return 0
+
+    return Watcher(a).run()
 
 
 if __name__ == "__main__":

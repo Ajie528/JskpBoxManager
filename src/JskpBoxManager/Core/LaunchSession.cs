@@ -86,7 +86,10 @@ public sealed class LaunchSession
     {
         if (_probeEnv == null) return;
         ProbePoll();
-        _probe = AuthProbe.Start(_box, _probeEnv, LiveProbeSeconds, out var err);
+        _probe = AuthProbe.Start(_box, _probeEnv, LiveProbeSeconds, out var err,
+            Keepalive.Load().For(_box).BlockSessionTimeout);
+        if (Keepalive.Load().For(_box).BlockSessionTimeout)
+            L("live auth probe: block session timeout is ON (experimental) — ilink will NOT self-exit on App layer sessiontimeout");
         _probeNotes = 0;
         if (_probe == null) { L($"live auth probe not started ({why}) -> {err}"); return; }
         _probeUntil = DateTime.Now.AddSeconds(LiveProbeSeconds + 10);
@@ -884,6 +887,7 @@ public sealed class LaunchSession
         catch { }
 
         int failStreak = 0;
+        int ilinkDownTicks = 0;
         var lastTrim = DateTime.MinValue;
         var lastCred = DateTime.MinValue;
         var lastLog = DateTime.MinValue;
@@ -983,6 +987,30 @@ public sealed class LaunchSession
                 lastRenew = DateTime.Now;
                 ResidentRenew(); // 出扫码页时不藏窗，主循环下一轮看到扫码页转入 need-scan
                 continue;
+            }
+
+            // 主进程在、但 ilink 长连接进程没了（关游戏后服务端下发 sessiontimeout 会让它自己退出）。
+            // 以前这里只看主进程，于是整段常驻都在「假长连接」空转，密钥一路放到自然寿命就弹码。
+            if (!v.IlinkConnected)
+            {
+                ilinkDownTicks++;
+                if (ilinkDownTicks == 1)
+                    L("resident: WeChat main is up but ilink long-link process is gone -> reopen game to re-establish it");
+                Phase(BoxPhase.Resident, "常驻长连接已断，正在重连…");
+                // 重开 GameUrl 会拉起 ILinkServiceHost 并触发一次 AutoAuth，同时顺手把密钥往前滚
+                if (ilinkDownTicks >= 2)
+                {
+                    ilinkDownTicks = 0;
+                    try { BoxRuntime.StartBrowser(_box, "resident-relink"); }
+                    catch (Exception ex) { L("resident relink: " + ex.Message); }
+                    lastRenew = DateTime.Now;
+                }
+                continue;
+            }
+            if (ilinkDownTicks > 0)
+            {
+                L("resident: ilink long-link is back");
+                ilinkDownTicks = 0;
             }
 
             if (v.WeChatRuntimeUp)

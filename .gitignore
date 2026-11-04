@@ -5,6 +5,7 @@ dist/
 *.user
 __pycache__/
 tools/lean-refresh/xlog_rva_cache.json
+tools/lean-refresh/longlink_rva_cache.json
 
 # 运行数据（含登录凭证，绝不能提交）
 profiles/

@@ -25,8 +25,9 @@ public partial class MainWindow : Window
         Grid.ItemsSource = _rows;
         ChkGlobalKeep.IsChecked = Keepalive.Load().Enabled;
         SyncProtocolUi();
+        SyncNotifyUi();
         LoadTrimConfig();
-        _timer.Tick += async (_, _) => { await RefreshAsync(); MaybeAutoTrim(); };
+        _timer.Tick += async (_, _) => { await RefreshAsync(); MaybeAutoTrim(); MaybeCheckNotify(); };
         Loaded += async (_, _) => await StartupAsync();
         Closed += (_, _) => { try { ProtocolServer.StopCurrent(); } catch { } };
         UpdateDetail(true);
@@ -428,6 +429,28 @@ public partial class MainWindow : Window
         SetStatus($"自动压内存 {boxes.Count} 个在跑的沙箱（仅 QQ 浏览器，不含游戏，{DateTime.Now:HH:mm}）");
     }
 
+    DateTime _lastNotifyCheck = DateTime.MinValue;
+
+    /// <summary>
+    /// 界面每 5 秒刷新一次，但过期提醒每 10 分钟才检查一次（同账号另有 RepeatHours 限流）。
+    /// 保活计划任务也会调用 Notifier，两处都靠 notify-state.json 去重。
+    /// </summary>
+    void MaybeCheckNotify()
+    {
+        if ((DateTime.Now - _lastNotifyCheck).TotalMinutes < 10) return;
+        var cfg = NotifyConfig.Load();
+        if (!cfg.Ready) return;
+        _lastNotifyCheck = DateTime.Now;
+        var boxes = _rows.Select(r => r.Box).ToList();
+        if (boxes.Count == 0) return;
+        _ = Task.Run(() =>
+        {
+            var res = Notifier.Check(boxes, cfg);
+            if (res.Sent > 0) Dispatcher.Invoke(() => SetStatus($"已推送 {res.Sent} 个超期未续期提醒（{cfg.Describe()}）"));
+            else if (res.Failed) Dispatcher.Invoke(() => SetStatus("过期提醒推送失败：" + res.Error));
+        });
+    }
+
     void Tools_Click(object sender, RoutedEventArgs e)
     {
         var cur = Current;
@@ -601,6 +624,92 @@ public partial class MainWindow : Window
         });
         if (errors.Count > 0) MessageBox.Show(this, string.Join("\n", errors), "部分计划任务没更新成功", MessageBoxButton.OK, MessageBoxImage.Warning);
         SetStatus(on ? "静默保活已开启（各沙箱按自己的计划执行）" : "静默保活已全部关闭");
+    }
+
+    // ---------- 过期提醒 ----------
+
+    void SyncNotifyUi()
+    {
+        var cfg = NotifyConfig.Load();
+        ChkNotify.IsChecked = cfg.Enabled;
+        foreach (var item in CmbNotifyChannel.Items.OfType<System.Windows.Controls.ComboBoxItem>())
+            if (string.Equals(item.Tag?.ToString(), cfg.Channel, StringComparison.OrdinalIgnoreCase))
+                CmbNotifyChannel.SelectedItem = item;
+        if (CmbNotifyChannel.SelectedItem == null && CmbNotifyChannel.Items.Count > 0)
+            CmbNotifyChannel.SelectedIndex = 0;
+        TxtNotifyToken.Text = cfg.Token;
+        TxtNotifyHours.Text = cfg.WarnHours.ToString("0.#");
+        TxtNotifyRepeat.Text = cfg.RepeatHours.ToString("0.#");
+        TxtNotifyHint.Text = cfg.Ready
+            ? $"已配置：{cfg.Describe()}。凭证超过 {cfg.WarnHours:0.#} 小时没续期就推送。"
+            : "还没配置。PushPlus：登录 pushplus.plus 复制 token；Server酱：sct.ftqq.com 取 SendKey，两者都能推到微信。";
+    }
+
+    NotifyConfig ReadNotifyUi()
+    {
+        var cfg = NotifyConfig.Load();
+        cfg.Enabled = ChkNotify.IsChecked == true;
+        if (CmbNotifyChannel.SelectedItem is System.Windows.Controls.ComboBoxItem it && it.Tag is string tag)
+            cfg.Channel = tag;
+        cfg.Token = TxtNotifyToken.Text.Trim();
+        if (double.TryParse(TxtNotifyHours.Text.Trim(), out var h) && h >= 1) cfg.WarnHours = h;
+        if (double.TryParse(TxtNotifyRepeat.Text.Trim(), out var r) && r >= 1) cfg.RepeatHours = r;
+        return cfg;
+    }
+
+    void NotifySave_Click(object sender, RoutedEventArgs e)
+    {
+        var cfg = ReadNotifyUi();
+        NotifyConfig.Save(cfg);
+        SyncNotifyUi();
+        SetStatus(cfg.Ready ? $"过期提醒已保存（{cfg.Describe()}）" : "过期提醒已保存，但还没填推送密钥");
+    }
+
+    async void NotifyTest_Click(object sender, RoutedEventArgs e)
+    {
+        var cfg = ReadNotifyUi();
+        NotifyConfig.Save(cfg);
+        SyncNotifyUi();
+        var err = await Task.Run(() => Notifier.SendTest(cfg));
+        if (err == null)
+        {
+            SetStatus("测试消息已发出，请查收微信");
+            MessageBox.Show(this, "测试消息已发出。\n\n如果没收到，检查渠道和密钥，或看该渠道的公众号是否被屏蔽。",
+                "发送成功", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        else
+        {
+            SetStatus("测试失败：" + err);
+            MessageBox.Show(this, err, "发送失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    async void NotifyCheck_Click(object sender, RoutedEventArgs e)
+    {
+        var cfg = ReadNotifyUi();
+        NotifyConfig.Save(cfg);
+        SyncNotifyUi();
+        var boxes = _rows.Select(r => r.Box).ToList();
+        var res = await Task.Run(() => Notifier.Check(boxes, cfg));
+        if (!cfg.Ready) { SetStatus("先勾选启用并填写推送密钥"); return; }
+        if (res.Overdue == 0)
+        {
+            SetStatus($"没有超过 {cfg.WarnHours:0.#} 小时未续期的账号");
+            MessageBox.Show(this, $"检查了 {boxes.Count} 个沙箱，没有凭证超过 {cfg.WarnHours:0.#} 小时未续期。",
+                "检查完成", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        else if (res.Failed)
+        {
+            SetStatus("推送失败：" + res.Error);
+            MessageBox.Show(this, $"发现 {res.Overdue} 个超期账号，但推送失败：\n\n{res.Error}",
+                "推送失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        else
+        {
+            SetStatus($"已推送 {res.Sent} 个超期账号提醒，请查收微信");
+            MessageBox.Show(this, $"已推送 {res.Sent} 个超期账号提醒，请查收微信。",
+                "已发送", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
     }
 
     void SyncProtocolUi()

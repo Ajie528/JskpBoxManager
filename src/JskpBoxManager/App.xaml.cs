@@ -112,7 +112,7 @@ public partial class App : Application
     static bool NeedsCliConsole(string cmd) => cmd.ToLowerInvariant() is
         "version" or "--version" or "update" or "server" or "getcode" or "wxcode"
         or "capture" or "keylog" or "token" or "unpack" or "observe" or "hook" or "trim" or "status" or "role"
-        or "recover" or "cred-save" or "cred-load" or "help" or "/?" or "-h" or "--help";
+        or "recover" or "cred-save" or "cred-load" or "help" or "/?" or "-h" or "--help" or "notify";
 
     static int RunCli(string[] args)
     {
@@ -138,6 +138,11 @@ public partial class App : Application
             }
             if (cmd == "update") return RunUpdate();
             if (cmd == "server") return RunServer(args);
+            if (cmd.Equals("notify", StringComparison.OrdinalIgnoreCase))
+            {
+                ApplyAppDir(args);
+                return RunNotify(args);
+            }
             if (cmd is "getcode" or "wxcode")
             {
                 ApplyAppDir(args);
@@ -355,6 +360,46 @@ public partial class App : Application
             return 1;
         }
         Console(r.Code);
+        return 0;
+    }
+
+    /// <summary>
+    /// 命令行：JskpBoxManager.exe notify [--check|--test] [--appdir 目录]
+    ///   --check（默认）扫描所有沙箱，把超过阈值没续期的推给用户；
+    ///   --test       发一条测试消息，验证通道是否配好。
+    /// </summary>
+    static int RunNotify(string[] args)
+    {
+        var cfg = NotifyConfig.Load();
+        if (args.Contains("--test"))
+        {
+            if (!cfg.Ready)
+            {
+                Console("通知未启用或没填推送密钥（程序目录 notify.json）");
+                return 2;
+            }
+            var err = Notifier.SendTest(cfg);
+            Console(err == null ? $"测试消息已通过 {cfg.Describe()} 发出，请查收" : "发送失败：" + err);
+            return err == null ? 0 : 1;
+        }
+        if (!cfg.Ready)
+        {
+            Console("通知未启用或没填推送密钥（程序目录 notify.json）");
+            return 2;
+        }
+        var boxes = Sandboxie.QueryBoxes();
+        var r = Notifier.Check(boxes, cfg);
+        if (r.Overdue == 0)
+        {
+            Console($"检查了 {boxes.Count} 个沙箱，没有超过 {cfg.WarnHours:0.#} 小时未续期的账号");
+            return 0;
+        }
+        if (r.Failed)
+        {
+            Console($"发现 {r.Overdue} 个超期账号，但推送失败：{r.Error}");
+            return 1;
+        }
+        Console($"已提醒 {r.Sent} 个超期账号（通过 {cfg.Describe()}）");
         return 0;
     }
 

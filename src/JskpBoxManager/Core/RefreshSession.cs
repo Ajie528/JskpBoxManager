@@ -273,6 +273,8 @@ public sealed class RefreshSession
                 NeedScan.Pending(_box) ? "保活失败：需要重新扫码" : $"保活未成功（{outcome}），下次再试");
         }
         L("refresh session end");
+        // 保活跑完顺手扫一遍全局：有号超过阈值没续期就推微信（同一把 key 限流，不会刷屏）
+        try { Notifier.CheckAndNotify(Sandboxie.QueryBoxes()); } catch (Exception ex) { L("notify check failed: " + ex.Message); }
     }
 
     /// <summary>

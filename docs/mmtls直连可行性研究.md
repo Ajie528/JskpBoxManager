@@ -874,29 +874,28 @@ PC 侧做不到一直在线，是因为沙箱停掉就会杀进程——这正�
 
 | 触发点 | 处理 |
 |---|---|
-| `RefreshSession.Core`：游戏在跑 | 超龄 → 向看门进程写续期请求（`force=true`）；非超龄 → 照旧只存凭证 |
-| `RefreshSession.Core`：常驻运行时在跑 | 同上 |
+| `RefreshSession.Core`：游戏在跑 | 超龄 → 只记 `in-game-overdue-deferred`，等看门进程在游戏关闭时续（**不打断玩家**） |
+| `RefreshSession.Core`：常驻运行时在跑 | 超龄 → 写续期请求，由常驻循环用自己的「重开游戏滚 key」路径处理 |
 | `RefreshSession.Core`：沙箱停着 | 超龄时**强制**走协议续期，不看 `protocolRenew` 勾选 |
-| `LaunchSession.WatchLoop`：游戏在跑 | 超龄 → `ForceRenewInGame()`：关游戏窗 → 停箱 → 协议续期 → 重开游戏（限流 30 分钟） |
-| `LaunchSession.WatchLoop`：游戏刚关 | 停箱后若仍超龄 → `RenewWhenStopped()` |
-| `LaunchSession.EnterResident` 常驻循环 | 已有 20 小时判定，走 `ResidentRenew()` |
+| `LaunchSession.WatchLoop`：游戏在跑 | 超龄 → 每小时记一条警告 + 置待续标记，**不动游戏** |
+| `LaunchSession.WatchLoop`：游戏刚关 | 停箱后立刻协议续期；开了常驻则续完重开运行时进常驻 |
+| `LaunchSession.EnterResident` 常驻循环 | 已有 20 小时判定，走 `ResidentRenew()`（重开游戏滚 key） |
 
 ### 实测
 
-手工把 qb2 的 live 与金库凭证都改成 21 小时前，并**关掉** qb2 的 `protocolRenew`：
+手工把 qb3 的 live 与金库凭证都改成 21 小时前（沙箱停着）：
 
 ```
-16:07:47 refresh: key is 21.0h old (limit 20h) -> protocol renew forced
-16:07:48 protocol renew ok: newKey=78c0a678e51b6c0b enc=24 serverId=35
-16:07:53 protocol renew OK in 588ms
+16:11:02 refresh: key is 21.0h old (limit 20h) -> protocol renew forced
+16:11:03 protocol renew ok: newKey=6c606b2c9f9dbec2 enc=24 serverId=36
+16:11:07 protocol renew OK in 912ms
 ```
 
-勾选关着也照样强制续期，588 毫秒完成。
+### 代价（已按需求收窄）
 
-### 代价
-
-游戏运行中强制续期会**打断当前对局**（关窗 → 停箱 → 重开）。
-这是「绝不让密钥过期」的必然代价，限流 30 分钟避免失败时反复重启。
+**不打断游戏。** 游戏运行中只记警告，等玩家关闭游戏的那一刻立刻续期。
+代价是：如果玩家连续玩超过 24 小时不关游戏，密钥仍可能过期——这是「不打断」换来的取舍。
+常驻模式不受影响（它会自己重开游戏滚 key，玩家没在玩）。
 
 ## 6C. 建议
 

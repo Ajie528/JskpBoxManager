@@ -75,29 +75,28 @@ public sealed class RefreshSession
     }
 
     /// <summary>
-    /// 沙箱被看门进程占着时，不能冷启续期，只能让看门进程就地在游戏/常驻里滚一次 key。
-    /// <paramref name="force"/> = true 表示密钥已到硬上限，即使游戏正开着也要续（否则会拖到过期）。
-    /// 非强制时只有「确实有个看门进程活着、且开了常驻」才值得留续期请求，免得在别人手动玩的时候多写一个文件。
+    /// 沙箱被看门进程占着时，不能冷启续期，只能让看门进程在它认为安全的时机就地续。
+    /// 只有「确实有个看门进程活着、且开了常驻」才值得留续期请求，免得在别人手动玩的时候多写一个文件。
     /// </summary>
-    bool RequestRenewFromWatchdog(bool force = false)
+    bool RequestRenewFromWatchdog()
     {
         try
         {
-            if (!force && !Keepalive.Load().For(_box).ResidentKeepalive) return false;
+            if (!Keepalive.Load().For(_box).ResidentKeepalive) return false;
             var mode = BoxRuntime.LauncherMode(_box);
             if (mode is not ("launch" or "resident")) return false;
 
             // 游戏正开着时看门循环本身每 30 秒就在存凭证，游戏里的会话是有效的，不必再滚一次。
-            // 但到了硬上限就必须滚，否则密钥会一路放到自然寿命。
+            // 只有常驻（只剩运行时、没有游戏窗）才需要按请求做真实 AutoAuth，否则密钥会一路放到自然寿命。
             var phase = BoxStatusFile.Read(_box)?.Phase;
-            if (phase == BoxPhase.InGame && !force)
+            if (phase == BoxPhase.InGame)
             {
                 L("refresh: game is running in a watched box -> its session is live, no renew needed");
                 return true;
             }
             File.WriteAllText(AppPaths.BoxRenewRequest(_box),
-                $"requested {DateTime.Now:o} pid={Environment.ProcessId} force={force}\r\n");
-            L($"refresh: renew request written to watchdog (force={force}, keyAge={ProtocolRenew.KeyAgeText(_box)})");
+                $"requested {DateTime.Now:o} pid={Environment.ProcessId}\r\n");
+            L($"refresh: renew request written to watchdog (keyAge={ProtocolRenew.KeyAgeText(_box)})");
             return true;
         }
         catch { return false; }
@@ -120,28 +119,16 @@ public sealed class RefreshSession
         var before = new BoxView(_box);
         if (before.HasGameWindow)
         {
-            // 密钥到硬上限就必须续，不能因为「游戏在跑」就一路拖到过期。
-            // 协议续期会在沙箱内被运行时的旧 key 写回覆盖（见 6F），所以这里走的是
-            // 「请看门进程就地续期」的路径，由 LaunchSession 在游戏里做一次真实 AutoAuth。
+            // 游戏正在跑：不打断玩家，也不试着在运行中换钥（会断会话，见 6F）。
+            // 密钥超龄时只把凭证存好，交给看门进程在「游戏关闭」那一刻续。
             Ilink.Save(_box, "refresh-in-game");
             if (ProtocolRenew.KeyOverdue(_box))
             {
-                L($"refresh: game is running but key is {ProtocolRenew.KeyAgeText(_box)} old "
-                  + $"(limit {ProtocolRenew.KeyMaxAgeHours}h) -> ask watchdog to renew in place");
-                if (RequestRenewFromWatchdog(force: true))
-                {
-                    Ilink.WriteEvent(_box, "refresh", new JsonObject
-                    {
-                        ["result"] = "in-game-forced-renew",
-                        ["keySha"] = Ilink.Live(_box).KeyHash,
-                        ["keyAgeHours"] = ProtocolRenew.KeyAgeHours(_box),
-                    });
-                    return;
-                }
-                L("refresh: no watchdog to take the renew request -> leave it to the next run");
+                L($"refresh: game is running with key {ProtocolRenew.KeyAgeText(_box)} old "
+                  + $"(limit {ProtocolRenew.KeyMaxAgeHours}h) -> renew deferred until the game closes");
                 Ilink.WriteEvent(_box, "refresh", new JsonObject
                 {
-                    ["result"] = "in-game-overdue-no-watchdog",
+                    ["result"] = "in-game-overdue-deferred",
                     ["keySha"] = Ilink.Live(_box).KeyHash,
                     ["keyAgeHours"] = ProtocolRenew.KeyAgeHours(_box),
                 });
@@ -156,24 +143,23 @@ public sealed class RefreshSession
             return;
         }
         // 常驻轻量运行时：微信还在就别冷启杀进程，只存凭证。
-        // 但密钥到硬上限时必须续期，否则会一路放到自然寿命（qb4 就是这样约一天后弹码）。
+        // 密钥超龄时不能在这里直接协议续期（运行时握着旧 key，会写回并断会话，见 6F）；
+        // 交给常驻循环用它自己的「重开游戏滚 key」路径（ResidentRenew），那条不打断玩家。
         if (cfg.For(_box).ResidentKeepalive && before.WeChatRuntimeUp)
         {
             Ilink.Save(_box, "refresh-resident");
             if (ProtocolRenew.KeyOverdue(_box))
             {
-                L($"refresh: resident runtime up but key is {ProtocolRenew.KeyAgeText(_box)} old "
-                  + $"(limit {ProtocolRenew.KeyMaxAgeHours}h) -> ask watchdog to renew in place");
-                if (RequestRenewFromWatchdog(force: true))
+                L($"refresh: resident runtime up with key {ProtocolRenew.KeyAgeText(_box)} old "
+                  + $"(limit {ProtocolRenew.KeyMaxAgeHours}h) -> resident loop will roll it");
+                RequestRenewFromWatchdog();
+                Ilink.WriteEvent(_box, "refresh", new JsonObject
                 {
-                    Ilink.WriteEvent(_box, "refresh", new JsonObject
-                    {
-                        ["result"] = "resident-forced-renew",
-                        ["keySha"] = Ilink.Live(_box).KeyHash,
-                        ["keyAgeHours"] = ProtocolRenew.KeyAgeHours(_box),
-                    });
-                    return;
-                }
+                    ["result"] = "resident-overdue-requested",
+                    ["keySha"] = Ilink.Live(_box).KeyHash,
+                    ["keyAgeHours"] = ProtocolRenew.KeyAgeHours(_box),
+                });
+                return;
             }
             L("refresh: resident runtime up -> keep it, credential saved, skip cold start");
             Ilink.WriteEvent(_box, "refresh", new JsonObject

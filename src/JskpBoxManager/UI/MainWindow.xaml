@@ -135,6 +135,14 @@
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
                         <DataGridTextColumn Header="最近免扫换新" Binding="{Binding RenewText}" Width="100"/>
+                        <DataGridTemplateColumn Header="扫码已过" Width="100">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding ScanAgeText}" Foreground="{Binding ScanAgeFg}"
+                                               ToolTip="{Binding ScanAgeTip}" ToolTipService.ShowDuration="60000"/>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
                         <DataGridTemplateColumn Header="保活计划" Width="120">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>

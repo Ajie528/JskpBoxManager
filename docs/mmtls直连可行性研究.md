@@ -494,7 +494,96 @@ func parseLoginBuffer(loginBufferB64 string) (loginMeta, error) {
 
 依赖：`py -3 -m pip install cryptography lz4`
 
-## 6A. 建议
+## 6B. 保活计时模型：30 天扫码授权窗口（参考实现）
+
+这是本轮从参考仓库学到的第二个关键点，直接决定了「免扫能活多久」。
+
+### 参考仓库的做法
+
+`internal/protocol/loginbuffer.go`：
+
+```go
+// ToMapForScan serializes credentials captured from a successful QR scan.
+// The 30-day window is the scan/authorization window, not the time at which a
+// legacy account happens to be refreshed by keepalive.
+func (c LoginBufferCredentials) ToMapForScan() map[string]any {
+    if c.RefreshToken != "" && c.RefreshTokenObservedAt <= 0 {
+        c.RefreshTokenObservedAt = time.Now().Unix()   // ← 记「扫码那一刻」
+    }
+    return c.ToMap()
+}
+```
+
+`internal/store/store.go` 的判定：
+
+```go
+if observedAt := int64Credential(a.Credentials, "refresh_token_observed_at"); observedAt > 0 {
+    refreshTokenObservedAt = &observedAt
+    // 满 25 天 → 建议重扫（提前 5 天，留出重扫余地）
+    rescanRecommended = rescanRecommended ||
+        time.Now().Unix()-observedAt >= int64((25*24*time.Hour)/time.Second)
+}
+```
+
+`internal/httpapi/keepalive.go` 的保活触发是**另一套**，看 token 到期时间：
+
+```go
+func credentialsDueForRefresh(creds protocol.LoginBufferCredentials, now time.Time, ahead time.Duration) bool {
+    return creds.ExpiresAt <= 0 || now.Add(ahead).Unix() >= creds.ExpiresAt
+}
+```
+
+**三者的区别要分清**：
+
+| 计时器 | 依据 | 含义 |
+|---|---|---|
+| 保活频率 | `ExpiresAt`（access token，默认 `expires_in=7200` 秒）+ 提前量 | 多久刷一次 token |
+| 扫码授权窗口 | `refresh_token_observed_at`，**固定 30 天** | 从扫码起，多久后必须重扫 |
+| 建议重扫 | 窗口满 **25 天** | 提前提醒，不是失效 |
+
+关键注释说得很明确：**30 天是从「扫码」起算的窗口，不是「最后一次保活」起算**。
+所以保活刷得再勤也延长不了它——这正是之前误判「约一天」的根源之一
+（那些号其实是被保活跳过 / 常驻不滚 key 搞坏的，不是窗口到期）。
+
+### 本机实测对上了
+
+用新建的「扫码窗口」统计本机（2026-11-05 12:05）：
+
+| 沙箱 | 已免扫 | 换新次数 | 状态 |
+|---|---|---|---|
+| qb8 | **20.0 天** | 8 | 免扫可用 |
+| qb3 | **18.1 天** | 8 | 免扫可用 |
+| qb2 | **14.9 天** | 7 | 免扫可用 |
+| qb6 | 8.3 天 | 8 | 免扫可用 |
+
+多个号已稳定跑到 15～20 天，与 30 天窗口模型吻合。
+
+### GUI 上的落地
+
+`Core/BoxSummary.cs` 新增：
+
+```csharp
+public const int AuthWindowDays = 30;    // 参考模型的窗口长度
+public const int RescanWarnDays = 25;    // 满这么多天建议重扫
+
+public DateTime ScanUtc;                 // 扫码时间（取免扫链起点）
+public double? ScanDays;                 // 距今多少天
+public double? AuthDaysLeft;             // 窗口还剩多少天
+public bool RescanSuggested;             // 是否进入建议重扫区
+public string ScanAgeShort;              // 表格短文本，如「14.9/30 天」
+public string ScanAgeTip;                // 悬停完整说明
+public string ScanWindowAlert;           // 满 25 / 超 30 时进 ⚠ 列
+```
+
+- 新增表格列 **「扫码已过」**：显示 `天数/30 天`，超过 25 天转橙、超过 30 天转红并显示「已超窗口」。
+- 悬停显示扫码时间、剩余天数、**本机实测最长免扫链**、期间换新次数。
+- 满 25 天 / 超 30 天时自动进 ⚠ 列（「已被服务端拒绝」优先级更高）。
+- `status` 命令行输出同步增加 `扫码窗口 x/30 天` 一行。
+
+注意：数据源是 `ilink-events.jsonl` 里的 `scan-login` / `new-identity` 事件。
+如果那个号扫码太久、日志已滚掉，会显示「更早的记录已不存在」，此时天数只是**下限**。
+
+## 6C. 建议
 
 - **自实现续期已打通**（见 6.3A），不再有「协议层通了但业务层过不去」的卡点。
 - 主方案仍建议保留「官方运行时续期」作为兜底：直连每次微信升级都可能失效，且服务端风控未知。

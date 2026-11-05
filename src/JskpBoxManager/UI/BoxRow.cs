@@ -32,6 +32,14 @@ public sealed class BoxRow : INotifyPropertyChanged
 
     public string RenewText => Summary == null || Summary.LastRenewUtc == DateTime.MinValue ? "—" : Ago(Summary.LastRenewUtc);
 
+    public string ScanAgeText => Summary?.ScanAgeShort ?? "—";
+    public string ScanAgeTip => Summary?.ScanAgeTip ?? "";
+    public Brush ScanAgeFg => Summary?.ScanDays is double d
+        ? d >= BoxSummary.AuthWindowDays ? Brushes.Red()
+        : d >= BoxSummary.RescanWarnDays ? Brushes.Orange()
+        : Brushes.Hex("#4B5563")
+        : Brushes.Gray();
+
     public Brush PhaseBrush => Summary?.Phase switch
     {
         "ingame" => Brushes.Green(),

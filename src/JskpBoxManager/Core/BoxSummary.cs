@@ -44,6 +44,35 @@ public sealed class BoxSummary
     /// <summary>告警级别的服务器返回码（通常是 -13 = 密钥已被作废）。</summary>
     public int AuthRejectRet = 0;
 
+    // ---------- 扫码授权窗口（参考 YYB-Go-Enhanced 的 30 天模型） ----------
+    //
+    // 微信的扫码授权是一条「从扫码那天起算」的窗口，而不是「密钥多久没用」。
+    // 参考实现里 refresh_token_observed_at 记的就是扫码时间，判据是：
+    //   满 25 天 → rescan_recommended（提前 5 天提醒，留出重扫余地）
+    //   满 30 天 → 窗口结束，必须重扫
+    // 这跟我们 docs\服务端规则测试.md 里「从扫码起约一天」的实测不符，
+    // 说明我们这边的号被顶得更快（多设备互踢 / 频繁冷启），
+    // 所以这里两条线一起显示：参考模型的剩余天数 + 我们自己的实测寿命。
+
+    /// <summary>参考模型的扫码授权窗口长度（天）。</summary>
+    public const int AuthWindowDays = 30;
+    /// <summary>满这么多天开始建议重扫（参考实现取 25）。</summary>
+    public const int RescanWarnDays = 25;
+
+    /// <summary>本机记录到的扫码时间（免扫链起点）；没有记录则 MinValue。</summary>
+    public DateTime ScanUtc = DateTime.MinValue;
+    /// <summary>扫码时间是否确知（false = 只追到「更早的没有记录」）。</summary>
+    public bool ScanKnown;
+
+    /// <summary>距扫码已过多少天；没有扫码记录时为 null。</summary>
+    public double? ScanDays => ScanUtc == DateTime.MinValue ? null : (DateTime.UtcNow - ScanUtc).TotalDays;
+
+    /// <summary>按 30 天窗口算，还剩多少天；已过期则为负。</summary>
+    public double? AuthDaysLeft => ScanDays is double d ? AuthWindowDays - d : null;
+
+    /// <summary>按参考模型是否该建议重新扫码。</summary>
+    public bool RescanSuggested => ScanDays is double d && d >= RescanWarnDays;
+
     public static BoxSummary Build(string box, Dictionary<string, string> notes, KeepConfig keep, Dictionary<string, JsonObject> lastRefresh,
         Dictionary<string, AuthChain> chains, Dictionary<string, JsonObject> revokes = null)
     {
@@ -108,6 +137,14 @@ public sealed class BoxSummary
             s.LoginText = "未登录";
         }
 
+        // 扫码授权窗口：起点取「免扫链的扫码时间」，链没了（被顶掉/要求重扫）就没有参考价值。
+        // 链存在时即使 Uin 变了也照用（换号重扫会重建链，Start 就是新扫码时间）。
+        if (s.Chain != null)
+        {
+            s.ScanUtc = s.Chain.Start.ToUniversalTime();
+            s.ScanKnown = s.Chain.StartKnown;
+        }
+
         var view = new BoxView(box);
         s.Running = view.HasQqOrGame;
         s.InGame = s.Running && view.HasGameWindow;
@@ -165,7 +202,56 @@ public sealed class BoxSummary
             s.LastRevoke = (recoveredAfter ? "历史：" : "") + $"{revAt:MM-dd HH:mm} 被服务端判死{detail}"
                 + (recoveredAfter ? "，之后已重新扫码恢复" : "，需重新扫码");
         }
+        s.BuildScanWindowText();
         return s;
+    }
+
+    /// <summary>本机实测的免扫最长寿命（天）。由调用方从现有的所有免扫链里统计出来。</summary>
+    public static double LongestChainDays = 0;
+
+    /// <summary>统计当前所有沙箱里最长的那条免扫链，作为「本机能活多久」的参考。</summary>
+    public static void MarkLongestChain(List<BoxSummary> list)
+    {
+        LongestChainDays = list.Where(s => s.ScanDays is not null).Select(s => s.ScanDays!.Value)
+                               .DefaultIfEmpty(0).Max();
+    }
+
+    /// <summary>表格里的短文本，例如「5.3/30 天」或「已超窗口」。</summary>
+    public string ScanAgeShort = "";
+    /// <summary>悬停 / 详情的完整说明。</summary>
+    public string ScanAgeTip = "";
+    /// <summary>窗口告警（满 25 天或已过期时非空，并进 ⚠ 列）。</summary>
+    public string ScanWindowAlert = "";
+
+    void BuildScanWindowText()
+    {
+        if (ScanDays is not double days)
+        {
+            ScanAgeShort = "—";
+            ScanAgeTip = "没有本机的扫码记录（免扫链已断或日志被清），无法推算授权窗口";
+            return;
+        }
+        var known = ScanKnown ? "" : "（更早的记录已不存在，实际可能更久）";
+        ScanAgeShort = days >= AuthWindowDays ? "已超窗口" : $"{days:0.#}/{AuthWindowDays} 天";
+
+        var lines = new List<string>
+        {
+            $"扫码时间 {(ScanKnown ? "" : "约 ")}{ScanUtc.ToLocalTime():MM-dd HH:mm}，距今 {days:0.#} 天{known}",
+            $"按参考实现的 {AuthWindowDays} 天授权窗口：还剩 {Math.Max(0, AuthWindowDays - days):0.#} 天"
+                + (days >= RescanWarnDays ? "（已进入建议重扫区）" : ""),
+        };
+        if (LongestChainDays > 0)
+            lines.Add($"本机最长免扫链已 {LongestChainDays:0.#} 天（这是实测寿命，不是理论上限）");
+        if (Chain is { Renewals: > 0 } c)
+            lines.Add($"期间免扫换新 {c.Renewals} 次，最近 {c.LastRenew:MM-dd HH:mm}");
+        ScanAgeTip = string.Join("\n", lines);
+
+        if (days >= AuthWindowDays)
+            ScanWindowAlert = $"扫码已满 {days:0.#} 天，超过 30 天授权窗口，下次启动大概率要重新扫码。";
+        else if (days >= RescanWarnDays)
+            ScanWindowAlert = $"扫码已 {days:0.#} 天，进入建议重扫区（窗口 {AuthWindowDays} 天，剩 {AuthWindowDays - days:0.#} 天）。";
+        if (ScanWindowAlert.Length > 0 && !ScanKnown)
+            ScanWindowAlert += "（起点是推算值，实际可能更早）";
     }
 
     static string Clock(DateTime t) =>
@@ -224,7 +310,12 @@ public sealed class BoxSummary
     public static void MarkAuthRejects(List<BoxSummary> list)
     {
         foreach (var s in list)
+        {
             if (s.AuthRejectAlert.Length > 0)
                 s.Warning = s.Warning.Length > 0 ? s.AuthRejectAlert + "\n" + s.Warning : s.AuthRejectAlert;
+            // 扫码授权窗口告警优先级低于「已被拒绝」，但比「同号互顶」更该先看到
+            if (s.ScanWindowAlert.Length > 0 && s.Login == LoginLevel.Ok)
+                s.Warning = s.Warning.Length > 0 ? s.Warning + "\n" + s.ScanWindowAlert : s.ScanWindowAlert;
+        }
     }
 }

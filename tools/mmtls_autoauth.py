@@ -577,6 +577,7 @@ def main():
     ap.add_argument("--port", type=int, default=5000)
     ap.add_argument("--send", action="store_true", help="真正发送 AutoAuth（默认只构造）")
     ap.add_argument("--save", action="store_true", help="成功后把新 key 写回 tdi_account.txt")
+    ap.add_argument("--device", default="", help="覆盖 AutoAuth.Device 的 hex（32 字节，默认用 kTdiKeyDeviceId）")
     ap.add_argument("--timeout", type=int, default=15)
     a = ap.parse_args()
 
@@ -601,14 +602,36 @@ def main():
     device_id = b64(kv["kTdiKeyDeviceId"])
     server_id = b64(kv["kTdiKeyServerId"])
     uin = int(kv["kTdiKeyUin"])
-    log(f"  uin={uin} keyLen={len(auto_key)} encKeyLen={len(enc_key)} deviceLen={len(device_id)} f9Len={len(server_id)}")
+
+    # 参考实现 ilink.go：wpkg 头字段 24 是 ilink app id 字符串（如 ilinkapp_0600005ba4e935），
+    # 不是 kTdiKeyDeviceId 那 32 字节。之前一直填错，服务端能解包但业务层回 -2。
+    ilink_app_id = kv.get("kTdiKeyIlinkAppId", "").strip().encode()
+    if not ilink_app_id:
+        # tdi_account.txt 没写这项时，从目录名反推：...\tdi\ilinkapp_xxxx\0\6\tdi_account.txt
+        parts = [p for p in Path(acc["path"]).parts if p.startswith("ilinkapp_")]
+        if parts:
+            ilink_app_id = parts[-1].encode()
+    log(f"  uin={uin} keyLen={len(auto_key)} encKeyLen={len(enc_key)} "
+        f"deviceLen={len(device_id)} f9Len={len(server_id)} "
+        f"ilinkAppId={ilink_app_id.decode(errors='replace')}")
 
     if len(enc_key) != 24:
         log(f"encKey 长度 {len(enc_key)} != 24，参考实现要求 24，放弃")
         return 3
+    if not ilink_app_id:
+        log("找不到 kTdiKeyIlinkAppId，无法填 wpkg 字段 24，放弃")
+        return 3
 
     # 构造 AutoAuth 明文（参考实现 buildAutoAuth）
-    inner = pb_len(1, device_id)
+    #   request = pbLen(1, pbLen(1, AutoAuth.Device)) + pbVar(2, appVersion) + pbLen(3, AutoAuth.Key)
+    # AutoAuth.Device 在参考实现里就是 ManualAuth 时本地生成的 32 字节 appDeviceID，
+    # 我们手上没有那个值；本地能对应上的是 kTdiKeyDeviceId（同样 32 字节）。
+    if a.device:
+        device_field = bytes.fromhex(a.device)
+        log(f"=== 使用命令行指定的 Device ({len(device_field)} 字节) ===")
+    else:
+        device_field = device_id
+    inner = pb_len(1, device_field)
     request = pb_len(1, inner) + pb_var(2, APP_VERSION) + pb_len(3, auto_key)
     log(f"=== AutoAuth 明文 {len(request)} 字节 ===")
 
@@ -616,7 +639,7 @@ def main():
     hybrid, temp = hybrid_encrypt_with_key(request, server_pub, enc_key)
     log(f"=== Hybrid 加密后 {len(hybrid)} 字节 ===")
 
-    body = session_wpkg_head(uin, server_id, device_id) + hybrid
+    body = session_wpkg_head(uin, server_id, ilink_app_id) + hybrid
     log(f"=== 完整请求体 {len(body)} 字节（含 wpkg 头）===")
 
     if not a.send:
@@ -740,22 +763,25 @@ def main():
             sect = pb_parse(uf.get(2, b""))
             new_key = sect.get(3)
             new_enc = sect.get(4)
+            new_f9 = sect.get(9)          # 新的 ServerId（wpkg 字段 27）
             log(f"🧩 新 key: len={len(new_key) if new_key else 0} "
-                f"encKey: len={len(new_enc) if new_enc else 0}")
+                f"encKey: len={len(new_enc) if new_enc else 0} "
+                f"serverId: len={len(new_f9) if new_f9 else 0}")
             if new_key and new_enc:
                 log("✅ 拿到轮换后的新凭证！")
                 if a.save:
-                    save_new_credential(acc["path"], kv, new_key, new_enc)
+                    save_new_credential(acc["path"], kv, new_key, new_enc, new_f9)
         return 0
     finally:
         sock.close()
 
 
-def save_new_credential(path: Path, kv: dict, new_key: bytes, new_enc: bytes):
-    """把新 key 写回 tdi_account.txt（原地替换两行）。"""
+def save_new_credential(path: Path, kv: dict, new_key: bytes, new_enc: bytes, new_f9: bytes = None):
+    """把新 key 写回 tdi_account.txt（原地替换对应几行）。"""
     import base64 as _b64
     new_k = _b64.b64encode(new_key).decode()
     new_e = _b64.b64encode(new_enc).decode()
+    new_s = _b64.b64encode(new_f9).decode() if new_f9 else None
     lines = path.read_text(encoding="utf-8").splitlines()
     out = []
     for line in lines:
@@ -763,11 +789,14 @@ def save_new_credential(path: Path, kv: dict, new_key: bytes, new_enc: bytes):
             out.append("kTdiKeyAutoauthKey=" + new_k)
         elif line.startswith("kTdiKeyAutoauthEncKey="):
             out.append("kTdiKeyAutoauthEncKey=" + new_e)
+        elif new_s and line.startswith("kTdiKeyServerId="):
+            out.append("kTdiKeyServerId=" + new_s)
         else:
             out.append(line)
     path.write_text("\n".join(out) + "\n", encoding="utf-8")
     log(f"[保存] 已写回 {path}")
-    log(f"       newKey={new_k[:16]}… newEnc={new_e[:12]}…")
+    log(f"       newKey={new_k[:16]}… newEnc={new_e[:12]}…"
+        + (f" newServerId={new_s[:16]}…" if new_s else ""))
 
 
 if __name__ == "__main__":

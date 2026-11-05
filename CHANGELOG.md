@@ -3,6 +3,34 @@
 版本号规则：`主版本.次版本.修订号`。只修 bug 加修订号；加功能加次版本号；数据格式或用法有不兼容变化加主版本号。
 每次发版在最上面新增一节，并同步修改 `Directory.Build.props` 里的 `<Version>`。
 
+## [1.5.13] - 2026-11-05
+
+### 研究突破：纯 Python 自实现 AutoAuth 续期已打通
+
+不启动 QQ 浏览器、不启动微信运行时，直接用 mmtls 连 `longcloud.weixin.com` 续期成功，
+连续 3 次 `code=0` 并每次都下发新的 `AutoauthKey` / `AutoauthEncKey` / `ServerId`。
+
+**根因**：卡了两天的 `code=-2` 跟 `AutoAuth.Device` 来源无关，而是
+**wpkg 头字段 24 填错了值**——我们用 `kTdiKeyDeviceId`（32 字节二进制），
+正确值是 **`kTdiKeyIlinkAppId` 字符串**（`ilinkapp_0600005ba4e935`，22 字节）。
+参考仓库 `YYB-Go-Enhanced` 的 `ilink.go` 里 `deviceID` 缺省值就是
+硬编码的 `ilinkapp_...`，不是那个 32 字节设备号。
+
+改这一处后一次成功。之前「20+ 种 appVersion / Device / 嵌套层数组合全失败」的排查方向
+（以为要去抓 `login_buffer`）是这条错误假设带出来的岔路，已作废。
+
+### 工具
+- `tools/mmtls_autoauth.py`：`--send --save` 可完整续期并把新凭证写回 `tdi_account.txt`
+  （同时更新 `kTdiKeyServerId`）；新增 `--device` 可覆盖 `AutoAuth.Device`。
+- `tools/mmtls_autoauth_try.py`：参数矩阵同步修正字段 24 的取值。
+- 文档 `docs/mmtls直连可行性研究.md` 结论从「不建议」改为「已打通」，
+  新增 6.3A 记录根因与实测输出，6.6/6.7/6.8 标注为已推翻/已作废。
+
+### 尚未完成（接入前必须处理）
+- 续期逻辑还只在 Python 工具里，未接进 C# 主程序。
+- 缺「发送前落盘 attempted」：AutoAuth 会轮换服务端密钥，请求一旦发出旧 key 即作废，
+  当前脚本是成功后保存，断网时会丢凭证。
+
 ## [1.5.12] - 2026-11-05
 
 ### 修复

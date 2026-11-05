@@ -1,8 +1,28 @@
 # mmtls / ilink 直连续期：可行性研究
 
-结论：**技术上可能，工程上不划算，不建议作为主方案。** 现在采用的「官方运行时自己续期 + 本地凭证只进不退」已经能拿到直连想要的效果（无人值守续期、不弹扫码），而直连要多付出几周到几个月的逆向工作、每次微信升级都可能失效，并且有封号风险。
+## 结论（2026-11-05 11:56 更新）
 
-下面是依据、难点和一个低成本的折中路线。
+**已完成：纯 Python 自实现 AutoAuth 续期打通，连续多次 `code=0`，无需 QQ 浏览器 / 微信运行时。**
+
+原来的判断（「技术上可能，工程上不划算」）**已被推翻**——卡了两天的 `code=-2` 不是协议问题，
+也不是 `AutoAuth.Device` 来源问题，而是 **wpkg 头字段 24 填错了值**：
+
+| | 错误做法 | 正确做法 |
+|---|---|---|
+| 字段 24 | `kTdiKeyDeviceId`（32 字节二进制） | **`kTdiKeyIlinkAppId` 字符串**（`ilinkapp_0600005ba4e935`，22 字节） |
+
+改这一处，一次就成功。详见 **6.3A**。
+
+现状：
+
+- ✅ 握手、加密、shortlink、AutoAuth、响应解密、凭证轮换全部跑通
+- ✅ 链式验证：用上一轮的新凭证继续续期，连续 3 次全 `code=0`
+- ✅ 新 `AutoauthKey` / `AutoauthEncKey` / `ServerId` 自动写回 `tdi_account.txt`
+- ⬜ 尚未接进 C# 主程序（当前是 `tools/mmtls_autoauth.py`）
+- ⬜ 尚未实现「发送前落盘 attempted」（防丢凭证，接入前必须补）
+
+主方案仍然建议保留「官方运行时续期」作为兜底：直连每次微信升级都可能失效，
+且服务端风控未知。但「能不能做到」这个问题，答案是**能**。
 
 ---
 
@@ -228,6 +248,113 @@ NewSessionTicket 数量: 2
 
 ### 6.3 AutoAuth 请求：能发出去、服务端能读懂，但业务层回 -2
 
+> **2026-11-05 11:56 更新：此问题已解决，根因是 wpkg 头字段 24 填错。见 6.3A。**
+
+### 6.3A 已解决：根因是 wpkg 头字段 24 填错（2026-11-05 11:56）
+
+**结论：纯 Python 自实现续期已成功打通，不需要 QQ 浏览器、不需要微信运行时。**
+
+#### 根因
+
+参考仓库 `525815266/YYB-Go-Enhanced` 的 `internal/protocol/ilink.go` 里：
+
+```go
+ilinkDevice = []byte("ilinkapp_060000b7b93f6c")   // 硬编码的 ilink app id
+
+func sessionWpkgHead(uin int64, f9, deviceID []byte) []byte {
+    if len(deviceID) == 0 {
+        deviceID = ilinkDevice        // ← 是 app id 字符串
+    }
+    return wpkgHead(ints, map[int][]byte{14: []byte{}, 24: deviceID, 27: f9})
+}
+
+func extractSession(mar []byte) (AppSession, error) {
+    ...
+    DeviceID: append([]byte(nil), ilinkDevice...),   // ← 同样写死成 app id
+}
+```
+
+**wpkg 头字段 24 = `kTdiKeyIlinkAppId` 字符串**（`ilinkapp_0600005ba4e935`，22 字节），
+**不是** `kTdiKeyDeviceId`（32 字节 base64 解码后的二进制）。
+
+我们之前一直用 `device_id`（32 字节）填字段 24，服务端能解包（`ints[4]=0`、`ints[23]=0`）
+但业务层判定会话不匹配 → `code=-2`。
+
+#### 修复后的实测
+
+```
+  uin=25985012983767251 keyLen=162 encKeyLen=24 deviceLen=32 f9Len=35 ilinkAppId=ilinkapp_0600005ba4e935
+=== AutoAuth 明文 204 字节 ===
+=== 完整请求体 569 字节（含 wpkg 头）===
+[握手] longcloud.weixin.com -> 101.226.142.222:5000
+[握手] 完成
+响应 cmd=3198 bodyLen=1326
+响应头 ints={2: 25985012983767251, 4: 0, ..., 23: 0, 25: 17, ...}
+base.code=0（有符号 0）        ← 之前一直是 -2
+🧩 新 key: len=163 encKey: len=24 serverId: len=36
+✅ 拿到轮换后的新凭证！
+```
+
+响应 `.2` 会话块完整下发：
+
+| 响应字段 | 内容 |
+|---|---|
+| `..1` / `..2` | 新的 SendKey / RecvKey（24 字节各一） |
+| `..3` | **新 AutoauthKey**（163 字节） |
+| `..4` | **新 AutoauthEncKey**（24 字节） |
+| `..9` | **新 ServerId**（36 字节，对应 wpkg 字段 27） |
+| `..12` | Ticket（152 字节） |
+
+#### 链式验证：连续三次续期全部成功
+
+用上一轮拿到的新凭证再发一次，仍然 `code=0` 并再次下发新凭证——
+说明**这是可持续的续期闭环，不是一次性**。
+
+```
+第 1 次  base.code=0  → 保存 newKey=BgAAxLbooK8g8kwS…
+第 2 次  base.code=0  → 保存 newKey=…（用第 1 次的新 key）
+第 3 次  base.code=0  → 保存 newKey=…（用第 2 次的新 key）
+```
+
+qb2 的 `tdi_account.txt` 已写回新凭证，`kTdiKeyAutoauthKey` / `kTdiKeyAutoauthEncKey` /
+`kTdiKeyServerId` 三行同步更新。
+
+#### `AutoAuth.Device` 的真实来源（不再是卡点）
+
+明文结构：
+
+```
+request = pbLen(1, pbLen(1, AutoAuth.Device)) + pbVar(2, 1901) + pbLen(3, AutoAuth.Key)
+```
+
+参考实现的 `AutoAuth.Device` 是 ManualAuth 时本地生成的 **32 字节 `appDeviceID`**：
+
+```go
+func randomAppDeviceID() ([]byte, error) {
+    b := make([]byte, 32)
+    _, err := rand.Read(b)
+    return b, err
+}
+```
+
+即**客户端自己随机生成**、随后在 ManualAuth 的 `AppBaseRequest` 里上报给服务端，
+AutoAuth 时原样带回。它不是 `login_buffer` 里的字段（那是 `ticket`/`device_id`，用途不同）。
+
+实践上验证：用 `kTdiKeyDeviceId` 那 32 字节也能通过 `code=0`，
+说明服务端在这一层**只要求与首次上报一致且长度 32**，不强制校验具体来源。
+（仍建议后续抓一次真实请求确认官方填的是不是同一把。）
+
+#### 仍未做的事
+
+- 这个脚本只更新 `tdi_account.txt`，**没有写 `psk.key`**；PSK 每次握手都会重新派发，
+  不影响续期，但如果要复用 0-RTT 就得自己存。
+- 还没接进 C# 主程序（目前是 Python 工具）。
+- `attempted` 语义：参考实现要求**发送前先落盘**，避免「请求已发出但结果丢失」后重放。
+  当前脚本是成功后保存，若中途断网会出现「服务端已轮换、本地还是旧的」——这是真实风险，
+  接入主程序时必须先写 `AttemptedAt` 再发送。
+
+### 6.3B 修复前的失败记录（保留作为排查依据）
+
 用 `tools/mmtls_autoauth.py --send` 实测：
 
 ```
@@ -301,11 +428,18 @@ func parseLoginBuffer(loginBufferB64 string) (loginMeta, error) {
 **从数据库找 device 也失败**：`applet.db`（84KB）无 sqlite 头（加密）、`applet.db-wal`（1.6MB）、`mpkv.db`（全 0）
 里都**搜不到 `DeviceId` 的原始字节**。
 
-结论：`AutoAuth.Device` 只存在于 `login_buffer`（扫码响应），本地没有任何副本。
+当时（错误地）结论：`AutoAuth.Device` 只存在于 `login_buffer`（扫码响应），本地没有任何副本。
+
+> **此结论已被 6.3A 推翻**：`AutoAuth.Device` 是客户端在 ManualAuth 时**自己随机生成**的 32 字节，
+> 与 `login_buffer` 无关。上面这 20+ 种组合全部失败的真实原因是
+> **wpkg 头字段 24 填了 32 字节 DeviceId，而正确值是 ilinkAppId 字符串**——
+> 跟 `AutoAuth.Device` 怎么填毫无关系。改对字段 24 后一次就 `code=0`。
 
 ### 6.7 扫码 hook 的硬障碍：Frida 在 ilink 上注入不可靠
 
-要抓 `login_buffer` 必须 hook 扫码流程（`ManualAuth`，cmdid 3453）。静态定位已完成：
+> **这一节整体已不必要。** 既然 AutoAuth 不需要 `login_buffer`，
+> 也就不需要 hook ManualAuth 去抓它。下面保留作为「Frida 在 ilink 上不可靠」的技术记录，
+> 供以后需要抓别的内存数据时参考。
 
 ```
 /ilink/ilinkapp/sys/ilinkapp_manualauth → 0xD77C0 (161B) 构造（写 cmdid 0xD7D + URL）
@@ -333,11 +467,20 @@ func parseLoginBuffer(loginBufferB64 string) (loginMeta, error) {
 
 ### 6.8 下一步
 
-1. **在干净沙箱上重试**（如 qb5，凭证 11-05 03:44、未反复启停过），先只挂最轻的 hook，验证 ilink 能否稳定注入。
-2. **抓真实 AutoAuth 请求明文**：在 `0x0D7710`(构造) / `0x0D4390`(完整流程) 内部 dump `hybrid_encrypt` 的入参，
-   能看到官方正确的 `Device` 与 `appVersion`（静态定位见 `docs/ilink长连接与免扫掉线.md` 9A.4）。
-3. **扫码时记录 `login_buffer`**：需在 ilink 注入稳定的前提下进行；否则改成
-   「先让扫码完成 → ilink 存活 → 立刻 attach」，牺牲 ManualAuth 但可扫内存。
+**协议层已完成，剩下的都是工程接入。**
+
+0. ~~在干净沙箱验证注入~~ / ~~抓真实 AutoAuth 请求~~ —— **已不需要**（见 6.3A）
+
+1. **把续期接进主程序**（C#）：目前只有 Python 工具，需要移植或用 `Process` 调用。
+   若移植，参考 `mmtls_autoauth.py` 的 `Mmtls` 类 + `hybrid_encrypt_with_key`，
+   密码学部分用 .NET 的 `ECDiffieHellman` / `AesGcm` / `HKDF` 都能对应。
+2. **发送前先落盘 `attempted`**：参考实现的关键约束——
+   AutoAuth 会**轮换**服务端密钥，请求一旦发出，旧 key 就作废。
+   必须先写「正在续期」标记再发送；成功后写新凭证，失败则保留旧凭证但**不能重放**。
+   当前脚本是「成功后保存」，断网时有丢凭证风险，接入时必须改。
+3. **补 `psk.key`**：续期不影响 PSK（每次握手重新派发），但若要 0-RTT 恢复需自行持久化。
+4. **验证官方 `AutoAuth.Device`**（可选）：现在用 `kTdiKeyDeviceId` 能过，
+   但确认官方到底填什么更稳妥。静态位置：`0xD7710`（构造）/ `0xD4390`（完整流程）。
 
 ### 6.9 工具清单
 
@@ -353,9 +496,9 @@ func parseLoginBuffer(loginBufferB64 string) (loginMeta, error) {
 
 ## 6A. 建议
 
-- 主方案保持「官方运行时续期 + 凭证只进不退」（Full 路径）——**当前零风险且已验证**。
-- mmtls 自实现**协议层已通**（握手 / 加密 / 解密 / shortlink 全部验证），只差业务参数。
-- 卡点两处：`AutoAuth.Device` 的来源、扫码时 Frida 注入 ilink 不稳定。
-- 下一步优先在**干净沙箱**验证注入稳定性，再决定是否继续投入。
+- **自实现续期已打通**（见 6.3A），不再有「协议层通了但业务层过不去」的卡点。
+- 主方案仍建议保留「官方运行时续期」作为兜底：直连每次微信升级都可能失效，且服务端风控未知。
+- 接入顺序：先做「发送前落盘 attempted」→ 再接进 C# → 最后才考虑替代官方续期。
+- 不要再往「抓 `login_buffer`」方向投入，那条路是因为误判字段 24 才走上的岔路。
 
 

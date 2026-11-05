@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import mmtls_autoauth as M  # noqa: E402
 
 
-def try_one(host, port, uin, auto_key, enc_key, device_id, server_id,
+def try_one(host, port, uin, auto_key, enc_key, device_id, ilink_app_id, server_id,
             app_version, device_variant, head_variant, timeout=12):
     """发一次 AutoAuth，返回 (ok, code, note)"""
     inner = M.pb_len(1, device_variant)
@@ -30,13 +30,14 @@ def try_one(host, port, uin, auto_key, enc_key, device_id, server_id,
     server_pub = bytes.fromhex(M.SERVER_PUB_HEX)
     hybrid, temp = M.hybrid_encrypt_with_key(plaintext, server_pub, enc_key)
 
-    if head_variant == "session17":
-        body = M.session_wpkg_head(uin, server_id, device_id) + hybrid
-    elif head_variant == "session16":
+    # 关键：wpkg 字段 24 必须是 ilinkAppId 字符串，不是 32 字节 DeviceId
+    if head_variant == "appid17":
+        body = M.session_wpkg_head(uin, server_id, ilink_app_id) + hybrid
+    elif head_variant == "appid16":
         ints = {1: 1, 2: uin, 3: 0, 4: 0, 5: M.CLIENT_VERSION, 6: 11, 7: 0, 8: 0, 9: 0,
                 10: 1, 11: 0, 12: 0, 13: 0, 17: 0, 18: 1, 20: 1504, 21: 0, 22: uin,
                 23: 0, 25: 16, 26: 4, 28: 1, 29: 1, 30: 0}
-        body = M.wpkg_head(ints, {14: b"", 24: device_id, 27: server_id}) + hybrid
+        body = M.wpkg_head(ints, {14: b"", 24: ilink_app_id, 27: server_id}) + hybrid
     else:
         raise ValueError(head_variant)
 
@@ -111,24 +112,33 @@ def main():
     device_id = M.b64(kv["kTdiKeyDeviceId"])
     server_id = M.b64(kv["kTdiKeyServerId"])
     uin = int(kv["kTdiKeyUin"])
+    ilink_app_id = kv.get("kTdiKeyIlinkAppId", "").strip().encode()
+    if not ilink_app_id:
+        parts = [p for p in Path(acc["path"]).parts if p.startswith("ilinkapp_")]
+        if parts:
+            ilink_app_id = parts[-1].encode()
 
-    print(f"uin={uin} autoKey={len(auto_key)} encKey={len(enc_key)} dev={len(device_id)} f9={len(server_id)}")
+    print(f"uin={uin} autoKey={len(auto_key)} encKey={len(enc_key)} "
+          f"dev={len(device_id)} f9={len(server_id)} appId={ilink_app_id.decode(errors='replace')}")
     print()
+
+    if not ilink_app_id:
+        print("找不到 kTdiKeyIlinkAppId，无法填 wpkg 字段 24")
+        return 3
 
     # 候选：appVersion × device 变体 × head 变体
     app_versions = [1901, 524545, 1504, 1900, 2100]
     device_variants = [("dev32", device_id)]
-    # 也试 ServerId 的前 32 字节（有些实现用这个当 device）
     if len(server_id) >= 32:
         device_variants.append(("f9h32", server_id[:32]))
-    heads = ["session17"]
+    heads = ["appid17"]
 
     results = []
     for av, (dvname, dv), hv in itertools.product(app_versions, device_variants, heads):
         label = f"app={av} dev={dvname} head={hv}"
         try:
             ok, code, note = try_one(a.host, a.port, uin, auto_key, enc_key,
-                                     device_id, server_id, av, dv, hv)
+                                     device_id, ilink_app_id, server_id, av, dv, hv)
             mark = "✅" if ok else "  "
             print(f"{mark} {label:44} -> {note}")
             results.append((ok, label, note))

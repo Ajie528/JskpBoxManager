@@ -10,22 +10,17 @@ namespace JskpBoxManager.Core;
 public sealed class RefreshSession
 {
     readonly string _box;
-    AuthProbe.Env _probeEnv;
     public RefreshSession(string box) { _box = box; }
     void L(string m) => Log.Box(_box, m);
 
     sealed class ColdResult
     {
-        /// <summary>Revoked 只在服务端明确拒绝（AutoAuth ret=-13）时为 true，此时密钥登记作废。</summary>
-        public bool SawGame, Renewed, Revoked, QrFail, SawQr;
+        public bool SawGame, Renewed, QrFail, SawQr;
         /// <summary>运行时把凭证写成了无效但没出现扫码页：不登记作废，也不拿金库旧凭证覆盖运行时自己的状态。</summary>
         public bool CredCleared;
-        /// <summary>凭证被清空且出现扫码页，但没拿到服务端 ret=-13：不能确认被顶，不烧密钥。</summary>
+        /// <summary>凭证被清空且出现扫码页：不能单靠这个确认被顶，不烧密钥。</summary>
         public bool Suspected;
-        /// <summary>收到过 AutoAuth ret=-13。单独不足以判作废（关游戏秒重启等瞬态拒绝，运行时能 ManualAuth 免扫自愈）；只有再出现二维码才确认真被顶。</summary>
-        public bool HardReject;
         public DateTime LaunchUtc;
-        public AuthProbe.AuthResult Auth;
     }
 
     public int Run()
@@ -167,12 +162,6 @@ public sealed class RefreshSession
         VaultSync.PushVaultToLive(_box);
 
         bool lean = cfg.For(_box).LeanRefresh;
-        if (cfg.For(_box).ProbeAuth)
-        {
-            _probeEnv = AuthProbe.Resolve(false);
-            L(_probeEnv.Ok ? $"refresh: auth probe on (frida {_probeEnv.Frida})" : "refresh: auth probe off -> " + _probeEnv.Error);
-            if (!_probeEnv.Ok) _probeEnv = null;
-        }
         ColdResult r = null;
         string usedMode = "Full";
 
@@ -183,7 +172,7 @@ public sealed class RefreshSession
             {
                 r = TryCold(frozenKey, mode, leanNudge: false, timeoutMin: 2, maxAttempts: 1);
                 usedMode = mode.ToString();
-                if (r.Renewed || r.Revoked || r.QrFail || r.Suspected) break;
+                if (r.Renewed || r.QrFail || r.Suspected) break;
                 if (r.CredCleared) { L($"refresh lean {mode}: credential cleared -> stop lean chain"); break; }
                 L($"refresh lean {mode} no renew -> next candidate");
                 BoxRuntime.StopForce(_box, false);
@@ -192,7 +181,7 @@ public sealed class RefreshSession
                 BoxRuntime.EnsureWxRuntimeInBox(_box);
                 VaultSync.PushVaultToLive(_box);
             }
-            if (r != null && !r.Renewed && !r.Revoked && !r.QrFail && !r.Suspected && !r.CredCleared)
+            if (r != null && !r.Renewed && !r.QrFail && !r.Suspected && !r.CredCleared)
             {
                 L("refresh lean exhausted -> fallback Full");
                 BoxRuntime.StopForce(_box, false);
@@ -213,22 +202,17 @@ public sealed class RefreshSession
 
         r ??= new ColdResult { LaunchUtc = DateTime.UtcNow };
         bool softRetry = false;
-        if (!r.Renewed && !r.Revoked && !r.SawGame && (r.Suspected || r.CredCleared))
+        if (!r.Renewed && !r.SawGame && (r.Suspected || r.CredCleared))
         {
             softRetry = true;
-            // 收到过 ret=-13（HardReject）时，不把金库旧凭证推回去——那把 key 刚被拒，重放只会再 ret=-13；
-            // 让运行时保留自己清空后的状态，用 ManualAuth 免扫自愈（与启动流程一致）。
-            bool keepRuntimeState = r.HardReject;
             L(r.Suspected
-                ? "refresh: credential cleared + QR without server ret=-13 -> suspected, keep key; restore vault and retry Full once"
-                : keepRuntimeState
-                    ? "refresh: autoauth ret=-13 -> 保留运行时状态（不还原金库）冷重试一次，等 ManualAuth 自愈"
-                    : "refresh: credential cleared by runtime -> restore vault and retry Full once");
+                ? "refresh: credential cleared + QR -> suspected, keep key; restore vault and retry Full once"
+                : "refresh: credential cleared by runtime -> restore vault and retry Full once");
             BoxRuntime.StopForce(_box, false);
             BoxRuntime.RegisterLauncher(_box, "refresh");
             Thread.Sleep(3000);
             BoxRuntime.EnsureWxRuntimeInBox(_box);
-            if (!keepRuntimeState) VaultSync.PushVaultToLive(_box);
+            VaultSync.PushVaultToLive(_box);
             r = TryCold(frozenKey, BoxRuntime.LaunchMode.Full, leanNudge: true, timeoutMin: 6, maxAttempts: 1, suspectHoldSec: 60);
             usedMode += "+retry";
         }
@@ -245,12 +229,11 @@ public sealed class RefreshSession
             }
             else L("refresh: ilink credential not rewritten after game window");
         }
-        var outcome = ok ? "ok" : r.Revoked ? "revoked" : r.Suspected ? "suspected" : r.QrFail ? "qr" : r.SawQr ? "qr-seen" : r.SawGame ? "no-rewrite" : "no-game";
+        var outcome = ok ? "ok" : r.Suspected ? "suspected" : r.QrFail ? "qr" : r.SawQr ? "qr-seen" : r.SawGame ? "no-rewrite" : "no-game";
         Ilink.WriteEvent(_box, "refresh", new JsonObject
         {
             ["result"] = outcome, ["keySha"] = Ilink.Live(_box).KeyHash, ["frozenKey"] = frozenKey,
             ["mode"] = usedMode, ["lean"] = lean, ["credCleared"] = r.CredCleared, ["softRetry"] = softRetry,
-            ["auth"] = r.Auth?.Text, ["authRet"] = r.Auth?.Ret, ["authMsg"] = r.Auth?.Msg,
         });
 
         if (ok)
@@ -263,12 +246,7 @@ public sealed class RefreshSession
         }
         else
         {
-            if (r.Revoked)
-            {
-                NeedScan.Set(_box, "key-revoked");
-                L("refresh session FAIL -> key revoked by server, mark need-scan");
-            }
-            else if (r.Suspected)
+            if (r.Suspected)
             {
                 NeedScan.Set(_box, "suspected-revoked");
                 L("refresh session FAIL -> QR again after vault retry, mark need-scan (key not burned)");
@@ -281,7 +259,7 @@ public sealed class RefreshSession
             }
             else L($"refresh session FAIL mode={usedMode} (will retry next schedule)");
             BoxRuntime.StopForce(_box, false);
-            if (!r.Revoked && !r.CredCleared) try { VaultSync.PushVaultToLive(_box); } catch { }
+            if (!r.CredCleared) try { VaultSync.PushVaultToLive(_box); } catch { }
             BoxStatusFile.Write(_box, NeedScan.Pending(_box) ? BoxPhase.Failed : BoxPhase.Stopped,
                 NeedScan.Pending(_box) ? "保活失败：需要重新扫码" : $"保活未成功（{outcome}），下次再试");
         }
@@ -297,6 +275,13 @@ public sealed class RefreshSession
         if (!ProtocolRenew.AttemptPending(_box) && !Ilink.VaultState(_box).Valid)
         {
             L("protocol renew: 金库没有有效凭证 -> 回退冷启动");
+            return ProtocolRenewOutcome.Fallback;
+        }
+
+        var (renewable, blocked) = ProtocolRenew.CheckRenewable(_box);
+        if (!renewable)
+        {
+            L("protocol renew skipped: " + blocked.Split('\n')[0]);
             return ProtocolRenewOutcome.Fallback;
         }
 
@@ -360,14 +345,6 @@ public sealed class RefreshSession
             }
             BoxRuntime.Warmup(_box, attempt > 1);
             BoxRuntime.ClearCrashRestore(_box);
-            AuthProbe probe = null;
-            if (_probeEnv != null)
-            {
-                var rp = Keepalive.Load().For(_box);
-                probe = AuthProbe.Start(_box, _probeEnv, timeoutMin * 60 + 180, out var probeErr,
-                    rp.InvokeAutoAuth);
-                if (probe == null) L("refresh: auth probe not started -> " + probeErr);
-            }
             var baseline = Ilink.Baseline(_box);
             r.LaunchUtc = DateTime.UtcNow;
             BoxRuntime.StartBrowser(_box, "refresh", mode);
@@ -381,15 +358,6 @@ public sealed class RefreshSession
             while (DateTime.Now < deadline)
             {
                 Thread.Sleep(3000);
-                PollAuth(probe, r);
-                if (IsHardReject(r.Auth))
-                {
-                    // ret=-13 不等于真被顶：关游戏秒重启等瞬态拒绝后，运行时常能用 ManualAuth 免扫自愈。
-                    // 当「凭证被清空」处理，继续等自愈（游戏窗/换新）或二维码；只有再出现二维码才确认作废。
-                    if (!r.HardReject) L($"refresh: autoauth {r.Auth.Text} -> 先当凭证清空，等自愈/二维码确认");
-                    r.HardReject = true;
-                    r.CredCleared = true;
-                }
                 if (Ilink.RenewedSince(_box, r.LaunchUtc) && Ilink.Live(_box).KeyHash != frozenKey)
                 {
                     r.Renewed = true;
@@ -408,18 +376,8 @@ public sealed class RefreshSession
                     if ((DateTime.Now - clearedQrSince.Value).TotalSeconds >= suspectHoldSec)
                     {
                         r.SawQr = true;
-                        if (r.HardReject)
-                        {
-                            // ret=-13 + 二维码 = 确认真被顶：登记作废
-                            Ilink.RegisterRevoked(_box, baseline, "refresh");
-                            r.Revoked = true;
-                            L($"refresh: autoauth ret=-13 + 二维码 {suspectHoldSec}s -> 确认被顶，登记作废");
-                        }
-                        else
-                        {
-                            r.Suspected = true;
-                            L($"refresh: credential cleared + QR {suspectHoldSec}s, no server ret=-13 -> suspected (key kept)");
-                        }
+                        r.Suspected = true;
+                        L($"refresh: credential cleared + QR {suspectHoldSec}s -> suspected (key kept)");
                         break;
                     }
                     continue;
@@ -480,39 +438,8 @@ public sealed class RefreshSession
                 if (v.HasQqOrGame) continue;
                 if (wait >= 90) { L("refresh: no process 90s -> cold retry"); needRetry = true; break; }
             }
-            PollAuth(probe, r);
-            if (!r.Revoked && IsHardReject(r.Auth))
-            {
-                // 收尾时才看到 ret=-13：不立刻烧 key，当凭证清空，交给冷重试自愈 / 二维码确认
-                r.HardReject = true;
-                r.CredCleared = true;
-                L($"refresh: late autoauth {r.Auth.Text} -> 先当凭证清空（重试/二维码确认）");
-            }
-            if (r.SawGame || r.Renewed || r.Revoked || r.Suspected || r.QrFail || !needRetry) break;
+            if (r.SawGame || r.Renewed || r.Suspected || r.QrFail || !needRetry) break;
         }
         return r;
-    }
-
-    static bool IsHardReject(AuthProbe.AuthResult a) =>
-        a != null && a.Ret == -13 && a.Cgi.Contains("AutoAuth", StringComparison.OrdinalIgnoreCase);
-
-    void PollAuth(AuthProbe probe, ColdResult r)
-    {
-        if (probe == null) return;
-        foreach (var a in probe.Poll(t =>
-                 {
-                     if (t.Contains("ManualAuth", StringComparison.OrdinalIgnoreCase))
-                     {
-                         L("refresh: 抓到 ManualAuth（手机扫码登录）");
-                         ScanHint.MarkManualAuth(_box);
-                     }
-                 }))
-        {
-            L($"refresh: 授权返回 {a.Text}");
-            if (!a.Cgi.Contains("Auth", StringComparison.OrdinalIgnoreCase)) continue;
-            if (a.Cgi.Contains("ManualAuth", StringComparison.OrdinalIgnoreCase)) ScanHint.MarkManualAuth(_box);
-            if (a.Cgi.Contains("AutoAuth", StringComparison.OrdinalIgnoreCase) && a.Ok) ScanHint.MarkAutoAuthOk(_box);
-            r.Auth = a;
-        }
     }
 }

@@ -679,6 +679,58 @@ dry-run 字节数与原 Python 版完全一致（明文 204 / hybrid 435 / 请�
 
 - 协议续期默认关闭，需逐个号勾选（GUI 复选框或 `keepalive.json` 的 `protocolRenew`）。
 - 每次续期都会换 key，所以 `attempted` 保护必须保留（已在 `ProtocolRenew.Renew` 实现）。
+- **不能在沙箱运行中续期**，见 6F。
+
+## 6F. 运行中续期会把游戏窗顶掉（2026-11-05 15:12 qb15 实测）
+
+### 现象
+
+qb15 进游戏后（15:09 扫码/免扫成功，key `e81b0f9e`），15:11:59 手动点「⚡ 纯协议续期」：
+
+| 时刻 | 发生了什么 |
+|------|-----------|
+| 15:11:59 | 续期成功，服务端换新 key `64e16f16`，已写回 live + 金库 |
+| 15:12:01 | `tdi_account.txt` 又被改写，**内容变回旧 key `e81b0f9e`** |
+| 15:12:03 | 游戏窗消失（`game window missing tick=1`） |
+| 15:12:07 | 判定「game closed」→ 停箱 |
+
+结果：游戏没了，新 key `64e16f16` 也没了（金库里只剩被写回的旧 key）。
+
+### 原因
+
+运行中的 `WeChatAppEx` 内存里握着**旧** AutoAuthKey。协议续期让服务端把旧 key 立刻作废，
+运行时下一次自检/刷新用旧 key 必然失败，于是：
+
+1. 它按自己的内存状态把 `tdi_account.txt` 覆写回旧 key；
+2. ilink 会话被判失效 → 关掉游戏窗 / 退出。
+
+也就是说 **`tdi_account.txt` 不是「谁最后写谁赢」，而是运行时在运行期拥有最终写入权**。
+外部协议续期只适合**沙箱已停**的场景。
+
+### 代码改动（1.5.19）
+
+- `ProtocolRenew.CheckRenewable(box)`：游戏窗 / 微信运行时 / QQ 浏览器任一在跑就拒绝续期，并给出原因。
+  接入位置：GUI「⚡ 纯协议续期」按钮、`protorenew qbN` 命令（可加 `--force` 跳过）、
+  保活 `RefreshSession.TryProtocolRenew`（运行中会先被前面的 in-game / resident 分支拦掉）。
+- 保活里的协议续期只在「沙箱已停」时执行，因此 6 小时定时续期不会顶掉正在玩的游戏。
+- `credential\protocol-renewed.json`：续期成功后存一份新凭证快照（含 `prevKeySha`）。
+  续期后若发现 live 变回**续期前的旧 key**，自动写回新 key 并记 `key-restored` 事件。
+  `Ilink.Save` 保存前也会先跑一次这个纠正，避免旧 key 反覆盖新 key。
+
+> 注意：`RestoreRotated` 只纠正「变回续期前那把旧 key」的情况。若运行时自己合法换了一把
+> 第三把 key（说明它成功了），快照会自动作废，不会拿旧快照去覆盖。
+
+### 正确用法
+
+```text
+# 沙箱已停 —— 推荐，0.5 秒换钥，不开浏览器
+JskpBoxManager.exe protorenew qb15
+
+# 自动保活：勾「保活时先用纯协议续期」（protocolRenew），只在箱子停着时生效
+```
+
+游戏正开着时想续期：先关游戏 / 停箱再续，续完再启动（新 key 直接免扫进）。
+续期后想确认这把 key 真的能用，就启动一次看是否免扫进游戏。
 
 ## 6C. 建议
 

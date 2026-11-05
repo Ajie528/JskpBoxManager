@@ -178,16 +178,23 @@ python=C:\...\python.exe frida=17.24.3
 
 `hook` 只是观测工具，不改保活策略。正式换钥走 `refresh`（`RefreshSession`）；qb1 可在 `keepalive.json` 打开 `leanRefresh` 先试精简启动，失败回退 Full。
 
-### 6.1 正式保活里记录授权结果
+### 6.1 手动观测授权结果（1.5.18 起，保活里已移除）
 
-主界面「静默保活」里勾选 **记录授权结果**（或 `keepalive.json` 里该号的 `"probeAuth": true`），之后每次静默保活都会用同一套箱内观测程序截授权返回：
+**保活不再挂 Frida**。「记录授权结果」「启动与游戏中也记录授权」两个开关已在 1.5.18 移除——
+结论已经落地（免扫续期走纯协议），继续挂着还会在扫码后多调一次 AutoAuth，反而进不去游戏。
 
-- 沙箱日志里多一行：`refresh: 授权返回 成功 AutoAuthResponse error=0 ret=0`（失败时是 `失败 ... ret=非0 msg=服务端给的原因`）。
-- 保活结果事件（`logs\ilink-events.jsonl` 的 `"event":"refresh"`）带 `auth` / `authRet` / `authMsg`。
-- 服务端拒绝时，界面「上次保活」后面会显示 `（服务器拒绝授权 ret=…：原因）`。
-- 明文日志照样追加到 `logs\frida-ilink-<沙箱>.txt`。
+需要临时看一次授权返回时，用命令行只读观测：
 
-要求和 `hook` 一样：Python 3 + `pip install frida psutil pefile`，以及 exe 旁边的 `tools\lean-refresh`（`build.ps1` 打的发布包已带上）。保活时**不会**自动 pip 安装；缺环境时只在日志里写一行 `auth probe off -> 原因`，保活照常进行。只观测，不影响换钥结果。
+```text
+JskpBoxManager.exe hook qb1 --no-launch --seconds 120
+```
+
+- 沙箱日志里会出现 `hook attach pid=… via game-window`；
+- 明文输出追加到 `logs\frida-ilink-<沙箱>.jsonl`；
+- 需要 Python 3 + `pip install frida`，以及 exe 旁边的 `tools\lean-refresh`。
+
+自动续期请走 **纯协议续期**（`protorenew` 或保活里的 `protocolRenew`），不需要 Python：
+协议层全部在 `Core/MmtlsClient.cs` + `Core/MmtlsProtocol.cs`，只观测不改包的那套 Frida 与它无关。
 
 精简候选对照（不挂 Frida）：
 

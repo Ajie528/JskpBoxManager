@@ -247,8 +247,6 @@ public partial class MainWindow : Window
             var pol = keep.For(cur.Box);
             ChkKeep.IsChecked = pol.Enabled;
             ChkLeanRefresh.IsChecked = pol.LeanRefresh;
-            ChkProbeAuth.IsChecked = pol.ProbeAuth;
-            ChkProbeAuthLive.IsChecked = pol.ProbeAuthLive;
             ChkResidentKeep.IsChecked = pol.ResidentKeepalive;
             ChkProtocolRenew.IsChecked = pol.ProtocolRenew;
             TxtHours.Text = pol.IntervalHours.ToString();
@@ -475,6 +473,13 @@ public partial class MainWindow : Window
         if (cur == null || Selected.Count != 1) { SetStatus("请先选择一个沙箱"); return; }
 
         var pending = ProtocolRenew.LastAttemptAt(cur.Box);
+        var (renewable, blocked) = ProtocolRenew.CheckRenewable(cur.Box);
+        if (!renewable)
+        {
+            SetStatus(blocked.Split('\n')[0]);
+            MessageBox.Show(this, blocked, "纯协议续期", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
         var warn = "这个操作会直接连微信服务器换新密钥：\n\n"
                  + "· 不启动浏览器，几秒完成\n"
                  + "· **服务端会立刻作废旧 key**，所以结果必须成功，否则该号要重新扫码\n"
@@ -490,7 +495,13 @@ public partial class MainWindow : Window
 
         var (ok, msg) = await RunBusy($"正在用协议给 {cur.Box} 续期…", () =>
         {
-            var r = ProtocolRenew.Renew(cur.Box);
+            var r = ProtocolRenew.Renew(cur.Box, afterRotate: () =>
+            {
+                // 运行中续期时，运行时可能立刻把旧 key 写回；这里立刻纠正一次再存金库
+                Thread.Sleep(1500);
+                ProtocolRenew.RestoreRotated(cur.Box, "after-protocol-renew");
+                try { Ilink.Save(cur.Box, "protocol-renew"); } catch { }
+            });
             return (r.Ok, r.Message);
         });
         await RefreshAsync();
@@ -554,8 +565,6 @@ public partial class MainWindow : Window
         }
         bool enabled = ChkKeep.IsChecked == true;
         bool lean = ChkLeanRefresh.IsChecked == true;
-        bool probe = ChkProbeAuth.IsChecked == true;
-        bool probeLive = ChkProbeAuthLive.IsChecked == true;
         bool resident = ChkResidentKeep.IsChecked == true;
         bool protoRenew = ChkProtocolRenew.IsChecked == true;
         bool daily = RadDaily.IsChecked == true;
@@ -566,8 +575,8 @@ public partial class MainWindow : Window
                 cfg.Boxes[b] = new KeepPolicy
                 {
                     Enabled = enabled, Schedule = daily ? "daily" : "interval",
-                    IntervalHours = hours, DailyTime = $"{hh:D2}:{mm:D2}", LeanRefresh = lean, ProbeAuth = probe,
-                    ProbeAuthLive = probeLive, ResidentKeepalive = resident,
+                    IntervalHours = hours, DailyTime = $"{hh:D2}:{mm:D2}", LeanRefresh = lean,
+                    ResidentKeepalive = resident,
                     ProtocolRenew = protoRenew,
                 };
             Keepalive.Save(cfg);

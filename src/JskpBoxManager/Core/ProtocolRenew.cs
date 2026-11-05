@@ -29,6 +29,13 @@ public static class ProtocolRenew
 
     static string AttemptFile(string box) => Path.Combine(AppPaths.Logs, box + ".renew-attempt");
 
+    /// <summary>
+    /// 上次成功续期留下的新凭证快照。用途：运行中的微信运行时内存里还握着旧 key，
+    /// 我们换新后它可能把 tdi_account.txt 又写回旧 key（qb15 11-05 15:12 实测 2 秒后就被写回），
+    /// 新 key 会因此凭空丢失。有了这份快照才能当场还原。
+    /// </summary>
+    static string RotatedFile(string box) => Path.Combine(BoxPaths.CredentialDir(box), "protocol-renewed.json");
+
     public sealed record Result(bool Ok, string Message, string NewKeyHash = "", long Code = long.MaxValue)
     {
         public bool Rejected => Code is -2 or -13 or -14;
@@ -156,6 +163,128 @@ public static class ProtocolRenew
 
     public static bool AttemptPending(string box) => LastAttemptAt(box) != null;
 
+    // ---------------- 续期结果快照（防运行时写回旧 key） ----------------
+
+    /// <summary>沙箱里有没有正在跑的进程/游戏窗：运行中续期会被运行时用内存里的旧 key 覆盖回去。</summary>
+    public static (bool Busy, string Why) BusyState(string box)
+    {
+        try
+        {
+            var v = new BoxView(box);
+            if (v.HasGameWindow) return (true, "游戏正在运行");
+            if (v.WeChatRuntimeUp) return (true, "微信运行时正在运行");
+            if (v.HasQqOrGame) return (true, "沙箱里还有 QQ 浏览器 / 微信进程");
+            return (false, "");
+        }
+        catch { return (false, ""); }
+    }
+
+    /// <summary>
+    /// 运行中能不能续期。答案是不能：运行时的内存里握着旧 key，
+    /// 服务端换新后它会因为旧 key 失效而写回旧值并断开会话——qb15 11-05 15:11 就是这样
+    /// 在续期成功 2 秒后把游戏窗关掉、并把新 key 覆盖掉的。
+    /// </summary>
+    public static (bool Ok, string Message) CheckRenewable(string box)
+    {
+        var (busy, why) = BusyState(box);
+        if (!busy) return (true, "");
+        return (false,
+            $"不能续期：{why}。\n\n"
+            + "协议续期会让服务端立刻作废旧 key，而运行中的微信运行时内存里还握着那把旧 key：\n"
+            + "它会写回旧值并把游戏会话断掉（窗口直接消失，新 key 也会丢）。\n\n"
+            + "请先停掉这个沙箱（或等游戏关掉）再续期。");
+    }
+
+    /// <summary>续期成功后盯一段时间：运行中续期时，运行时会用内存里的旧 key 覆盖回
+    /// tdi_account.txt。发现被覆盖就把快照里的新 key 写回去。</summary>
+    static void StartClobberWatch(string box, int seconds)
+    {
+        var t = new Thread(() =>
+        {
+            var deadline = DateTime.Now.AddSeconds(seconds);
+            while (DateTime.Now < deadline)
+            {
+                Thread.Sleep(500);
+                if (RestoreRotated(box, "runtime-wrote-back-old-key"))
+                {
+                    try { VaultSync.PushVaultToLive(box); } catch { }
+                    return;
+                }
+                var live = Ilink.Live(box);
+                if (live.Valid && live.KeyHash == RotatedKeyHash(box)) return;   // 稳定在新 key
+            }
+        })
+        { IsBackground = true };
+        t.Start();
+    }
+
+    /// <summary>把刚换到的新凭证原样存一份，供 <see cref="RestoreRotated"/> 还原。</summary>
+    static void SaveRotatedSnapshot(string box, Credential c, byte[] newKey, byte[] newEnc, byte[] newSrv,
+        string newHash, string prevHash)
+    {
+        try
+        {
+            Directory.CreateDirectory(BoxPaths.CredentialDir(box));
+            JsonFile.WriteObject(RotatedFile(box), new JsonObject
+            {
+                ["at"] = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
+                ["uin"] = c.Uin,
+                ["prevKeySha"] = prevHash,
+                ["autoKey"] = Convert.ToBase64String(newKey),
+                ["encKey"] = Convert.ToBase64String(newEnc),
+                ["serverId"] = newSrv is { Length: > 0 } ? Convert.ToBase64String(newSrv) : "",
+                ["keySha"] = newHash,
+            });
+        }
+        catch (Exception ex) { Log.Box(box, "protocol renew: snapshot save failed " + ex.Message); }
+    }
+
+    /// <summary>上一次协议续期换到的 key 哈希；没有返回空串。</summary>
+    public static string RotatedKeyHash(string box)
+        => JsonFile.Str(JsonFile.ReadObject(RotatedFile(box)), "keySha");
+
+    /// <summary>
+    /// 运行时把续期结果写回旧 key 时用：把快照里的新 key 写回去。
+    /// 只在「live 变回了续期前的旧 key」时才动手——运行时自己合法换新（live 是第三把 key）不算。
+    /// 返回 true 表示确实发生了「新 key 被覆盖」并已还原。
+    /// </summary>
+    public static bool RestoreRotated(string box, string reason)
+    {
+        var o = JsonFile.ReadObject(RotatedFile(box));
+        var hash = JsonFile.Str(o, "keySha");
+        var prevHash = JsonFile.Str(o, "prevKeySha");
+        if (hash.Length == 0 || prevHash.Length == 0) return false;
+        var live = Ilink.Live(box);
+        if (!live.Valid) return false;
+        if (live.KeyHash == hash) return false;        // 还是新 key，没被覆盖
+        if (live.KeyHash != prevHash)
+        {
+            // 既不是新 key 也不是续期前的旧 key：运行时自己换了一把更新的，快照作废
+            try { File.Delete(RotatedFile(box)); } catch { }
+            Log.Box(box, $"protocol renew: runtime rotated to {live.KeyHash} by itself -> drop stale snapshot");
+            return false;
+        }
+        var key = B64(JsonFile.Str(o, "autoKey"));
+        var enc = B64(JsonFile.Str(o, "encKey"));
+        if (key.Length == 0 || enc.Length != 24) return false;
+        var cred = ReadCredential(box);
+        try
+        {
+            WriteCredential(cred, key, enc, B64(JsonFile.Str(o, "serverId")));
+            Log.Box(box, $"protocol renew: runtime wrote back old key {live.KeyHash} -> restored renewed key {hash} ({reason})");
+            Ilink.WriteEvent(box, "key-restored", new JsonObject
+            {
+                ["keySha"] = hash, ["clobberedBy"] = live.KeyHash, ["reason"] = reason,
+            });
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Box(box, "protocol renew: restore renewed key failed " + ex.Message);
+            return false;
+        }
+    }
+
     public static void ClearAttempt(string box)
     {
         try { File.Delete(AttemptFile(box)); } catch { }
@@ -165,7 +294,11 @@ public static class ProtocolRenew
 
     /// <summary>续期一个沙箱。会真实发送并轮换服务端密钥。</summary>
     /// <param name="dryRun">true = 只构造不发送（不写 attempted、不落盘）。</param>
-    public static Result Renew(string box, bool dryRun = false, string host = DefaultHost, int port = DefaultPort)
+    /// <param name="afterRotate">
+    /// 成功换钥后调用（用于观察运行时是否又把旧 key 写回）。沙箱运行中续期必须传，否则新 key 会丢。
+    /// </param>
+    public static Result Renew(string box, bool dryRun = false, string host = DefaultHost, int port = DefaultPort,
+        Action afterRotate = null)
     {
         Credential cred;
         try { cred = ReadCredential(box); }
@@ -177,6 +310,7 @@ public static class ProtocolRenew
         if (!ulong.TryParse(cred.Uin, out var uin)) return new Result(false, "Uin 不是数字：" + cred.Uin);
 
         // ---- 1. 发送前先落盘 ----
+        var busyBefore = BusyState(box).Busy;
         var oldKeyHash = Ilink.ShortSha256(Encoding.UTF8.GetBytes(
             Convert.ToBase64String(cred.AutoKey) + "|" + Convert.ToBase64String(cred.EncKey)));
         if (!dryRun)
@@ -262,7 +396,11 @@ public static class ProtocolRenew
 
             var hash = Ilink.ShortSha256(Encoding.UTF8.GetBytes(
                 Convert.ToBase64String(newKey) + "|" + Convert.ToBase64String(newEnc)));
+            SaveRotatedSnapshot(box, cred, newKey, newEnc, newSrv, hash, oldKeyHash);
             Log.Box(box, $"protocol renew ok: newKey={hash} enc=24 serverId={newSrv.Length}");
+            if (busyBefore) StartClobberWatch(box, 120);
+            try { afterRotate?.Invoke(); }
+            catch (Exception ex) { Log.Box(box, "protocol renew: afterRotate failed " + ex.Message); }
             return new Result(true, $"协议续期成功，新 key={hash}", hash, 0);
         }
         catch (Exception ex)

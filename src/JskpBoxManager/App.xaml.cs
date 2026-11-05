@@ -172,7 +172,14 @@ public partial class App : Application
                 case "recover": return new RecoverSession(box).Run();
                 case "protorenew":
                 {
-                    var pr = ProtocolRenew.Renew(box, args.Contains("--dry"));
+                    bool dry = args.Contains("--dry");
+                    bool force = args.Contains("--force");
+                    if (!dry && !force)
+                    {
+                        var (ok2, why2) = ProtocolRenew.CheckRenewable(box);
+                        if (!ok2) { Console(why2); return 3; }
+                    }
+                    var pr = ProtocolRenew.Renew(box, dry);
                     Console(pr.Message);
                     return pr.Ok ? 0 : 1;
                 }

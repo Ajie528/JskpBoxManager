@@ -269,6 +269,9 @@ public static class Ilink
     /// <summary>返回 saved / unchanged / invalid-live / vault-newer / revoked</summary>
     public static string Save(string box, string reason = "save")
     {
+        // 协议续期把服务端 key 换新了，但运行中的运行时内存里还握着旧 key：
+        // 它随时可能把旧值写回 tdi_account.txt。这里在保存前先纠正，避免旧 key 反覆盖新 key。
+        try { if (ProtocolRenew.RestoreRotated(box, "save-" + reason)) { } } catch { }
         var liveRoot = BoxPaths.WmpfLive(box);
         var vaultRoot = BoxPaths.WmpfVault(box);
         var live = Read(liveRoot);

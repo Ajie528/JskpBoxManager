@@ -217,9 +217,10 @@ class Watcher:
             sc.on("message", lambda m, d, pid=pid, role=role: self.on_message(pid, role, m, d))
             sc.load()
             rva = self.rva_for(exe) if role in HOOK_ROLES else None
-            # AutoAuth 的 RVA 来自 longlink_locate，只在 ilink 角色上有意义。
-            # 静态定位已找到真正的构造点：0xD7710（引用 AutoAuth URL + 写 cmdid 3198）。
-            # 但仍只在显式要求实验时才 hook / 主动调用，避免影响正常保活。
+            # AutoAuth 的 RVA 来自 longlink_locate。静态定位已确认：
+            #   0xD4390 = 完整 AutoAuth 流程（引用 AutoAuth URL + cmdid 3198，只被调用 1 次，
+            #             实测游戏运行期间 0 次触发，符合 AutoAuth 语义）
+            # 只在显式开实验时才 hook / 主动调用。
             aa = None
             if role == "ilink" and self.invoke_after_capture:
                 try:
@@ -228,7 +229,7 @@ class Watcher:
                     aa = None
                 if aa:
                     self.write({"ev": "autoauth-rva", "rva": hex(aa)},
-                               f"{now()} [实验] AutoAuth 构造点 RVA {hex(aa)}（cmdid 3198 + URL 引用）")
+                               f"{now()} [实验] AutoAuth RVA {hex(aa)}（0xD4390=完整流程，已静态验证）")
             sc.exports_sync.init({"xlogRva": rva, "role": role, "autoAuthRva": aa})
             self.sessions[pid] = (s, sc)
             ms = int((time.time() - t0) * 1000)

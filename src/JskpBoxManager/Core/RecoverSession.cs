@@ -65,7 +65,7 @@ public sealed class RecoverSession
     }
 
     /// <summary>写入这把 key 冷启一次，2 分钟内进游戏或换新密钥算成功；凭证被清空且扫码页持续约 20s 算这把被拒。</summary>
-    bool TryOne(CredCandidate c)
+    internal bool TryOne(CredCandidate c)
     {
         BoxRuntime.StopForce(_box, false);
         BoxRuntime.RegisterLauncher(_box, "recover");

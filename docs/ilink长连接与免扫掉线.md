@@ -411,7 +411,7 @@ if not role:
 3. **`--block-timeout` 是否还有必要**：本次实测 `sessiontimeout` 零次，说明正常场景用不上；
    保留它用于将来验证其他路径是否会触发该回调。
 
-## 9A. 主动触发 AutoAuth 的三条路（2026-11-04 全部试过，结论：都不通）
+## 9A. 主动触发 AutoAuth 的三条路（2026-11-04 试过两条不通，第三条待收尾）
 
 目标：不冷启动也能让运行时发一次 `AutoAuth` 来续期。逐条验证如下。
 
@@ -441,7 +441,7 @@ qb15.log                  →  wx.login getCode failed: The server returned stat
 原因一致：**运行时自认为 app session 仍然有效**（ilink 进程活着、心跳正常），不需要重新授权。
 它只在 session 失效或进程冷启动时才发。
 
-### 9A.3 Frida 主动调 —— 机制可行，但函数定位失败（附错误教训）
+### 9A.3 Frida 主动调 —— 机制可行，但最初的定位方法错误（附教训）
 
 **定位方法（可复用）**：给 `hook_ilink.js` 加 `stackOnAuth`，命中 AutoAuth 相关日志时用
 `Thread.backtrace` 采栈，再用 `.pdata` 异常目录把返回地址归属到函数。
@@ -565,24 +565,54 @@ autoauth-call 事件 638 次，来自 37 个不同的 this 指针：
 
 #### 尚未完成的验证
 
-**`0xD4390` / `0xD7710` 还没有在运行中的 ilink 进程上实测过。** 卡在观测器注入不稳定：
+**`0xD4390` / `0xD7710` 还没有被「主动调用」成功过。** 但静态定位本身已经用**行为**验证过了：
 
-| 时间 | 失败表现 |
-|------|----------|
-| 18:16 | ilink 注入 `ProcessNotRespondingError` |
-| 22:25 | **main + network 都失败** |
+在游戏正常运行期间（ilink 进程已稳定、无登录动作），对这两个函数挂 hook 观察 40 秒：
 
-这是**观测器在进程创建瞬间注入的竞态**（`hookAutoAuth` 即便延后 1.5 秒仍不充分），
-与 RVA 无关——已确认 `--invoke-autoauth` 关闭时不会 hook 这段。
+```
+[hook 结果] [{"name":"auto_auth","ok":true,"addr":"0x7ffa513e4390"},
+             {"name":"auto_auth_build","ok":true,"addr":"0x7ffa513e7710"}]
+观察 40 秒（游戏正常运行）→ 最终 state: {}      ← 零触发
+```
 
-**下一步如果要继续**：
+| 函数 | 游戏运行 40 秒内的触发次数 |
+|------|---------------------------|
+| `0xD4390`（静态定位） | **0** |
+| `0xD7710`（静态定位） | **0** |
+| `0x229B70`（旧的误判） | **638** |
 
-1. 先单独把注入竞态修稳（例如完全不在 init 阶段做任何 attach，改为「模块加载后 + 延时 3 秒」）。
-2. 再 hook `0xD4390`（不是 `0xD7710`）观察：真 AutoAuth 时是否只触发 1 次。
-3. 最后才尝试用它的 `this` 主动调用，并**以「是否出现新的 `AutoAuthResponse` + key 是否换新」为唯一判据**。
+**0 次 vs 638 次**——这从行为上证明了静态定位是对的：AutoAuth 只在登录时发生一次，
+而通用函数会在各种请求里疯狂触发。
 
-> 注意：`0xD4390` 接受的是完整的 AutoAuth 上下文（含凭证、回调等），
-> 主动调用它需要比单个 `this` 更多的参数，难度高于之前设想的「调一个 `void(this)` 函数」。
+#### AutoAuth 的精确时序（2026-11-05 00:39 实测，qb15 冷启动）
+
+这一条对「主动 hook」很关键：
+
+```
+00:39:53.725   SendAutoAuthRequestAsync: -->       ← 进程起来后约 1 秒
+00:39:53.769   TdiSendRequest cgi=AutoAuthRequest, body 206B
+00:39:54.435   socket send (mmtls)
+00:39:54.799   TdiCheckCgiResponse cgi=AutoAuthResponse, error=0 ret=0
+00:39:59       （我们那次把 hook 延后 1.5 秒，结果 00:39:59 才 ready，完全错过）
+```
+
+**从 ilink 进程创建到 AutoAuth 完成只有约 4 秒。** 所以 `hookAutoAuth` 必须**立即挂**，
+不能靠 `setTimeout` 延迟——1.5 秒的延迟就已经错过了整个请求。
+
+（早前那次「延后 1.5 秒」是因为怀疑注入竞态导致 `ProcessNotRespondingError`。
+后来验证：那个崩溃是**手动 `Start.exe` 启动、跳过 warmup** 造成的，
+走程序 `launch`（内含 `warmup sandbox`）时注入稳定，多次 `attached=3/4, err=0`。
+延迟已移除。）
+
+#### 下一步如果要继续
+
+1. 用程序 `launch`（**不要**手动 `Start.exe`，否则大概率注入失败）。
+2. 打开实验开关（`keepalive.json` 的 `"invokeAutoAuth": true`，v1.5.10 起支持）。
+3. hook 现在会立即挂上，应在 `00:39:53.7` 这个时间点抓到 `0xD4390` 的调用与参数。
+4. 抓到后自动等 2 秒再主动调一次，判据是「是否出现新的 `AutoAuthResponse` + key 是否换新」。
+
+> 注意：`0xD4390` 是完整流程（895B），参数不止 `this`。
+> hook 里已把 `args[0..3]` 全部记录，需要看实测数据才知道哪个才是对象指针。
 
 ### 9A.5 结论
 
@@ -595,14 +625,48 @@ autoauth-call 事件 638 次，来自 37 个不同的 this 指针：
 18:06:50  key → 23853ed2   ← 换新
 ```
 
+#### 为什么「hook 抓 this 再主动调」这条路失败了（时序窗口只有 4 秒）
+
+2026-11-05 00:39 在 qb15 上做了一次完整的冷启动观测，拿到了精确时序：
+
+```
+00:39:53.725   SendAutoAuthRequestAsync: -->
+00:39:53.769   TdiSendRequest cgi=AutoAuthRequest, body 206B
+00:39:54.799   TdiCheckCgiResponse cgi=AutoAuthResponse, error=0 ret=0   ← 完成
+```
+
+**从 ilink 进程创建到 AutoAuth 完成只有约 4 秒。**
+
+而 Frida 的注入链路本身就吃掉大部分窗口：
+
+```
+ilink 进程创建
+  → hook_watch.py 的 100ms 轮询发现它
+  → device.attach() + create_script() + load()  ≈ 200–300ms
+  → exports_sync.init() 到 JS 里的 hookAutoAuth 执行
+  → 才轮到 Interceptor.attach(0xD4390)
+```
+
+即便把 `hookAutoAuth` 的延迟从 1.5 秒改成 0（已改），实测仍然没赶上（`autoauth-call` 计数 0）。
+
+**正确方向（若以后还想做）**：不要「attach 已启动的进程」，而应 `frida.spawn()` 挂起启动 →
+装好 hook → `resume()`。这样 hook 在第一条指令前就位，不存在抢不到窗口的问题。
+但这需要替换 `hook_watch.py` 的 attach 模型，改动较大。
+
 保留的工具（`tools/lean-refresh/`）：
 
 | 文件 | 用途 |
 |------|------|
 | `hook_ilink.js` 的 `stackOnAuth` | 命中 AutoAuth 日志时采栈，用于动态定位未知函数 |
 | `hook_ilink.js` 的 `invokeAutoAuth()` / `autoAuthState()` | RPC：查看是否抓到 this、主动调用（仅在有 this 时安全） |
-| `autoauth_probe.py` | 箱内独立实验脚本，验证上述流程 |
-| `longlink_locate.py` 的 `DYN_RVA` | 记录动态定位出的 RVA（**换 WXRuntime 版本必须重新采栈确认**） |
+| `autoauth_probe.py` / `autoauth_verify.py` | 箱内独立实验脚本，验证上述流程 |
+| `locate_autoauth_static.py` | **静态定位 AutoAuth 函数（按 URL 字符串的代码引用找），这是本轮最有价值的工具** |
+| `longlink_locate.py` 的 `DYN_RVA` | 记录定位出的 RVA（**换 WXRuntime 版本必须重新做静态定位**） |
+
+> 实验过程中的一个环境教训：**短时间内反复 stop/launch 同一个沙箱**会让 Sandboxie
+> 报 `SBIE2203 与 Sandboxie 服务的通信失败: RPCSS_SXS`（沙箱内 DCOM/RPC 组件来不及初始化）。
+> 服务本身没问题（`SbieSvc` 仍 Running、新建沙箱正常），停箱后重试即可。
+> 做这类实验时节奏要放缓，每次之间留足时间。
 
 ## 10. 观测已跑通（2026-11-04）
 

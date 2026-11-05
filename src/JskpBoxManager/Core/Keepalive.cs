@@ -25,6 +25,11 @@ public sealed class KeepPolicy
     /// 用来验证「连接还在的情况下业务是否真的不可用了」。风险未知，别在重要的号上开。
     /// </summary>
     public bool BlockSessionTimeout = false;
+    /// <summary>
+    /// 实验：抓到 AutoAuth 的 this 后主动再调一次 SendAutoAuthRequestAsync。
+    /// 用于验证「不冷启动能不能续期」。默认关；只在观察单个沙箱时开。
+    /// </summary>
+    public bool InvokeAutoAuth = false;
 
     public KeepPolicy Clone() => (KeepPolicy)MemberwiseClone();
 
@@ -93,6 +98,7 @@ public static class Keepalive
             p.ProbeAuthLive = JsonFile.Bool(o, "probeAuthLive") ?? false;
             p.ResidentKeepalive = JsonFile.Bool(o, "residentKeepalive") ?? false;
             p.BlockSessionTimeout = JsonFile.Bool(o, "blockSessionTimeout") ?? false;
+            p.InvokeAutoAuth = JsonFile.Bool(o, "invokeAutoAuth") ?? false;
         }
         return p;
     }
@@ -128,6 +134,7 @@ public static class Keepalive
                 ["probeAuthLive"] = kv.Value.ProbeAuthLive,
                 ["residentKeepalive"] = kv.Value.ResidentKeepalive,
                 ["blockSessionTimeout"] = kv.Value.BlockSessionTimeout,
+                ["invokeAutoAuth"] = kv.Value.InvokeAutoAuth,
             };
         JsonFile.WriteObject(AppPaths.KeepaliveJson, new JsonObject
         {

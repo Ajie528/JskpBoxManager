@@ -196,13 +196,19 @@ function hookAutoAuth(mod) {
   try {
     Interceptor.attach(mod.base.add(rva), {
       onEnter(args) {
-        const self = args[0];
-        authState.thisPtr = self;
+        // 0xD4390 是完整 AutoAuth 流程（895 字节），参数不止 this。
+        // 先把前 4 个参数都记下来，避免误判哪个才是对象指针。
+        const a0 = args[0], a1 = args[1], a2 = args[2], a3 = args[3];
+        authState.thisPtr = a0;
         authState.calls++;
         emit({
-          ev: 'autoauth-call', who: 'runtime', thisPtr: self.toString(),
-          n: authState.calls, tid: this.threadId,
+          ev: 'autoauth-call', who: 'runtime',
+          a0: a0.toString(), a1: a1.toString(), a2: a2.toString(), a3: a3.toString(),
+          thisPtr: a0.toString(), n: authState.calls, tid: this.threadId,
         });
+      },
+      onLeave(ret) {
+        emit({ ev: 'autoauth-return', n: authState.calls, ret: ret.toString() });
       }
     });
     emit({ ev: 'autoauth-hooked', rva: '0x' + rva.toString(16), ready: true });
@@ -444,23 +450,22 @@ rpc.exports = {
     // ilink2.dll 可能比本脚本晚加载：watchIlinkModule 里会回调 hookXlog，
     // AutoAuth 的 hook 要单独等模块出现。
     //
-    // 注意时序：ilink 进程刚创建时注入 frida-agent + 立刻 Interceptor.attach 有竞态，
-    // 实测会 ProcessNotRespondingError（进程卡死、ilink 起不来、游戏进不去）。
-    // 所以延后 1.5 秒再挂，等运行时初始化完。
+    // AutoAuth 在 ilink 进程创建后约 1 秒内就发出去了（实测 00:39:53.725 开始，
+    // 00:39:54.799 已收到 ret=0），所以这个 hook **必须立刻挂**，不能延迟——
+    // 之前延后 1.5 秒导致 hook 在 00:39:59 才 ready，完全错过了。
+    // （早前那次注入崩溃是「手动 Start.exe 启动、跳过 warmup」造成的，与 hook 时机无关；
+    //   走程序 launch 时注入稳定：attached=3 err=0。）
     const tryAutoAuth = () => {
       const m = Process.findModuleByName('ilink2.dll');
       if (m && hookAutoAuth(m)) return true;
       return false;
     };
     if (cfg.autoAuthRva != null) {
-      const arm = () => setTimeout(() => {
-        if (!tryAutoAuth() && typeof Process.attachModuleObserver === 'function') {
-          Process.attachModuleObserver({
-            onAdded(m) { if (m.name.toLowerCase() === 'ilink2.dll') setTimeout(tryAutoAuth, 1500); }
-          });
-        }
-      }, 1500);
-      arm();
+      if (!tryAutoAuth() && typeof Process.attachModuleObserver === 'function') {
+        Process.attachModuleObserver({
+          onAdded(m) { if (m.name.toLowerCase() === 'ilink2.dll') tryAutoAuth(); }
+        });
+      }
     }
     emit({ ev: 'script-load', arch: Process.arch, fileLib, net, modules: interestingModules() });
     return true;

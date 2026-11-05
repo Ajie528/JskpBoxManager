@@ -86,10 +86,13 @@ public sealed class LaunchSession
     {
         if (_probeEnv == null) return;
         ProbePoll();
+        var keepPol = Keepalive.Load().For(_box);
         _probe = AuthProbe.Start(_box, _probeEnv, LiveProbeSeconds, out var err,
-            Keepalive.Load().For(_box).BlockSessionTimeout);
-        if (Keepalive.Load().For(_box).BlockSessionTimeout)
+            keepPol.BlockSessionTimeout, keepPol.InvokeAutoAuth);
+        if (keepPol.BlockSessionTimeout)
             L("live auth probe: block session timeout is ON (experimental) — ilink will NOT self-exit on App layer sessiontimeout");
+        if (keepPol.InvokeAutoAuth)
+            L("live auth probe: invoke-autoauth is ON (experimental) — will re-call AutoAuth after capturing this");
         _probeNotes = 0;
         if (_probe == null) { L($"live auth probe not started ({why}) -> {err}"); return; }
         _probeUntil = DateTime.Now.AddSeconds(LiveProbeSeconds + 10);
@@ -208,6 +211,7 @@ public sealed class LaunchSession
         }
 
         bool opened = false, waitingQrAtEnd = false, didVaultRestore = false, forceFullWarmup = false;
+        bool didHistoryRecover = false;
         const int maxAttempts = 3;
         for (int attempt = 1; attempt <= maxAttempts && !opened; attempt++)
         {
@@ -230,6 +234,26 @@ public sealed class LaunchSession
             var result = WaitForGame(baseline);
             waitingQrAtEnd = result.WaitingQr;
             if (result.Opened) { opened = true; break; }
+
+            // 扫码框关掉两轮仍回来，且金库里没有更新的凭证可用时：
+            // 先别急着判「必须扫码」——历史快照里很可能还有一把能用的（qb15 11-05 就是这样，
+            // 弹码后手动点「历史凭证恢复」立刻进去了）。这里自动跑一遍逐个试。
+            if (!didHistoryRecover && result.WaitingQr && result.SawQr && !_hardReject && HistoryCanHelp())
+            {
+                didHistoryRecover = true;
+                L("QR still up and no newer vault key -> try historical credentials automatically");
+                Phase(BoxPhase.Starting, "扫码框一直不走，正在用历史凭证逐个试…");
+                if (TryHistoryRecover())
+                {
+                    L("history recover succeeded");
+                    NeedScan.Clear(_box);
+                    NeedScan.ClearQrStreak(_box);
+                    opened = true;
+                    break;
+                }
+                L("history recover failed -> fall back to wait for WeChat scan");
+            }
+
             if (result.NeedColdRetry && attempt < maxAttempts)
             {
                 L($"cold start failed -> retry {attempt}/{maxAttempts}");
@@ -290,6 +314,71 @@ public sealed class LaunchSession
             L("launch ended without game");
             Phase(waitingQrAtEnd ? BoxPhase.Failed : BoxPhase.Stopped, waitingQrAtEnd ? "等待扫码时浏览器被关闭" : "没能进入游戏，请查看日志");
         }
+    }
+
+    /// <summary>
+    /// 历史快照里是否还有「未作废、且与当前 live 不同」的凭证值得一试。
+    /// 注意：不能用 <see cref="Ilink.VaultCanHelp"/> —— 它只比较「金库 vs live」，
+    /// 当两边是同一把 key 时返回 false，于是历史里的好 key 永远不会被尝试
+    /// （qb15 11-05 00:42 弹码后就是这样被直接判成「必须扫码」，而历史里其实有能用的）。
+    /// </summary>
+    bool HistoryCanHelp()
+    {
+        try
+        {
+            var live = Ilink.Live(_box);
+            var list = Ilink.CredentialHistory(_box)
+                .Where(c => !c.Revoked)
+                .Where(c => !live.Valid || c.KeyHash != live.KeyHash)
+                .ToList();
+            if (list.Count > 0) L($"history candidates available: {list.Count} ({string.Join(",", list.Take(5).Select(c => c.KeyShort))})");
+            return list.Count > 0;
+        }
+        catch (Exception ex)
+        {
+            L("HistoryCanHelp error: " + ex.Message);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 逐个试历史凭证（复用 RecoverSession.TryOne 的验证逻辑）。
+    /// 第一把能免扫进游戏就停，并把 live 收进金库。
+    /// </summary>
+    bool TryHistoryRecover()
+    {
+        var live = Ilink.Live(_box);
+        var tryList = Ilink.CredentialHistory(_box)
+            .Where(c => !c.Revoked)
+            .Where(c => !live.Valid || c.KeyHash != live.KeyHash)
+            .ToList();
+        if (tryList.Count == 0) return false;
+
+        var rec = new RecoverSession(_box);
+        int i = 0;
+        foreach (var c in tryList)
+        {
+            i++;
+            L($"[{i}/{tryList.Count}] try historical key {c.KeyShort} ({c.SavedAt:MM-dd HH:mm}{(c.IsVault ? " · vault" : "")})");
+            Phase(BoxPhase.Starting, $"正在用历史凭证恢复（{i}/{tryList.Count}）：试 {c.KeyShort}");
+            try
+            {
+                if (rec.TryOne(c))
+                {
+                    L($"history recover OK with key {c.KeyHash}");
+                    try { Ilink.Save(_box, "history-recover"); } catch { }
+                    // TryOne 里已经把游戏拉起来了，这里接管看门
+                    Phase(BoxPhase.InGame, "已用历史凭证免扫恢复");
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                L($"history key {c.KeyShort} error: {ex.Message}");
+            }
+            L($"[{i}/{tryList.Count}] key {c.KeyShort} still needs QR");
+        }
+        return false;
     }
 
     /// <param name="CredCleared">启动后运行时把凭证写成了无效，但没出现扫码页（不能算被顶掉）。</param>

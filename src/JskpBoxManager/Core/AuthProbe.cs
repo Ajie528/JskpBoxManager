@@ -64,7 +64,9 @@ public sealed class AuthProbe
 
     /// <summary>箱内拉起观测程序并等它就绪（最多 3 次）。失败返回 null，error 里带 Python 的报错。</summary>
     /// <param name="blockSessionTimeout">拦截 ilink 会话超时（实验用；默认只观测）。</param>
-    public static AuthProbe Start(string box, Env env, int seconds, out string error, bool blockSessionTimeout = false)
+    /// <param name="invokeAutoAuth">抓到 AutoAuth 的 this 后主动再调一次（实验用，默认关）。</param>
+    public static AuthProbe Start(string box, Env env, int seconds, out string error,
+        bool blockSessionTimeout = false, bool invokeAutoAuth = false)
     {
         var p = new AuthProbe(box);
         var errReal = Path.ChangeExtension(p._outReal, ".err");
@@ -81,6 +83,7 @@ public sealed class AuthProbe
         };
         // 长连接观测默认随观测器一起挂；拦截会话超时是实验开关，只在这个号显式勾选时才加
         if (blockSessionTimeout) args.Add("--block-timeout");
+        if (invokeAutoAuth) args.Add("--invoke-autoauth");
         Log.Box(box, "auth probe watcher: " + string.Join(" ", args));
         var codes = new List<string>();
         for (int attempt = 1; attempt <= 3; attempt++)

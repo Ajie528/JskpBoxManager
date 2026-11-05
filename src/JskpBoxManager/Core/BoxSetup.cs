@@ -118,6 +118,7 @@ public static class BoxSetup
         try { File.Delete(BoxPaths.NeedScanFile(box)); } catch { }
         try { File.Delete(BoxPaths.NeedScanStamp(box)); } catch { }
         try { File.Delete(BoxPaths.QrStreakFile(box)); } catch { }
+        try { ScanBaseline.Clear(box); } catch { }
         // 最后删 Sandboxie 配置段并重载。这一步必须是「确认删掉」才算成功，
         // 否则界面删了、重启又出现——旧版 delete 语法无效就是从这里静默漏掉的。
         bool sectionGone = false;

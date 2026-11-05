@@ -363,6 +363,8 @@ public static class BoxRuntime
         Keepalive.RemoveTask(box);
         BoxStatusFile.Write(box, BoxPhase.Stopped, "登录已清除，下次启动需要扫码");
         Log.Box(box, "clear login done (vault + sandbox credential removed, game package kept)");
+        // 登录清掉了，授权窗口的起点也随之失效；下次扫码会重新写基准
+        ScanBaseline.Clear(box);
     }
 
     /// <summary>「释放浏览器内存」：隐藏 QQ 窗口、杀页面渲染进程、回收 QQ 工作集。不动游戏进程。</summary>

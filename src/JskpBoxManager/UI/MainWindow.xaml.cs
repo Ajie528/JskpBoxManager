@@ -160,6 +160,9 @@ public partial class MainWindow : Window
                 var ev = BoxSummary.LastRefreshEvents();
                 var rev = BoxSummary.LastRevokeEvents();
                 var chains = AuthChain.Load();
+                // 首次运行：把现有证据（事件日志 / 旧版日志 / prevAt 回溯）固化成基准文件，
+                // 之后即使事件日志滚掉，授权窗口也能一直算准。
+                ScanBaseline.BackfillAll(boxes, chains);
                 var res = boxes.Select(b => BoxSummary.Build(b, notes, keep, ev, chains, rev)).ToList();
                 BoxSummary.MarkDuplicates(res);
                 BoxSummary.MarkLongestChain(res);
@@ -464,6 +467,35 @@ public partial class MainWindow : Window
         var cur = Current;
         if (cur == null || Selected.Count != 1) { SetStatus("请先选择一个沙箱"); return; }
         new RecoverWindow(cur.Box) { Owner = this }.Show();
+    }
+
+    async void ProtoRenew_Click(object sender, RoutedEventArgs e)
+    {
+        var cur = Current;
+        if (cur == null || Selected.Count != 1) { SetStatus("请先选择一个沙箱"); return; }
+
+        var pending = ProtocolRenew.PendingAttempt(cur.Box);
+        var warn = "这个操作会直接连微信服务器换新密钥：\n\n"
+                 + "· 不启动浏览器，几秒完成\n"
+                 + "· **服务端会立刻作废旧 key**，所以结果必须成功，否则该号要重新扫码\n"
+                 + "· 已做「发送前先落盘」保护，断网也会留下标记，不会悄悄丢凭证\n";
+        if (pending != null)
+            warn += $"\n⚠ 上次续期（{pending:MM-dd HH:mm}）结果未知，标记还在。\n"
+                  + "   如果那个号现在还能免扫，说明服务端没换掉，可以继续；\n"
+                  + "   如果已经要扫码了，那把 key 多半已经作废。\n";
+        warn += "\n确定对 " + cur.Box + " 执行？";
+
+        if (MessageBox.Show(this, warn, "纯协议续期", MessageBoxButton.YesNo,
+                MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes) return;
+
+        var (ok, msg) = await RunBusy($"正在用协议给 {cur.Box} 续期…", () =>
+        {
+            var r = ProtocolRenew.Renew(cur.Box);
+            return (r.Ok, r.Message);
+        });
+        await RefreshAsync();
+        SetStatus(msg);
+        if (ok) MessageBox.Show(this, msg, "续期成功", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
     async void DeleteBox_Click(object sender, RoutedEventArgs e)

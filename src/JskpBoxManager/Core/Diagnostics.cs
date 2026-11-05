@@ -25,7 +25,8 @@ public static class Diagnostics
             sb.AppendLine($"    vault {b.Vault}");
             if (b.Chain != null) sb.AppendLine($"    免扫链 {b.Chain.Text}");
             if (b.ScanDays is double sd)
-                sb.AppendLine($"    扫码窗口 {b.ScanAgeShort}（还剩 {Math.Max(0, BoxSummary.AuthWindowDays - sd):0.#} 天）"
+                sb.AppendLine($"    扫码窗口 已过 {sd:0.#} 天{(b.ScanKnown ? "" : "（推算）")}"
+                    + $" → 还剩 {Math.Max(0, BoxSummary.AuthWindowDays - sd):0.#} 天"
                     + (b.RescanSuggested ? "  ← 建议重扫" : ""));
             if (b.Role != null && b.Role.HasName)
                 sb.AppendLine($"    role  {b.Role.Name} 等级={b.Role.Level} 区服={b.Role.ServerName} 攻击={b.Role.Attack} 读取于={b.Role.CapturedAt:MM-dd HH:mm}");

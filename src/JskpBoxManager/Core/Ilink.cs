@@ -315,6 +315,10 @@ public static class Ilink
                     ["prevAt"] = vault.WriteLocal, ["reason"] = reason,
                     ["manualAuth"] = manual, ["qrScan"] = scannedQr,
                 });
+                // 扫码时间落盘做基准：日志会滚动，基准不会。
+                // 用「这把钥匙的写入时间」而不是 DateTime.Now——那才是授权真正生效的时刻。
+                ScanBaseline.Save(box, live.WriteUtc.ToLocalTime(), live.Uin,
+                    manual ? ScanBaseline.SourceManual : ScanBaseline.SourceQrScan, overwrite: true);
             }
             else if (vault.Valid && vault.Uin == live.Uin)
             {
@@ -333,6 +337,9 @@ public static class Ilink
                     ["uin"] = live.Uin, ["keySha"] = live.KeyHash, ["writtenAt"] = live.WriteLocal,
                     ["prevUin"] = vault.Valid ? vault.Uin : "", ["prevAt"] = vault.Valid ? vault.WriteLocal : "", ["reason"] = reason,
                 });
+                // 换了微信号 = 新的扫码授权，窗口从这一把钥匙重新起算
+                ScanBaseline.Save(box, live.WriteUtc.ToLocalTime(), live.Uin,
+                    manual ? ScanBaseline.SourceManual : ScanBaseline.SourceQrScan, overwrite: true);
             }
         }
         if (vaultRevoked || !vault.Valid || vault.KeyHash != live.KeyHash)

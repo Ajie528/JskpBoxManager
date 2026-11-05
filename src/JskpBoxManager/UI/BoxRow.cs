@@ -34,11 +34,14 @@ public sealed class BoxRow : INotifyPropertyChanged
 
     public string ScanAgeText => Summary?.ScanAgeShort ?? "—";
     public string ScanAgeTip => Summary?.ScanAgeTip ?? "";
-    public Brush ScanAgeFg => Summary?.ScanDays is double d
-        ? d >= BoxSummary.AuthWindowDays ? Brushes.Red()
-        : d >= BoxSummary.RescanWarnDays ? Brushes.Orange()
-        : Brushes.Hex("#4B5563")
-        : Brushes.Gray();
+    public Brush ScanAgeFg => Summary switch
+    {
+        null => Brushes.Gray(),
+        { ScanDays: not double } => Brushes.Gray(),
+        { ScanDays: double d } when d >= BoxSummary.AuthWindowDays => Brushes.Red(),
+        { ScanDays: double d } when d >= BoxSummary.RescanWarnDays => Brushes.Orange(),
+        _ => Brushes.Hex("#4B5563"),
+    };
 
     public Brush PhaseBrush => Summary?.Phase switch
     {

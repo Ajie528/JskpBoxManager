@@ -63,6 +63,8 @@ public sealed class BoxSummary
     public DateTime ScanUtc = DateTime.MinValue;
     /// <summary>扫码时间是否确知（false = 只追到「更早的没有记录」）。</summary>
     public bool ScanKnown;
+    /// <summary>基准来源：qr-scan / manual / trace / backfill。</summary>
+    public string ScanSource = "";
 
     /// <summary>距扫码已过多少天；没有扫码记录时为 null。</summary>
     public double? ScanDays => ScanUtc == DateTime.MinValue ? null : (DateTime.UtcNow - ScanUtc).TotalDays;
@@ -137,12 +139,28 @@ public sealed class BoxSummary
             s.LoginText = "未登录";
         }
 
-        // 扫码授权窗口：起点取「免扫链的扫码时间」，链没了（被顶掉/要求重扫）就没有参考价值。
+        // 扫码授权窗口：起点优先用持久化基准（不会被日志滚动冲掉），
+        // 其次用免扫链起点（从事件日志推算）。
         // 链存在时即使 Uin 变了也照用（换号重扫会重建链，Start 就是新扫码时间）。
-        if (s.Chain != null)
+        var baseline = ScanBaseline.Load(box);
+        if (baseline == null && s.Chain != null)
+        {
+            // 还没基准文件：把这次推算的结果落盘，下次就不用再算（事件日志会滚动）
+            ScanBaseline.Save(box, s.Chain.Start, s.Chain.Uin,
+                s.Chain.StartKnown ? ScanBaseline.SourceQrScan : ScanBaseline.SourceTrace);
+            baseline = ScanBaseline.Load(box);
+        }
+        if (baseline != null)
+        {
+            s.ScanUtc = baseline.AtUtc;
+            s.ScanKnown = baseline.Confirmed;
+            s.ScanSource = baseline.Source;
+        }
+        else if (s.Chain != null)
         {
             s.ScanUtc = s.Chain.Start.ToUniversalTime();
             s.ScanKnown = s.Chain.StartKnown;
+            s.ScanSource = s.Chain.StartKnown ? ScanBaseline.SourceQrScan : ScanBaseline.SourceTrace;
         }
 
         var view = new BoxView(box);
@@ -228,28 +246,42 @@ public sealed class BoxSummary
         if (ScanDays is not double days)
         {
             ScanAgeShort = "—";
-            ScanAgeTip = "没有本机的扫码记录（免扫链已断或日志被清），无法推算授权窗口";
+            ScanAgeTip = "没有扫过码的记录（免扫链已断或日志被清），无法推算授权窗口";
             return;
         }
-        var known = ScanKnown ? "" : "（更早的记录已不存在，实际可能更久）";
-        ScanAgeShort = days >= AuthWindowDays ? "已超窗口" : $"{days:0.#}/{AuthWindowDays} 天";
+
+        var left = AuthWindowDays - days;
+        var srcText = ScanSource switch
+        {
+            ScanBaseline.SourceQrScan => "扫码时记录",
+            ScanBaseline.SourceManual => "扫码时记录",
+            ScanBaseline.SourceBackfill => "手动补录",
+            ScanBaseline.SourceTrace => "由密钥历史回溯（下限）",
+            _ => "未知",
+        };
+        var known = ScanKnown ? "" : "，实际可能更早";
+
+        // 表格短文本：优先显示「还剩多少」，比「已过多少」更直观
+        ScanAgeShort = left <= 0 ? "已过期" : $"{left:0.#} 天";
 
         var lines = new List<string>
         {
-            $"扫码时间 {(ScanKnown ? "" : "约 ")}{ScanUtc.ToLocalTime():MM-dd HH:mm}，距今 {days:0.#} 天{known}",
-            $"按参考实现的 {AuthWindowDays} 天授权窗口：还剩 {Math.Max(0, AuthWindowDays - days):0.#} 天"
-                + (days >= RescanWarnDays ? "（已进入建议重扫区）" : ""),
+            $"扫码时间 {ScanUtc.ToLocalTime():yyyy-MM-dd HH:mm}（{srcText}{known}）",
+            $"已过 {days:0.#} 天，授权窗口 {AuthWindowDays} 天 → {(left > 0 ? $"还剩 {left:0.#} 天" : $"已超出 {(-left):0.#} 天")}",
+            $"到期时间约 {ScanUtc.ToLocalTime().AddDays(AuthWindowDays):yyyy-MM-dd HH:mm}",
         };
         if (LongestChainDays > 0)
-            lines.Add($"本机最长免扫链已 {LongestChainDays:0.#} 天（这是实测寿命，不是理论上限）");
+            lines.Add($"本机最长免扫链已 {LongestChainDays:0.#} 天（实测寿命，不是理论上限）");
         if (Chain is { Renewals: > 0 } c)
             lines.Add($"期间免扫换新 {c.Renewals} 次，最近 {c.LastRenew:MM-dd HH:mm}");
+        if (!ScanKnown)
+            lines.Add("提示：这是推算值。下次扫码后会写入精确基准，之后一直准确。");
         ScanAgeTip = string.Join("\n", lines);
 
-        if (days >= AuthWindowDays)
-            ScanWindowAlert = $"扫码已满 {days:0.#} 天，超过 30 天授权窗口，下次启动大概率要重新扫码。";
+        if (left <= 0)
+            ScanWindowAlert = $"扫码已 {days:0.#} 天，超出 {AuthWindowDays} 天授权窗口 {(-left):0.#} 天，随时可能要求重新扫码。";
         else if (days >= RescanWarnDays)
-            ScanWindowAlert = $"扫码已 {days:0.#} 天，进入建议重扫区（窗口 {AuthWindowDays} 天，剩 {AuthWindowDays - days:0.#} 天）。";
+            ScanWindowAlert = $"扫码已 {days:0.#} 天，进入建议重扫区（窗口 {AuthWindowDays} 天，还剩 {left:0.#} 天）。";
         if (ScanWindowAlert.Length > 0 && !ScanKnown)
             ScanWindowAlert += "（起点是推算值，实际可能更早）";
     }

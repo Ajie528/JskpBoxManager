@@ -146,13 +146,13 @@ public partial class App : Application
             ApplyAppDir(args);
             if (!Sandboxie.IsBoxName(box))
             {
-                Console("用法：JskpBoxManager.exe launch|refresh|stop|clear|status|role|observe|hook|lean|getcode|capture|keylog|token|unpack|server qbN [--appdir 目录]");
+                Console("用法：JskpBoxManager.exe launch|refresh|stop|clear|status|role|protorenew|scanbase|observe|hook|lean|getcode|capture|keylog|token|unpack|server qbN [--appdir 目录]");
                 return 2;
             }
             // 沙箱在 Sandboxie 里没有配置时，任何启动/清理动作都会让 Start.exe 弹
             // 「无效的沙盒名参数」模态框（无人值守时会把流程卡死）。这里统一拦掉。
             // removebox 允许执行：用户可能只是想清掉残留数据。
-            if (cmd != "removebox" && cmd != "delbox" && cmd != "status" && !Sandboxie.BoxExists(box))
+            if (cmd != "removebox" && cmd != "delbox" && cmd != "status" && cmd != "scanbase" && !Sandboxie.BoxExists(box))
             {
                 Console($"{box} 在 Sandboxie 里不存在（可能已被删除），请先在本程序里新建沙箱");
                 return 1;
@@ -170,6 +170,31 @@ public partial class App : Application
                 case "unpack": return RunUnpack(box, args.Skip(2).ToArray());
                 case "trim": Console(BoxRuntime.DeepTrimMemory(box)); return 0;
                 case "recover": return new RecoverSession(box).Run();
+                case "protorenew":
+                {
+                    var pr = ProtocolRenew.Renew(box, args.Contains("--dry"));
+                    Console(pr.Message);
+                    return pr.Ok ? 0 : 1;
+                }
+                case "scanbase":
+                {
+                    // 手动补录 / 查看扫码基准：scanbase qbN [yyyy-MM-dd HH:mm:ss]
+                    var when = args.Skip(2).FirstOrDefault(a => !a.StartsWith("--", StringComparison.Ordinal)
+                                                              && a != AppPaths.AppDir);
+                    if (when == null)
+                    {
+                        var b = ScanBaseline.Load(box);
+                        Console(b == null ? $"{box}：没有扫码基准"
+                            : $"{box}：{b.AtUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss}  uin={b.Uin}  来源={b.Source}"
+                              + $"  已过 {(DateTime.UtcNow - b.AtUtc).TotalDays:0.#} 天");
+                        return 0;
+                    }
+                    if (!DateTime.TryParse(when, out var dt))
+                    { Console($"时间格式不对：{when}（要 yyyy-MM-dd HH:mm:ss）"); return 2; }
+                    ScanBaseline.Save(box, dt, "", ScanBaseline.SourceBackfill, overwrite: true);
+                    Console($"{box} 扫码基准已设为 {dt:yyyy-MM-dd HH:mm:ss}（来源：手动补录）");
+                    return 0;
+                }
                 case "stop": BoxRuntime.StopForce(box, true); return 0;
                 case "clear": BoxRuntime.ClearLogin(box); return 0;
                 case "delbox":

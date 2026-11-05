@@ -854,6 +854,50 @@ PC 侧做不到一直在线，是因为沙箱停掉就会杀进程——这正�
 
 > 排查工具保留：设环境变量 `JSKP_DUMP_AUTOAUTH=1` 后再跑 `protorenew qbN`，
 > 会把 AutoAuth 响应全部字段写到 `logs\qbN.autoauth-fields.txt`，方便以后复查是否新增了有效期字段。
+## 6I. 密钥 20 小时硬上限（2026-11-05 16:08，1.5.21）
+
+### 背景
+
+前面几节确认了两个事实，合起来就要求「按密钥年龄强制续期」：
+
+- 免扫链约 **24 小时**撞墙（超过就弹码）；
+- 协议续期 0.5 秒就能换 key，但**只能在沙箱停着时做**（6F：运行中会被运行时写回旧 key 并断会话）。
+
+原先的实现有漏洞：`RefreshSession` 碰到「游戏在跑」或「常驻运行时在跑」就直接跳过，
+于是只要玩家一直玩，密钥可以一路放到自然寿命。常驻模式虽然有 20 小时阈值，
+但它走的是重开游戏，且只覆盖常驻分支。
+
+### 现在的实现（1.5.21）
+
+统一常量 `ProtocolRenew.KeyMaxAgeHours = 20`，判定 `KeyOverdue(box)`；
+年龄取 live 与金库中**较新**那个的写入时间（避免刚扫码就被误判）。
+
+| 触发点 | 处理 |
+|---|---|
+| `RefreshSession.Core`：游戏在跑 | 超龄 → 向看门进程写续期请求（`force=true`）；非超龄 → 照旧只存凭证 |
+| `RefreshSession.Core`：常驻运行时在跑 | 同上 |
+| `RefreshSession.Core`：沙箱停着 | 超龄时**强制**走协议续期，不看 `protocolRenew` 勾选 |
+| `LaunchSession.WatchLoop`：游戏在跑 | 超龄 → `ForceRenewInGame()`：关游戏窗 → 停箱 → 协议续期 → 重开游戏（限流 30 分钟） |
+| `LaunchSession.WatchLoop`：游戏刚关 | 停箱后若仍超龄 → `RenewWhenStopped()` |
+| `LaunchSession.EnterResident` 常驻循环 | 已有 20 小时判定，走 `ResidentRenew()` |
+
+### 实测
+
+手工把 qb2 的 live 与金库凭证都改成 21 小时前，并**关掉** qb2 的 `protocolRenew`：
+
+```
+16:07:47 refresh: key is 21.0h old (limit 20h) -> protocol renew forced
+16:07:48 protocol renew ok: newKey=78c0a678e51b6c0b enc=24 serverId=35
+16:07:53 protocol renew OK in 588ms
+```
+
+勾选关着也照样强制续期，588 毫秒完成。
+
+### 代价
+
+游戏运行中强制续期会**打断当前对局**（关窗 → 停箱 → 重开）。
+这是「绝不让密钥过期」的必然代价，限流 30 分钟避免失败时反复重启。
+
 ## 6C. 建议
 
 - **自实现续期已打通**（见 6.3A），不再有「协议层通了但业务层过不去」的卡点。

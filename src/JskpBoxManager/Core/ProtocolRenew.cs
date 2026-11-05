@@ -239,6 +239,40 @@ public static class ProtocolRenew
         catch (Exception ex) { Log.Box(box, "protocol renew: snapshot save failed " + ex.Message); }
     }
 
+    /// <summary>当前这把凭证最后一次换新距今多少小时；live 和金库取较新的那个。没有有效凭证返回 null。</summary>
+    public static double? KeyAgeHours(string box)
+    {
+        DateTime newest = DateTime.MinValue;
+        try
+        {
+            foreach (var st in new[] { Ilink.Live(box), Ilink.VaultState(box) })
+                if (st.Valid && st.WriteUtc > DateTime.MinValue && st.WriteUtc > newest) newest = st.WriteUtc;
+        }
+        catch { return null; }
+        if (newest == DateTime.MinValue) return null;
+        return (DateTime.UtcNow - newest).TotalHours;
+    }
+
+    /// <summary>
+    /// 密钥最长能用多久就必须强制续期一次。实测免扫链约一天撞墙，留 4 小时余量。
+    /// 这是**硬约束**：不管游戏在不在跑、常驻还是普通模式，超过就必须续。
+    /// </summary>
+    public const double KeyMaxAgeHours = 20;
+
+    /// <summary>这把凭证是不是已经超过硬上限，必须马上续期。</summary>
+    public static bool KeyOverdue(string box)
+    {
+        var age = KeyAgeHours(box);
+        return age != null && age.Value >= KeyMaxAgeHours;
+    }
+
+    /// <summary>密钥年龄简短文本，用于日志。</summary>
+    public static string KeyAgeText(string box)
+    {
+        var age = KeyAgeHours(box);
+        return age == null ? "unknown" : $"{age:F1}h";
+    }
+
     /// <summary>上一次协议续期换到的 key 哈希；没有返回空串。</summary>
     public static string RotatedKeyHash(string box)
         => JsonFile.Str(JsonFile.ReadObject(RotatedFile(box)), "keySha");

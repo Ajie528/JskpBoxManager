@@ -9,6 +9,8 @@ public sealed class LaunchSession
     readonly string _box;
     DateTime _mpRetryNotBefore = DateTime.MinValue;
     bool _suspectRetried;
+    /// <summary>上一次「游戏中强制续期」的时间，防止续期失败时每 2 秒重试一次。</summary>
+    DateTime _lastForceRenew = DateTime.MinValue;
 
     public LaunchSession(string box) { _box = box; }
 
@@ -768,6 +770,24 @@ public sealed class LaunchSession
                     lastPkg = DateTime.Now;
                     try { if (VaultSync.LivePackageNewerThanVault(_box)) VaultSync.HarvestGamePackage(_box); } catch { }
                 }
+
+                // 密钥到硬上限：即使游戏正在跑也必须续（用户的硬约束：防止拖到自然寿命弹码）。
+                // 运行中不能用协议续期（服务端作废旧 key 后运行时会把旧值写回文件、并断掉游戏会话，见 6F），
+                // 也不能只重开 GameUrl（app session 仍有效，运行时不会发 AutoAuth，见 9A.2）。
+                // 所以走：存凭证 → 停箱 → 协议续期 → 自动重开游戏。
+                var inGameAge = ProtocolRenew.KeyAgeHours(_box);
+                if (ProtocolRenew.KeyOverdue(_box) && (DateTime.Now - _lastForceRenew).TotalMinutes >= 30)
+                {
+                    _lastForceRenew = DateTime.Now;
+                    L($"watch: key is {inGameAge:F1}h old (limit {ProtocolRenew.KeyMaxAgeHours}h) "
+                      + "-> force renew (close game, stop box, protocol renew, reopen)");
+                    ForceRenewInGame();
+                    hadGame = new BoxView(_box).HasGameWindow;
+                    goneTicks = 0;
+                    uiGoneTicks = 0;
+                    continue;
+                }
+                TakeRenewRequest();
                 continue;
             }
 
@@ -795,6 +815,14 @@ public sealed class LaunchSession
                     BoxRuntime.StopSoft(_box, true);
                     Phase(BoxPhase.Stopped, "游戏已关闭");
                     L("box stopped");
+
+                    // 停箱后如果密钥仍超龄，立刻补一次协议续期（这是唯一安全的时机：
+                    // 运行时已退出，不会再把旧 key 写回文件）。
+                    if (ProtocolRenew.KeyOverdue(_box))
+                    {
+                        L($"watch: box stopped with key {ProtocolRenew.KeyAgeText(_box)} old -> protocol renew now");
+                        RenewWhenStopped();
+                    }
                     break;
                 }
                 continue;
@@ -1040,21 +1068,12 @@ public sealed class LaunchSession
 
     /// <summary>
     /// 密钥年龄到这个阈值就必须续期：实测免扫链约一天就撞墙，留 4 小时余量。
-    /// 常驻进程每轮都会检查，比「进常驻后每 6 小时」更稳——刚进常驻时密钥可能已经很老了。
+    /// 已统一到 <see cref="ProtocolRenew.KeyMaxAgeHours"/>，这里是同一数值的别名。
     /// </summary>
-    const double ResidentKeyMaxAgeHours = 20;
+    const double ResidentKeyMaxAgeHours = ProtocolRenew.KeyMaxAgeHours;
 
     /// <summary>当前这把密钥空闲多久了（小时）；没有有效凭证时返回 null。</summary>
-    double? LiveKeyAgeHours()
-    {
-        try
-        {
-            var st = Ilink.Live(_box);
-            if (!st.Valid || st.WriteUtc == DateTime.MinValue) return null;
-            return (DateTime.UtcNow - st.WriteUtc).TotalHours;
-        }
-        catch { return null; }
-    }
+    double? LiveKeyAgeHours() => ProtocolRenew.KeyAgeHours(_box);
 
     /// <summary>
     /// 取一次保活计划任务留下的续期请求（logs\qbN.renew）：有就删掉并返回 true。
@@ -1074,6 +1093,88 @@ public sealed class LaunchSession
     }
 
     enum ResidentRenewResult { Rolled, NotRolled, NeedScan }
+
+    /// <summary>
+    /// 游戏正在跑时强制续期（用户要求的硬约束：密钥满 20 小时必须续，不管游戏在不在跑）。
+    ///
+    /// 为什么必须「停箱 + 协议续期 + 重开」而不是别的做法：
+    ///   · 运行中直接协议续期 → 服务端作废旧 key，运行时把旧值写回文件并断开会话（6F 实测游戏窗消失）；
+    ///   · 只重开 GameUrl → app session 仍有效，运行时根本不发 AutoAuth（9A.2 实测 key 不变）。
+    /// 所以只能先让运行时正常退出，再在「沙箱已停」状态下换钥，最后把游戏重新打开。
+    /// </summary>
+    void ForceRenewInGame()
+    {
+        Phase(BoxPhase.Refreshing, "密钥已超 20 小时，正在续期…");
+        try { Ilink.Save(_box, "force-renew-before"); } catch { }
+
+        // 1. 关游戏窗 + 停箱（运行时退出后就不会再写回旧 key）
+        try { BoxRuntime.StopSoft(_box, true); } catch (Exception ex) { L("force renew: stop soft failed " + ex.Message); }
+        try { BoxRuntime.StopForce(_box, false); } catch (Exception ex) { L("force renew: stop force failed " + ex.Message); }
+
+        // 2. 协议续期（不开浏览器，零点几秒）
+        var (renewable, why) = ProtocolRenew.CheckRenewable(_box);
+        if (!renewable)
+        {
+            L("force renew: box still busy after stop -> skip: " + why.Split('\n')[0]);
+            Phase(BoxPhase.InGame, "续期失败（沙箱未停干净）");
+            return;
+        }
+        var r = ProtocolRenew.Renew(_box);
+        if (!r.Ok)
+        {
+            L("force renew: failed -> " + r.Message);
+            if (r.Code is -13 or -14)
+            {
+                NeedScan.Set(_box, "force-renew-revoked");
+                Phase(BoxPhase.Failed, "密钥已被服务端作废，需要重新扫码");
+                return;
+            }
+            // 其它失败（网络等）：不标 need-scan，重开游戏让运行时自己续
+            L("force renew: falling back to reopening the game");
+        }
+        else
+        {
+            L($"force renew: ok, new key {r.NewKeyHash}");
+            try { VaultSync.PushVaultToLive(_box); } catch { }
+        }
+
+        // 3. 重新打开游戏（新 key 直接免扫进）
+        Phase(BoxPhase.Starting, "续期完成，正在重新打开游戏…");
+        try { BoxRuntime.StartBrowser(_box, "force-renew-reopen"); }
+        catch (Exception ex) { L("force renew: reopen failed " + ex.Message); }
+    }
+
+    /// <summary>
+    /// 沙箱已经停掉（运行时不在）时的续期：这是协议续期唯一安全的状态，
+    /// 因为没有进程会用内存里的旧 key 把文件写回（见 mmtls 研究 6F）。
+    /// 成功就换一把新 key；失败保留 attempt 标记，下次保活再试。
+    /// </summary>
+    void RenewWhenStopped()
+    {
+        var (renewable, why) = ProtocolRenew.CheckRenewable(_box);
+        if (!renewable)
+        {
+            L("watch renew: still busy after stop -> skip: " + why.Split('\n')[0]);
+            return;
+        }
+        var r = ProtocolRenew.Renew(_box);
+        if (r.Ok)
+        {
+            L($"watch renew: ok, new key {r.NewKeyHash} (key age reset)");
+            try { VaultSync.PushVaultToLive(_box); } catch { }
+            BoxStatusFile.Write(_box, BoxPhase.Stopped, "已停箱（密钥已续期）");
+        }
+        else
+        {
+            L("watch renew: failed -> " + r.Message);
+            // 被服务端明确拒绝：这把 key 真不能用了
+            if (r.Code is -13 or -14)
+            {
+                NeedScan.Set(_box, "renew-revoked");
+                BoxStatusFile.Write(_box, BoxPhase.Failed, "密钥已被服务端作废，需要重新扫码");
+            }
+        }
+    }
 
     /// <summary>
     /// 常驻真实续期：重开游戏让运行时发一次 AutoAuth，把 AutoAuthKey 往前滚并存金库，再藏回去。

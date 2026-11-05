@@ -245,33 +245,12 @@
                         <Button x:Name="BtnKeepSave" Content="保存保活设置" Style="{StaticResource Btn}" Click="KeepSave_Click"/>
 
                         <Separator Margin="0,6,0,12"/>
-                        <TextBlock Text="过期提醒（微信推送）" Style="{StaticResource SectionTitle}"/>
-                        <CheckBox x:Name="ChkNotify" Content="凭证超时未续期时推送提醒" Margin="0,0,0,6"/>
-                        <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
-                            <TextBlock Text="渠道" VerticalAlignment="Center" Margin="0,0,6,0"/>
-                            <ComboBox x:Name="CmbNotifyChannel" Width="150" VerticalContentAlignment="Center">
-                                <ComboBoxItem Content="PushPlus（微信）" Tag="pushplus"/>
-                                <ComboBoxItem Content="Server酱（微信）" Tag="serverchan"/>
-                                <ComboBoxItem Content="Bark（iOS）" Tag="bark"/>
-                                <ComboBoxItem Content="自定义 Webhook" Tag="webhook"/>
-                            </ComboBox>
-                        </StackPanel>
-                        <TextBox x:Name="TxtNotifyToken" Padding="6,5" Margin="0,0,0,6"
-                                 ToolTip="PushPlus 填 token；Server酱填 SendKey；Bark 填 key 或完整地址；Webhook 填完整 URL"/>
-                        <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
-                            <TextBlock Text="超过" VerticalAlignment="Center" Margin="0,0,4,0"/>
-                            <TextBox x:Name="TxtNotifyHours" Width="38" Padding="3" HorizontalContentAlignment="Center" VerticalAlignment="Center"/>
-                            <TextBlock Text="小时提醒，同一账号" VerticalAlignment="Center" Margin="6,0,4,0"/>
-                            <TextBox x:Name="TxtNotifyRepeat" Width="38" Padding="3" HorizontalContentAlignment="Center" VerticalAlignment="Center"/>
-                            <TextBlock Text="小时内不重复" VerticalAlignment="Center" Margin="4,0,0,0"/>
-                        </StackPanel>
-                        <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
-                            <Button Content="保存" Style="{StaticResource Btn}" Margin="0,0,8,0" Padding="14,5" Click="NotifySave_Click"/>
-                            <Button Content="发送测试" Style="{StaticResource Btn}" Margin="0,0,8,0" Padding="14,5" Click="NotifyTest_Click"/>
-                            <Button Content="立即检查" Style="{StaticResource Btn}" Margin="0" Padding="14,5" Click="NotifyCheck_Click"/>
-                        </StackPanel>
-                        <TextBlock x:Name="TxtNotifyHint" Foreground="{StaticResource Muted}" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,8"
-                                   Text="PushPlus：登录 pushplus.plus 复制 token；Server酱：sct.ftqq.com 取 SendKey。两者都能推到微信。"/>                        
+                        <DockPanel Margin="0,0,0,8">
+                            <Button x:Name="BtnNotifyOpen" DockPanel.Dock="Right" Content="设置…" Style="{StaticResource LinkBtn}" Margin="0" Click="NotifyOpen_Click"/>
+                            <TextBlock Text="过期提醒（微信推送）" Style="{StaticResource SectionTitle}" Margin="0"/>
+                        </DockPanel>
+                        <TextBlock x:Name="TxtNotifySummary" Foreground="{StaticResource Muted}" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,8"
+                                   Text="未配置。凭证超过 20 小时没续期时推送到微信。"/>
 
                         <Separator Margin="0,6,0,12"/>
                         <DockPanel Margin="0,0,0,8">

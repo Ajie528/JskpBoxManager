@@ -137,7 +137,6 @@ public partial class ToolsWindow : Window
     void Keylog_Click(object s, RoutedEventArgs e) => Run("导出 TLS 密钥", true, Concat(new[] { "keylog", _box }, Sec()));
     void Capture_Click(object s, RoutedEventArgs e) => Run("抓 wx.request", true, Concat(new[] { "capture", _box }, Sec()));
     void Hook_Click(object s, RoutedEventArgs e) => Run("Frida 观测", true, Concat(new[] { "hook", _box }, Sec()));
-    void Lean_Click(object s, RoutedEventArgs e) => Run("精简启动实验", true, Concat(new[] { "lean", _box }, Sec()));
     void Observe_Click(object s, RoutedEventArgs e) => Run("窗口/凭证观测", true, Concat(new[] { "observe", _box, "--launch" }, Sec()));
     void Unpack_Click(object s, RoutedEventArgs e) => Run("解包 wxapkg", false, "unpack", _box);
     void Status_Click(object s, RoutedEventArgs e) => Run("状态", false, "status", _box);

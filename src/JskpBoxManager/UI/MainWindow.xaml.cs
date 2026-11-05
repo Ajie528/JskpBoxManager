@@ -628,88 +628,27 @@ public partial class MainWindow : Window
 
     // ---------- 过期提醒 ----------
 
+    /// <summary>右侧只显示一行摘要，详细配置在「高级工具 → 过期提醒」窗口里。</summary>
     void SyncNotifyUi()
     {
         var cfg = NotifyConfig.Load();
-        ChkNotify.IsChecked = cfg.Enabled;
-        foreach (var item in CmbNotifyChannel.Items.OfType<System.Windows.Controls.ComboBoxItem>())
-            if (string.Equals(item.Tag?.ToString(), cfg.Channel, StringComparison.OrdinalIgnoreCase))
-                CmbNotifyChannel.SelectedItem = item;
-        if (CmbNotifyChannel.SelectedItem == null && CmbNotifyChannel.Items.Count > 0)
-            CmbNotifyChannel.SelectedIndex = 0;
-        TxtNotifyToken.Text = cfg.Token;
-        TxtNotifyHours.Text = cfg.WarnHours.ToString("0.#");
-        TxtNotifyRepeat.Text = cfg.RepeatHours.ToString("0.#");
-        TxtNotifyHint.Text = cfg.Ready
-            ? $"已配置：{cfg.Describe()}。凭证超过 {cfg.WarnHours:0.#} 小时没续期就推送。"
-            : "还没配置。PushPlus：登录 pushplus.plus 复制 token；Server酱：sct.ftqq.com 取 SendKey，两者都能推到微信。";
-    }
-
-    NotifyConfig ReadNotifyUi()
-    {
-        var cfg = NotifyConfig.Load();
-        cfg.Enabled = ChkNotify.IsChecked == true;
-        if (CmbNotifyChannel.SelectedItem is System.Windows.Controls.ComboBoxItem it && it.Tag is string tag)
-            cfg.Channel = tag;
-        cfg.Token = TxtNotifyToken.Text.Trim();
-        if (double.TryParse(TxtNotifyHours.Text.Trim(), out var h) && h >= 1) cfg.WarnHours = h;
-        if (double.TryParse(TxtNotifyRepeat.Text.Trim(), out var r) && r >= 1) cfg.RepeatHours = r;
-        return cfg;
-    }
-
-    void NotifySave_Click(object sender, RoutedEventArgs e)
-    {
-        var cfg = ReadNotifyUi();
-        NotifyConfig.Save(cfg);
-        SyncNotifyUi();
-        SetStatus(cfg.Ready ? $"过期提醒已保存（{cfg.Describe()}）" : "过期提醒已保存，但还没填推送密钥");
-    }
-
-    async void NotifyTest_Click(object sender, RoutedEventArgs e)
-    {
-        var cfg = ReadNotifyUi();
-        NotifyConfig.Save(cfg);
-        SyncNotifyUi();
-        var err = await Task.Run(() => Notifier.SendTest(cfg));
-        if (err == null)
+        if (!cfg.Ready)
         {
-            SetStatus("测试消息已发出，请查收微信");
-            MessageBox.Show(this, "测试消息已发出。\n\n如果没收到，检查渠道和密钥，或看该渠道的公众号是否被屏蔽。",
-                "发送成功", MessageBoxButton.OK, MessageBoxImage.Information);
+            TxtNotifySummary.Text = $"未配置。凭证超过 {cfg.WarnHours:0.#} 小时没续期时推送到微信。"
+                + (cfg.Enabled && cfg.Token.Length == 0 ? "（已启用但没填密钥）" : "");
         }
         else
         {
-            SetStatus("测试失败：" + err);
-            MessageBox.Show(this, err, "发送失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+            TxtNotifySummary.Text = $"已启用：{cfg.Describe()}。超过 {cfg.WarnHours:0.#} 小时推送，"
+                + $"同一账号 {cfg.RepeatHours:0.#} 小时内不重复。";
         }
     }
 
-    async void NotifyCheck_Click(object sender, RoutedEventArgs e)
+    void NotifyOpen_Click(object sender, RoutedEventArgs e)
     {
-        var cfg = ReadNotifyUi();
-        NotifyConfig.Save(cfg);
+        var w = new NotifyWindow { Owner = this };
+        w.ShowDialog();
         SyncNotifyUi();
-        var boxes = _rows.Select(r => r.Box).ToList();
-        var res = await Task.Run(() => Notifier.Check(boxes, cfg));
-        if (!cfg.Ready) { SetStatus("先勾选启用并填写推送密钥"); return; }
-        if (res.Overdue == 0)
-        {
-            SetStatus($"没有超过 {cfg.WarnHours:0.#} 小时未续期的账号");
-            MessageBox.Show(this, $"检查了 {boxes.Count} 个沙箱，没有凭证超过 {cfg.WarnHours:0.#} 小时未续期。",
-                "检查完成", MessageBoxButton.OK, MessageBoxImage.Information);
-        }
-        else if (res.Failed)
-        {
-            SetStatus("推送失败：" + res.Error);
-            MessageBox.Show(this, $"发现 {res.Overdue} 个超期账号，但推送失败：\n\n{res.Error}",
-                "推送失败", MessageBoxButton.OK, MessageBoxImage.Warning);
-        }
-        else
-        {
-            SetStatus($"已推送 {res.Sent} 个超期账号提醒，请查收微信");
-            MessageBox.Show(this, $"已推送 {res.Sent} 个超期账号提醒，请查收微信。",
-                "已发送", MessageBoxButton.OK, MessageBoxImage.Information);
-        }
     }
 
     void SyncProtocolUi()

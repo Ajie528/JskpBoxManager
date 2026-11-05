@@ -1,0 +1,82 @@
+<Window x:Class="JskpBoxManager.UI.NotifyWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="过期提醒设置" Width="580" Height="620" MinWidth="500" MinHeight="540"
+        WindowStartupLocation="CenterOwner" FontFamily="Microsoft YaHei UI" FontSize="13"
+        Background="White" Icon="/app.ico">
+    <Grid Margin="20,16,20,10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="0,0,0,12">
+            <TextBlock Text="过期提醒（微信推送）" FontSize="16" FontWeight="SemiBold"/>
+            <TextBlock Foreground="{StaticResource Muted}" FontSize="12" TextWrapping="Wrap" Margin="0,4,0,0"
+                       Text="当某个账号的免扫凭证超过设定时间没有续期时，推一条微信提醒。只提醒，不自动处理。"/>
+        </StackPanel>
+
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+            <StackPanel>
+                <CheckBox x:Name="ChkNotify" Content="凭证超时未续期时推送提醒" Margin="0,0,0,14"/>
+
+                <TextBlock Text="推送渠道" Style="{StaticResource SectionTitle}"/>
+                <ComboBox x:Name="CmbChannel" Margin="0,0,0,4" VerticalContentAlignment="Center" SelectionChanged="Channel_Changed">
+                    <ComboBoxItem Content="PushPlus（微信）" Tag="pushplus"/>
+                    <ComboBoxItem Content="Server酱（微信）" Tag="serverchan"/>
+                    <ComboBoxItem Content="Bark（iOS）" Tag="bark"/>
+                    <ComboBoxItem Content="自定义 Webhook" Tag="webhook"/>
+                </ComboBox>
+                <TextBlock x:Name="TxtChannelHelp" Foreground="{StaticResource Muted}" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,14"/>
+
+                <TextBlock Text="密钥 / 地址" Style="{StaticResource SectionTitle}"/>
+                <TextBox x:Name="TxtToken" Padding="6,6" Margin="0,0,0,4"/>
+                <TextBlock x:Name="TxtTokenHelp" Foreground="{StaticResource Muted}" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,16"/>
+
+                <TextBlock Text="提醒条件" Style="{StaticResource SectionTitle}"/>
+                <Grid Margin="0,0,0,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="60"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="超过" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                    <TextBox Grid.Column="1" x:Name="TxtHours" Padding="4" HorizontalContentAlignment="Center"/>
+                    <TextBlock Grid.Column="2" Text="小时没有续期就提醒" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                </Grid>
+                <Grid Margin="0,0,0,16">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="60"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="同一账号" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                    <TextBox Grid.Column="1" x:Name="TxtRepeat" Padding="4" HorizontalContentAlignment="Center"/>
+                    <TextBlock Grid.Column="2" Text="小时内不重复提醒" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                </Grid>
+
+                <Border Background="#F1F5F9" CornerRadius="6" Padding="12,10">
+                    <StackPanel>
+                        <TextBlock Text="什么时候会自动检查" FontWeight="SemiBold" FontSize="12" Margin="0,0,0,4"/>
+                        <TextBlock Foreground="#475569" FontSize="12" TextWrapping="Wrap" LineHeight="19" Margin="0,0,0,4"
+                                   Text="· 每次静默保活跑完，扫一遍所有沙箱&#x0a;· 管家界面开着时，每 10 分钟一次&#x0a;· 也可以随时点下面的「立即检查」"/>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+
+        <Border Grid.Row="2" BorderBrush="{StaticResource Border}" BorderThickness="0,1,0,0" Margin="0,12,0,0" Padding="0,10,0,0">
+            <DockPanel>
+                <StackPanel Orientation="Horizontal" DockPanel.Dock="Right">
+                    <Button Content="关闭" Style="{StaticResource Btn}" Margin="0" IsCancel="True" Click="Close_Click"/>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal">
+                    <Button Content="保存" Style="{StaticResource PrimaryBtn}" Margin="0,0,8,0" Padding="16,6" Click="Save_Click"/>
+                    <Button Content="发送测试" Style="{StaticResource Btn}" Margin="0,0,8,0" Padding="14,6" Click="Test_Click"/>
+                    <Button Content="立即检查" Style="{StaticResource Btn}" Margin="0" Padding="14,6" Click="Check_Click"/>
+                </StackPanel>
+            </DockPanel>
+        </Border>
+    </Grid>
+</Window>

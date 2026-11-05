@@ -47,10 +47,9 @@
                     <TextBlock Text="抓包 / 逆向" Style="{StaticResource SectionTitle}" Margin="0,10,0,8"/>
                     <Button Content="📦 解包 wxapkg（找登录接口）" Style="{StaticResource Btn}" Click="Unpack_Click"/>
                     <Button Content="🕸 抓 wx.request（CDP）" Style="{StaticResource Btn}" Click="Capture_Click"/>
-                    <Button Content="🔬 Frida 观测 ilink/SSL" Style="{StaticResource Btn}" Click="Hook_Click"
+                        <Button Content="🔬 Frida 观测 ilink/SSL" Style="{StaticResource Btn}" Click="Hook_Click"
                             ToolTip="需 Python+frida：截 AutoAuth 返回与业务明文"/>
-                    <Button Content="🧪 精简启动实验" Style="{StaticResource Btn}" Click="Lean_Click"/>
-                    <Button Content="👁 窗口/凭证观测" Style="{StaticResource Btn}" Click="Observe_Click"/>
+                        <Button Content="👁 窗口/凭证观测" Style="{StaticResource Btn}" Click="Observe_Click"/>
 
                     <TextBlock Text="凭证 / 信息" Style="{StaticResource SectionTitle}" Margin="0,10,0,8"/>
                     <Button Content="📊 状态" Style="{StaticResource Btn}" Click="Status_Click"/>

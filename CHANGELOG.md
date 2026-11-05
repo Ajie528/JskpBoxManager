@@ -5,6 +5,15 @@
 
 ## [1.5.19] - 2026-11-05
 
+### 排查：AutoAuth 响应里没有有效期字段
+新增 `JSKP_DUMP_AUTOAUTH=1` 导出开关，把协议续期响应的 protobuf 全部字段写进
+`logs\qbN.autoauth-fields.txt`。qb2/qb3/qb5 三个号对比确认：服务端只回新的
+`AutoauthKey` / `AutoauthEncKey` / `ServerId`，**不回任何到期时间或窗口天数**。
+`session.f8` 曾被怀疑是「7369 小时」，但三号完全一致，实为设备固定属性。
+
+含义：免扫寿命只能靠实测统计（`scan-login` / `key-rotated` 事件），
+无法从协议层直接读到。评估结论见 `docs/mmtls直连可行性研究.md` 6H。
+
 ### 实测记录：手机同号在线时 PC 协议续期不会顶号
 手机微信玩着「向僵尸开炮」，PC 上 qb1 **停箱**后点协议续期：
 

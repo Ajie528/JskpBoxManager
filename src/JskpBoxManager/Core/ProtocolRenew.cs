@@ -383,6 +383,8 @@ public static class ProtocolRenew
             if (!uf.TryGetValue(2, out var sectF))
                 return Fail(box, "响应缺 session 段", 0);
             var sect = MmtlsProtocol.PbParse(sectF.Bytes);
+            if (Environment.GetEnvironmentVariable("JSKP_DUMP_AUTOAUTH") == "1")
+                DumpUnknownFields(box, uf, sect);
             byte[] newKey = sect.TryGetValue(3, out var k) ? k.Bytes : Array.Empty<byte>();
             byte[] newEnc = sect.TryGetValue(4, out var e) ? e.Bytes : Array.Empty<byte>();
             byte[] newSrv = sect.TryGetValue(9, out var s) ? s.Bytes : Array.Empty<byte>();
@@ -407,6 +409,53 @@ public static class ProtocolRenew
         {
             return Fail(box, ex.Message, long.MaxValue);
         }
+    }
+
+    /// <summary>
+    /// 把 AutoAuth 响应里的字段结构打到日志（JSKP_DUMP_AUTOAUTH=1 时启用）。
+    /// 目的：确认服务端是否回传「有效期 / 到期时间」之类的字段——
+    /// 有就能算出免扫的真实上限，没有就说明寿命只能靠实测统计。
+    /// </summary>
+    static void DumpUnknownFields(string box, Dictionary<int, (ulong Num, byte[] Bytes)> uf,
+        Dictionary<int, (ulong Num, byte[] Bytes)> sect)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("protocol renew: AutoAuth response fields (dump)");
+        sb.AppendLine("  unified{session{...}}:");
+        foreach (var kv in sect.OrderBy(x => x.Key))
+        {
+            var (num, bytes) = kv.Value;
+            if (bytes.Length > 0)
+            {
+                var hex = Convert.ToHexString(bytes[..Math.Min(bytes.Length, 32)]);
+                sb.AppendLine($"    f{kv.Key} bytes[{bytes.Length}] {hex}" + (bytes.Length > 32 ? "…" : ""));
+            }
+            else
+            {
+                // varint 可能是秒/毫秒时间戳或天数，两种都打出来方便判读
+                sb.AppendLine($"    f{kv.Key} varint={num}  signed={MmtlsProtocol.AsSigned(num)}"
+                    + (num > 1_600_000_000 && num < 2_000_000_000 ? "  (像 unix 秒)" : "")
+                    + (num > 1_600_000_000_000 && num < 2_000_000_000_000 ? "  (像 unix 毫秒)" : ""));
+            }
+        }
+        sb.AppendLine("  unified 其它字段:");
+        foreach (var kv in uf.OrderBy(x => x.Key))
+        {
+            if (kv.Key == 2) continue;
+            var (num, bytes) = kv.Value;
+            sb.AppendLine(bytes.Length > 0
+                ? $"    f{kv.Key} bytes[{bytes.Length}] {Convert.ToHexString(bytes[..Math.Min(bytes.Length, 32)])}"
+                : $"    f{kv.Key} varint={num}");
+        }
+        var text = sb.ToString();
+        Log.Box(box, text.Replace("\r\n", " | ").Replace("\n", " | ").Trim());
+        try
+        {
+            Directory.CreateDirectory(AppPaths.Logs);
+            File.AppendAllText(Path.Combine(AppPaths.Logs, box + ".autoauth-fields.txt"),
+                $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}\n{text}\n", new UTF8Encoding(false));
+        }
+        catch { }
     }
 
     static Result Fail(string box, string why, long code)

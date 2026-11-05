@@ -151,6 +151,18 @@ public sealed class RefreshSession
         }
         BoxStatusFile.Write(_box, BoxPhase.Refreshing, "静默保活中…");
         var frozenKey = Ilink.VaultState(_box).KeyHash;
+
+        // ---- 协议续期优先：不用开浏览器，几秒完成，成功就完全跳过冷启动 ----
+        if (cfg.For(_box).ProtocolRenew)
+        {
+            switch (TryProtocolRenew(frozenKey))
+            {
+                case ProtocolRenewOutcome.Renewed:
+                case ProtocolRenewOutcome.Revoked:
+                    return;   // 两种情况都已定论，不必再冷启动
+            }
+        }
+
         BoxRuntime.EnsureWxRuntimeInBox(_box);
         VaultSync.PushVaultToLive(_box);
 
@@ -275,6 +287,60 @@ public sealed class RefreshSession
         }
         L("refresh session end");
     }
+
+    /// <summary>
+    /// 保活时先走纯协议续期。成功就写事件并直接结束（不开浏览器、不冷启动）；
+    /// 失败返回 null 让调用方回退到原有的冷启动流程。
+    /// </summary>
+    ProtocolRenewOutcome TryProtocolRenew(string frozenKey)
+    {
+        if (!ProtocolRenew.AttemptPending(_box) && !Ilink.VaultState(_box).Valid)
+        {
+            L("protocol renew: 金库没有有效凭证 -> 回退冷启动");
+            return ProtocolRenewOutcome.Fallback;
+        }
+
+        L("protocol renew: 开始（不开浏览器）");
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var r = ProtocolRenew.Renew(_box);
+        sw.Stop();
+
+        var live = Ilink.Live(_box);
+        if (r.Ok)
+        {
+            try { VaultSync.PushVaultToLive(_box); } catch { }
+            L($"protocol renew OK in {sw.ElapsedMilliseconds}ms key={r.NewKeyHash}");
+            Ilink.WriteEvent(_box, "refresh", new JsonObject
+            {
+                ["result"] = "ok", ["keySha"] = r.NewKeyHash, ["frozenKey"] = frozenKey,
+                ["mode"] = "ProtocolRenew", ["lean"] = false, ["credCleared"] = false,
+                ["softRetry"] = false, ["auth"] = null, ["authRet"] = null, ["authMsg"] = null,
+                ["elapsedMs"] = sw.ElapsedMilliseconds,
+            });
+            BoxStatusFile.Write(_box, BoxPhase.Stopped, "保活成功（协议续期）");
+            L("refresh session OK via protocol renew");
+            return ProtocolRenewOutcome.Renewed;
+        }
+
+        // 服务端明确拒绝：说明这把 key 真不能用了，别再冷启动浪费时间，直接标「需要扫码」
+        if (r.Code is -13 or -14)
+        {
+            L($"protocol renew rejected ({r.Code}) -> 需要重新扫码，跳过冷启动");
+            Ilink.WriteEvent(_box, "refresh", new JsonObject
+            {
+                ["result"] = "revoked", ["keySha"] = frozenKey, ["frozenKey"] = frozenKey,
+                ["mode"] = "ProtocolRenew", ["authRet"] = (int)r.Code, ["authMsg"] = r.Message,
+            });
+            NeedScan.Set(_box, "protocol-renew-revoked");
+            BoxStatusFile.Write(_box, BoxPhase.Failed, "保活失败：协议续期被拒，需要重新扫码");
+            return ProtocolRenewOutcome.Revoked;
+        }
+
+        L($"protocol renew failed ({r.Message}) -> 回退冷启动");
+        return ProtocolRenewOutcome.Fallback;
+    }
+
+    enum ProtocolRenewOutcome { Renewed, Revoked, Fallback }
 
     /// <param name="leanNudge">Full 模式才做 CDP reload / GameUrl nudge；精简模式只等密钥换新。</param>
     /// <param name="suspectHoldSec">凭证清空且扫码页持续这么久仍没等到服务端 ret=-13，才算疑似失效。</param>

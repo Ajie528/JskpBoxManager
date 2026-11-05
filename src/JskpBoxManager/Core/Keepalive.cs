@@ -30,6 +30,12 @@ public sealed class KeepPolicy
     /// 用于验证「不冷启动能不能续期」。默认关；只在观察单个沙箱时开。
     /// </summary>
     public bool InvokeAutoAuth = false;
+    /// <summary>
+    /// 保活时先走纯协议续期（直接连微信服务器发 AutoAuth，不开浏览器、不冷启动）。
+    /// 成功就整个跳过冷启动；被服务端明确拒绝(-13/-14)则直接标「需要扫码」；
+    /// 其它失败自动回退到原来的冷启动流程。默认关，确认稳定后再开。
+    /// </summary>
+    public bool ProtocolRenew = false;
 
     public KeepPolicy Clone() => (KeepPolicy)MemberwiseClone();
 
@@ -40,6 +46,7 @@ public sealed class KeepPolicy
             : $"每 {IntervalHours} 小时";
         if (LeanRefresh) baseDesc += "·精简";
         if (ResidentKeepalive) baseDesc += "·常驻";
+        if (ProtocolRenew) baseDesc += "·协议";
         return baseDesc;
     }
 }
@@ -99,6 +106,7 @@ public static class Keepalive
             p.ResidentKeepalive = JsonFile.Bool(o, "residentKeepalive") ?? false;
             p.BlockSessionTimeout = JsonFile.Bool(o, "blockSessionTimeout") ?? false;
             p.InvokeAutoAuth = JsonFile.Bool(o, "invokeAutoAuth") ?? false;
+            p.ProtocolRenew = JsonFile.Bool(o, "protocolRenew") ?? false;
         }
         return p;
     }
@@ -135,6 +143,7 @@ public static class Keepalive
                 ["residentKeepalive"] = kv.Value.ResidentKeepalive,
                 ["blockSessionTimeout"] = kv.Value.BlockSessionTimeout,
                 ["invokeAutoAuth"] = kv.Value.InvokeAutoAuth,
+                ["protocolRenew"] = kv.Value.ProtocolRenew,
             };
         JsonFile.WriteObject(AppPaths.KeepaliveJson, new JsonObject
         {

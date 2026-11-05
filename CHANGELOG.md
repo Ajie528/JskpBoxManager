@@ -3,6 +3,49 @@
 版本号规则：`主版本.次版本.修订号`。只修 bug 加修订号；加功能加次版本号；数据格式或用法有不兼容变化加主版本号。
 每次发版在最上面新增一节，并同步修改 `Directory.Build.props` 里的 `<Version>`。
 
+## [1.5.16] - 2026-11-05
+
+### 重构：协议续期改为原生 C#，彻底去掉 Python 依赖
+`mmtls` 协议层全部用 .NET 8 内置密码学重写（`AesGcm` / `HMACSHA256` / `ECDiffieHellman`），
+不再调用 `tools\mmtls_autoauth.py`：
+
+- 新增 `Core/MmtlsClient.cs`：记录层、握手（ClientHello→ServerHello→CertVerify→NST→Finished）、
+  HKDF 派生、应用数据收发、PSK 解析。
+- 新增 `Core/MmtlsProtocol.cs`：protobuf、AES-GCM 的 mmtls 布局（`body||iv||tag`）、
+  Hybrid ECDH 加解密、LZ4 纯 literal 压缩、wpkg 头、AutoAuth 明文构造。
+- `Core/ProtocolRenew.cs` 重写为纯托管实现，读写 `tdi_account.txt` 并同步金库。
+
+**实测：移走整个 `tools` 目录（无 Python、无 cryptography）后仍能成功续期。**
+单文件发布即可用，不再需要用户装 Python。
+
+dry-run 输出的字节数与 Python 版完全一致（明文 204 / hybrid 435 / 请求体 569），
+说明移植是无损的。
+
+### 新增：保活可选走协议续期
+`KeepPolicy.ProtocolRenew`（GUI 复选框「保活时先用纯协议续期」，`keepalive.json` 的 `protocolRenew`）。
+
+保活流程变成：
+
+1. 先试协议续期（约 0.5 秒）
+2. **成功** → 写 `refresh` 事件（`mode=ProtocolRenew`），整个跳过冷启动
+3. **被服务端拒绝（-13 / -14）** → 直接标「需要扫码」，不再浪费一次冷启动
+4. **其它失败** → 自动回退到原来的冷启动流程
+
+**实测耗时对比**：
+
+| 方式 | 单个号保活耗时 |
+|---|---|
+| 原冷启动（Full/精简） | 30～53 秒 |
+| 协议续期 | **4.0～4.7 秒**（续期本身 0.5 秒，其余是写盘/推金库） |
+
+批量验证 qb2/qb3/qb5/qb6/qb9 全部走协议续期成功。
+
+`Describe()` 会在保活计划里显示 `·协议` 后缀，界面上一眼能看出这个号走的是协议续期。
+
+### 注意
+- `ProtocolRenew` 默认**关闭**，需要逐个号勾选。
+- qb1（主号）保持原样未启用。
+
 ## [1.5.15] - 2026-11-05
 
 ### 新增：扫码时间基准（Authorization Baseline）

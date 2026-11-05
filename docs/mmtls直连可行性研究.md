@@ -630,6 +630,56 @@ public string ScanWindowAlert;           // 满 25 / 超 30 时进 ⚠ 列
 失败保留标记的意义：下次点续期会先警告「上次（MM-dd HH:mm）结果未知」，
 让人自己判断能不能继续，而不是程序盲目重放一把可能已作废的 key。
 
+## 6E. 原生 C# 重构 + 接入自动保活（2026-11-05 12:55）
+
+### 去掉 Python 依赖
+
+协议层全部用 .NET 8 内置密码学重写：
+
+| 文件 | 内容 |
+|---|---|
+| `Core/MmtlsClient.cs` | 记录层、握手全流程、HKDF 派生、应用数据、PSK 解析 |
+| `Core/MmtlsProtocol.cs` | protobuf、GCM 布局、Hybrid ECDH、LZ4、wpkg 头、AutoAuth 明文 |
+| `Core/ProtocolRenew.cs` | 编排：读凭证 → 落盘 → 发送 → 解析 → 写回 |
+
+.NET 8 提供的对应能力：
+
+- `AesGcm` ← `cryptography.AESGCM`
+- `HMACSHA256.HashData` ← `hmac.new`
+- `ECDiffieHellman.DeriveRawSecretAgreement` ← `ec.exchange(ECDH())`
+- `SHA256.HashData` ← `hashlib.sha256`
+
+**验证方式：把整个 `tools` 目录移走（模拟没有 Python 的环境），续期依然成功。**
+
+dry-run 字节数与原 Python 版完全一致（明文 204 / hybrid 435 / 请求体 569），
+说明这次移植是无损的——不是重新摸索参数，而是逐字节对齐。
+
+### 接入保活
+
+`KeepPolicy.ProtocolRenew`（默认关）。保活时：
+
+```
+1. 试协议续期（0.5 秒）
+2. 成功 → 写 refresh 事件 mode=ProtocolRenew，跳过冷启动
+3. -13/-14 → 直接标「需要扫码」，不再白跑一次冷启动
+4. 其它失败 → 回退原冷启动流程
+```
+
+实测耗时：
+
+| 方式 | 耗时 |
+|---|---|
+| 原冷启动 | 30～53 秒 |
+| 协议续期 | **4.0～4.7 秒** |
+
+差了一个数量级，而且不再启动浏览器、不占沙箱锁、不会因为
+「常驻持有沙箱锁」导致保活被跳过——**这间接解决了 1.5.8 那个老问题的根源**。
+
+### 仍需注意
+
+- 协议续期默认关闭，需逐个号勾选（GUI 复选框或 `keepalive.json` 的 `protocolRenew`）。
+- 每次续期都会换 key，所以 `attempted` 保护必须保留（已在 `ProtocolRenew.Renew` 实现）。
+
 ## 6C. 建议
 
 - **自实现续期已打通**（见 6.3A），不再有「协议层通了但业务层过不去」的卡点。

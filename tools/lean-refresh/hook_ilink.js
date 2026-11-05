@@ -9,8 +9,9 @@
  */
 'use strict';
 
-let cfg = { xlogRva: null, role: '', stackOnAuth: true, autoAuthRva: null };
+let cfg = { xlogRva: null, role: '', stackOnAuth: true, autoAuthRva: null, manualAuthRva: null };
 const authState = { thisPtr: null, calls: 0 };
+const manualState = { calls: 0 };
 let xlogHooked = false;
 let sslHooked = false;
 const seenNet = new Set();
@@ -173,7 +174,103 @@ function hookXlog(mod) {
 }
 
 // 命中这些日志行就采栈（AutoAuth 的发送 / 返回 / ManualAuth）
-const AUTH_TRACE = /SendAutoAuthRequest|AutoAuthResponse|SendManualAuthRequest|ilinkapp_autoauth|TdiCheckCgiResponse/;
+const AUTH_TRACE = /SendAutoAuthRequest|AutoAuthResponse|SendManualAuthRequest|ilinkapp_autoauth|TdiCheckCgiResponse|ManualAuth|manualauth/i;
+
+/**
+ * ManualAuth 流程 hook（扫码登录时走这条）。
+ *
+ * 静态定位（2026-11-05，WXRuntime_V22346514299，见 locate_manualauth_static.py）：
+ *   0xD77C0 (161B)  构造 ManualAuth 请求（引用 /ilink/ilinkapp/sys/ilinkapp_manualauth
+ *                   + mov dword [rbx+10h], 0xD7D 即 cmdid 3453），只被调用 1 次
+ *   0xD4710         它的唯一调用者（完整 ManualAuth 流程）
+ *
+ * 目的：扫码时把 ManualAuth 的请求/响应完整 dump 下来，
+ * 特别是 login_buffer 里的 Device 字段（AutoAuth 需要它，但不在 tdi_account.txt 里）。
+ */
+function hookManualAuth(mod) {
+  const rva = cfg.manualAuthRva;
+  if (rva == null) return false;
+  try {
+    Interceptor.attach(mod.base.add(rva), {
+      onEnter(args) {
+        manualState.calls++;
+        manualState.a0 = args[0];
+        manualState.a1 = args[1];
+        emit({
+          ev: 'manualauth-call', n: manualState.calls, tid: this.threadId,
+          a0: args[0].toString(), a1: args[1].toString(),
+          a2: args[2].toString(), a3: args[3].toString(),
+        });
+        // 从 this 对象往外扫：login_buffer 可能作为 std::string 挂在某个偏移上。
+        // 每个指针位置都试着 dump，找形如 protobuf 的内容（0x0a 开头）。
+        try { scanObjectForProto('manualauth', args[0]); } catch (_) {}
+      },
+      onLeave(ret) {
+        emit({ ev: 'manualauth-return', n: manualState.calls, ret: ret.toString() });
+        // 返回后对象里应该有解析好的 login_buffer
+        try { scanObjectForProto('manualauth-after', manualState.a0); } catch (_) {}
+      }
+    });
+    emit({ ev: 'manualauth-hooked', rva: '0x' + rva.toString(16), ready: true });
+    return true;
+  } catch (e) {
+    emit({ ev: 'manualauth-hook-error', err: String(e) });
+    return false;
+  }
+}
+
+/**
+ * 扫描一个对象的前 N 个指针大小槽位，凡是看起来像「指向 protobuf 的指针」就 dump。
+ * protobuf 特征：首字节 0x0a / 0x08 / 0x12 等，且长度合理（16..4096）。
+ */
+function scanObjectForProto(tag, objPtr) {
+  if (!objPtr || objPtr.isNull()) return;
+  for (let off = 0; off < 0x200; off += 8) {
+    let p;
+    try { p = objPtr.add(off).readPointer(); } catch (_) { continue; }
+    if (!p || p.isNull() || p.compare(ptr('0x10000')) < 0) continue;
+    // 候选 1：直接是 protobuf 起始
+    try { probeProto(tag + '+0x' + off.toString(16), p); } catch (_) {}
+    // 候选 2：std::string（size 在 +16，数据在 +0 或内联）
+    try {
+      const size = p.add(16).readU64().toNumber();
+      const cap = p.add(24).readU64().toNumber();
+      if (size > 16 && size < 8192 && cap >= size) {
+        const data = cap >= 16 ? p.readPointer() : p;
+        if (data && !data.isNull()) probeProto(tag + '+0x' + off.toString(16) + '-str', data, Math.min(size, 2048));
+      }
+    } catch (_) {}
+  }
+}
+
+/** 首字节像 protobuf 就 dump 一段。 */
+function probeProto(tag, p, len) {
+  try {
+    const first = p.readU8();
+    // 合法 protobuf 首字节：field1 varint(0x08) / field1 len(0x0a) / field2(0x10/0x12)
+    if (first !== 0x0a && first !== 0x08 && first !== 0x12 && first !== 0x10) return;
+    const n = len || 512;
+    dumpMem('proto-' + tag, p, n);
+  } catch (_) {}
+}
+
+/** 把一段内存的 hex + 可读 ASCII 发出来（用于逆向未知结构）。 */
+function dumpMem(tag, ptr_, len) {
+  if (!ptr_ || ptr_.isNull()) return;
+  try {
+    const buf = ptr_.readByteArray(len);
+    if (!buf) return;
+    const bytes = new Uint8Array(buf);
+    let hex = '';
+    let ascii = '';
+    for (let i = 0; i < bytes.length; i++) {
+      hex += bytes[i].toString(16).padStart(2, '0');
+      const c = bytes[i];
+      ascii += (c >= 32 && c < 127) ? String.fromCharCode(c) : '.';
+    }
+    emit({ ev: 'mem-dump', tag, addr: ptr_.toString(), len: bytes.length, hex, ascii });
+  } catch (_) {}
+}
 
 /**
  * AutoAuth 主动续期实验（默认关闭）。
@@ -467,6 +564,13 @@ rpc.exports = {
         });
       }
     }
+    // ManualAuth（扫码）hook：**不在 init 里挂**。
+    // 实测：init 阶段多做一次 Interceptor.attach 会拖慢注入，导致 ilink 进程
+    // ProcessNotRespondingError（连续 41 次失败），扫码直接失败。
+    // 改成由主进程在 ilink attach 成功后通过 RPC 调 hookManualAuthNow() 挂载。
+    if (cfg.manualAuthRva != null) {
+      emit({ ev: 'manualauth-deferred', rva: '0x' + cfg.manualAuthRva.toString(16) });
+    }
     emit({ ev: 'script-load', arch: Process.arch, fileLib, net, modules: interestingModules() });
     return true;
   },
@@ -481,4 +585,19 @@ rpc.exports = {
   },
   /** 主动调一次 SendAutoAuthRequestAsync（实验：可能破坏运行时状态，谨慎使用）。 */
   invokeAutoAuth() { return invokeAutoAuth(); },
+  /**
+   * 由主进程在 ilink 稳定后调用，挂上 ManualAuth hook。
+   * 不在 init 里挂的原因见 init() 的注释（会让 ilink 注入超时）。
+   */
+  hookManualAuthNow() {
+    const m = Process.findModuleByName('ilink2.dll');
+    if (!m) return { ok: false, why: 'ilink2.dll 未加载' };
+    return { ok: hookManualAuth(m), rva: cfg.manualAuthRva == null ? null : '0x' + cfg.manualAuthRva.toString(16) };
+  },
+  /** 同上，用于 AutoAuth（避免 init 阶段拖慢注入）。 */
+  hookAutoAuthNow() {
+    const m = Process.findModuleByName('ilink2.dll');
+    if (!m) return { ok: false, why: 'ilink2.dll 未加载' };
+    return { ok: hookAutoAuth(m), rva: cfg.autoAuthRva == null ? null : '0x' + cfg.autoAuthRva.toString(16) };
+  },
 };

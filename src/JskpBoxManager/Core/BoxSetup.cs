@@ -88,24 +88,46 @@ public static class BoxSetup
         return box;
     }
 
-    /// <summary>彻底删除一个沙箱：停箱、删沙箱内容、删金库（登录/游戏包/备注）、删保活任务、删 Sandboxie 配置段、删桌面快捷方式。不可恢复。</summary>
-    public static void RemoveBox(string box)
+    /// <summary>彻底删除一个沙箱：停箱、删沙箱内容、删金库（登录/游戏包/角色档案/备注）、删保活任务、删 Sandboxie 配置段、删桌面快捷方式。不可恢复。</summary>
+    /// <returns>配置段是否已确认删除。false 表示 Sandboxie 那边没删掉（界面应立即提示，而不是假装成功）。</returns>
+    public static bool RemoveBox(string box)
     {
         if (!Sandboxie.IsBoxName(box)) throw new ArgumentException("沙箱名不合法：" + box);
         Log.Box(box, "remove box start");
         try { BoxRuntime.StopForce(box, false); } catch { }
         try { Sandboxie.DeleteContentsSilent(box); } catch { }
+        // delete_sandbox_silent 偶尔不认路（沙箱从没跑过、或 ini 里段已被清空），兜底删磁盘目录
+        try
+        {
+            var root = BoxPaths.SandboxBoxRoot(box);
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+        catch (Exception ex) { Log.Box(box, "remove box: delete sandbox dir failed " + ex.Message); }
         try { Keepalive.RemoveTask(box); } catch { }
         try { RemoveShortcuts(box); } catch { }
+        // 删角色档案与备注（否则新沙箱复用了同一个 qbN 会继承上一个号的角色名）
+        try { Roles.Clear(box); } catch { }
+        try { Notes.Set(box, ""); } catch { }
         // 删金库（整个 profiles\qbN）
         try { var prof = BoxPaths.Vault(box); if (Directory.Exists(prof)) Directory.Delete(prof, true); } catch (Exception ex) { Log.Box(box, "remove box: delete vault failed " + ex.Message); }
         // 删运行时状态/日志旁文件
         try { File.Delete(AppPaths.BoxRefreshPhase(box)); } catch { }
         try { File.Delete(AppPaths.BoxLauncherPid(box)); } catch { }
-        // 最后删 Sandboxie 配置段并重载
-        try { Sandboxie.DeleteSection(box); } catch { }
+        try { File.Delete(AppPaths.BoxRenewRequest(box)); } catch { }
+        try { File.Delete(AppPaths.BoxState(box)); } catch { }
+        try { File.Delete(BoxPaths.NeedScanFile(box)); } catch { }
+        try { File.Delete(BoxPaths.NeedScanStamp(box)); } catch { }
+        try { File.Delete(BoxPaths.QrStreakFile(box)); } catch { }
+        // 最后删 Sandboxie 配置段并重载。这一步必须是「确认删掉」才算成功，
+        // 否则界面删了、重启又出现——旧版 delete 语法无效就是从这里静默漏掉的。
+        bool sectionGone = false;
+        try { sectionGone = Sandboxie.DeleteSection(box); }
+        catch (Exception ex) { Log.Box(box, "remove box: delete section failed " + ex.Message); }
         Sandboxie.Reload();
-        Log.Box(box, "remove box done");
+        if (!sectionGone)
+            Log.Box(box, "remove box: section still present after delete (Sandboxie 未确认删除)");
+        Log.Box(box, sectionGone ? "remove box done" : "remove box done (section left)");
+        return sectionGone;
     }
 
     /// <summary>删掉指向该沙箱的桌面快捷方式（jskp-*.lnk，target 为本程序且参数含 launch qbN；兼容旧版 .cmd 快捷方式）。</summary>

@@ -149,6 +149,14 @@ public partial class App : Application
                 Console("用法：JskpBoxManager.exe launch|refresh|stop|clear|status|role|observe|hook|lean|getcode|capture|keylog|token|unpack|server qbN [--appdir 目录]");
                 return 2;
             }
+            // 沙箱在 Sandboxie 里没有配置时，任何启动/清理动作都会让 Start.exe 弹
+            // 「无效的沙盒名参数」模态框（无人值守时会把流程卡死）。这里统一拦掉。
+            // removebox 允许执行：用户可能只是想清掉残留数据。
+            if (cmd != "removebox" && cmd != "delbox" && cmd != "status" && !Sandboxie.BoxExists(box))
+            {
+                Console($"{box} 在 Sandboxie 里不存在（可能已被删除），请先在本程序里新建沙箱");
+                return 1;
+            }
             switch (cmd)
             {
                 case "launch": return new LaunchSession(box).Run();
@@ -165,7 +173,12 @@ public partial class App : Application
                 case "stop": BoxRuntime.StopForce(box, true); return 0;
                 case "clear": BoxRuntime.ClearLogin(box); return 0;
                 case "delbox":
-                case "removebox": BoxSetup.RemoveBox(box); Console($"已删除沙箱 {box}（含登录、游戏包、备注、保活任务、配置、快捷方式）"); return 0;
+                case "removebox":
+                    var removed = BoxSetup.RemoveBox(box);
+                    Console(removed
+                        ? $"已删除沙箱 {box}（含登录、游戏包、备注、保活任务、配置、快捷方式）"
+                        : $"已清除沙箱 {box} 的数据，但 Sandboxie 配置未确认删除（见 logs\\{box}.log）");
+                    return removed ? 0 : 1;
                 case "cred-save":
                 case "cred-load":
                 {

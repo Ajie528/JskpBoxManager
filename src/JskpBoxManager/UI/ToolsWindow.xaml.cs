@@ -98,6 +98,12 @@ public partial class ToolsWindow : Window
         else
         {
             SetStatus($"{label} 结束（退出码 {code}）");
+            if (label == "删除沙箱" && code != 0)
+                MessageBox.Show(this,
+                    $"沙箱 {_box} 的数据已清除，但 Sandboxie 配置段没有确认删除。\n\n" +
+                    "如果本程序列表里仍能看到它，请到 Sandboxie 管理器里删除，或重启 Sandboxie 服务后重试。\n\n" +
+                    $"详细日志：logs\\{_box}.log",
+                    "删除未完全成功", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         _proc = null;
     }

@@ -651,7 +651,24 @@ ilink 进程创建
 
 **正确方向（若以后还想做）**：不要「attach 已启动的进程」，而应 `frida.spawn()` 挂起启动 →
 装好 hook → `resume()`。这样 hook 在第一条指令前就位，不存在抢不到窗口的问题。
-但这需要替换 `hook_watch.py` 的 attach 模型，改动较大。
+
+#### 2026-11-05 实测：这两条替代路径也都不通
+
+在 qb15 箱内验证后确认，`spawn` 方案在 Sandboxie 环境里同样不可行：
+
+| 方案 | 结果 |
+|------|------|
+| **`device.enable_spawn_gating()`** | ❌ **`NotSupportedError: not yet supported on this OS`** —— frida 17.24.3 在 Windows 上根本没实现 spawn gating |
+| **`device.spawn(沙箱内 exe 路径)`** | ❌ Sandboxie 会重定向进程路径，host 侧拿不到可 spawn 的沙箱内路径 |
+| attach 已启动的 ilink | ❌ 4 秒窗口抢不到（见上） |
+
+**结论：在「程序自己 launch → 浏览器 → WeChatAppEx → ilink」这条链上，
+没有任何办法在 AutoAuth 之前把 hook 装好。**
+
+#### 所以这个方向到此为止
+
+即使能做成，收益也很小：冷启动一次只需 **24 秒**，而现有机制已经覆盖了
+「每日自动保活」和「弹码时自动试历史凭证」（v1.5.11）。主动续期省下的只是那 24 秒。
 
 保留的工具（`tools/lean-refresh/`）：
 

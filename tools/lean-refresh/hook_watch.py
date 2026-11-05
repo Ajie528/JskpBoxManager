@@ -222,23 +222,34 @@ class Watcher:
             #             实测游戏运行期间 0 次触发，符合 AutoAuth 语义）
             # 只在显式开实验时才 hook / 主动调用。
             aa = None
+            ma = None
             if role == "ilink" and self.invoke_after_capture:
                 try:
-                    aa = self.longlink_rva(exe).get("auto_auth")
+                    lr = self.longlink_rva(exe)
+                    aa = lr.get("auto_auth")
+                    ma = lr.get("manual_auth")
                 except Exception:
-                    aa = None
+                    aa = ma = None
                 if aa:
                     self.write({"ev": "autoauth-rva", "rva": hex(aa)},
                                f"{now()} [实验] AutoAuth RVA {hex(aa)}（0xD4390=完整流程，已静态验证）")
-            sc.exports_sync.init({"xlogRva": rva, "role": role, "autoAuthRva": aa})
+                if ma:
+                    self.write({"ev": "manualauth-rva", "rva": hex(ma)},
+                               f"{now()} [实验] ManualAuth RVA {hex(ma)}（0xD4710=完整流程，扫码时走这条）")
+            sc.exports_sync.init({"xlogRva": rva, "role": role, "autoAuthRva": aa, "manualAuthRva": ma})
             self.sessions[pid] = (s, sc)
             ms = int((time.time() - t0) * 1000)
             self.write({"ev": "frida-attached", "pid": pid, "role": role, "ms": ms, "resumed": resume},
                        f"{now()} [attach] pid={pid} role={role} {ms}ms" + (" (出生即拦截)" if resume else ""))
             ok = True
             # ilink 角色额外挂长连接观测脚本（心跳 / 会话超时）
-            if role == "ilink" and self.longlink_source:
-                self.attach_longlink(pid, exe, s)
+            if role == "ilink":
+                if self.longlink_source:
+                    self.attach_longlink(pid, exe, s)
+                # ManualAuth / AutoAuth hook 在 attach 成功后再挂（不在 init 里，
+                # 否则会拖慢注入导致 ilink ProcessNotRespondingError）
+                if self.invoke_after_capture:
+                    threading.Thread(target=self._arm_auth_hooks, args=(pid, sc), daemon=True).start()
         except Exception as exc:
             self.write({"ev": "frida-err", "pid": pid, "role": role, "line": f"{type(exc).__name__}: {exc}"},
                        f"{now()} [attach 失败] pid={pid} role={role}: {exc}")
@@ -294,12 +305,63 @@ class Watcher:
         # 回调跑在 frida 的事件线程上，在这里同步调用 resume/attach 会卡死，被拦下的子进程就永远不恢复
         threading.Thread(target=self.handle_child, args=(child,), daemon=True).start()
 
+    def _arm_auth_hooks(self, pid: int, sc):
+        """ilink attach 成功后，通过 RPC 挂 ManualAuth / AutoAuth hook。
+
+        不在 init 里挂：init 阶段的额外 Interceptor.attach 会拖慢注入，
+        实测导致 ilink ProcessNotRespondingError（连续 41 次失败），扫码直接失败。
+        """
+        import time as _t
+        _t.sleep(0.3)   # 等 ilink 稍微稳定
+        for name in ("hookManualAuthNow", "hookAutoAuthNow"):
+            try:
+                r = getattr(sc.exports_sync, name)()
+                self.write({"ev": "auth-hook-armed", "pid": pid, "which": name, "res": r},
+                           f"{now()} [{name}] -> {r}")
+            except Exception as exc:
+                self.write({"ev": "auth-hook-err", "pid": pid, "which": name, "err": str(exc)},
+                           f"{now()} [{name}] 失败: {exc}")
+
+    def _attach_soon(self, pid: int, role: str, path: str, tries: int = 40):
+        """放行后尽快补挂（每 50ms 试一次，最多 ~2 秒），赶在 ManualAuth 之前。"""
+        for _ in range(tries):
+            try:
+                if self.attach(pid, role, path, False):
+                    with self.lock:
+                        self.done.add(pid)
+                    return
+            except Exception:
+                pass
+            time.sleep(0.05)
+        self.write({"ev": "late-attach-give-up", "pid": pid, "role": role},
+                   f"{now()} [ilink] 补挂失败，交给 scan() 继续试")
+
     def handle_child(self, child):
         path = child.path or ""
         try:
             role = role_of(Path(path).name, " ".join(child.argv or []))
             self.write({"ev": "child", "pid": child.pid, "parent": child.parent_pid, "role": role or "-", "path": path})
             if role and self.claim(child.pid):
+                # ilink 角色不做「出生即拦截」：
+                # 实测扫码场景下，把 ilink 挂起再注入 frida-agent 会超时
+                # （ProcessNotRespondingError），进程直接终止，导致扫码失败、拿不到凭证。
+                # 改成先放行、由 scan() 轮询补挂——ManualAuth 在扫码后还会持续几秒，
+                # 这个窗口足够挂上去。
+                if role == "ilink":
+                    # 先放行（避免注入卡死导致进程终止），但立刻在独立线程补挂，
+                    # 不要等 scan() 轮询——实测轮询要 8~10 秒，而 ManualAuth 在
+                    # 进程起来后 2 秒内就完成，等轮询就错过了。
+                    try:
+                        self.device.resume(child.pid)
+                    except Exception as exc:
+                        self.write({"ev": "resume-err", "pid": child.pid, "err": str(exc)})
+                    with self.lock:
+                        self.done.discard(child.pid)
+                    self.write({"ev": "child-late-attach", "pid": child.pid, "role": role},
+                               f"{now()} [ilink] 先放行，立即后台补挂")
+                    threading.Thread(target=self._attach_soon,
+                                     args=(child.pid, role, path), daemon=True).start()
+                    return
                 ok = self.attach(child.pid, role, path, True)
                 if not ok:
                     with self.lock:

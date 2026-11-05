@@ -58,12 +58,18 @@ public static class BoxRuntime
         return args;
     }
 
-    public static void StartBrowser(string box, string why, LaunchMode mode = LaunchMode.Full)
+    public static bool StartBrowser(string box, string why, LaunchMode mode = LaunchMode.Full)
     {
-        Sandboxie.StartInBox(box, LaunchArgs(box, mode));
+        if (!Sandboxie.StartInBox(box, LaunchArgs(box, mode)))
+        {
+            Log.Box(box, "QQBrowser start skipped: sandbox missing in Sandboxie");
+            BoxStatusFile.Write(box, BoxPhase.Failed, "沙箱在 Sandboxie 里不存在（可能已被删除）");
+            return false;
+        }
         Log.Box(box, mode == LaunchMode.Full
             ? "QQBrowser start issued (" + why + ")"
             : $"QQBrowser start issued ({why}, mode={mode})");
+        return true;
     }
 
     /// <summary>沙箱里常强杀 QQ，下次会弹「非正常关闭」并恢复 WXRuntime_Log 旧标签。启动前清掉会话快照，标记正常退出。</summary>

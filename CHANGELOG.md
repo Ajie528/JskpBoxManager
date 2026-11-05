@@ -3,6 +3,32 @@
 版本号规则：`主版本.次版本.修订号`。只修 bug 加修订号；加功能加次版本号；数据格式或用法有不兼容变化加主版本号。
 每次发版在最上面新增一节，并同步修改 `Directory.Build.props` 里的 `<Version>`。
 
+## [1.5.12] - 2026-11-05
+
+### 修复
+- **「删除这个沙箱」实际什么都没删，界面上删完重启又冒出来**（严重）：
+  根因是删除整段配置用了 `SbieIni.exe delete <段名>`，而 Sandboxie 的 `delete` 只删「某个键的某一行值」，
+  **单参数形式是无效命令、退出码 1、静默失败**。所以 `RemoveBox` 走到最后一步时什么也没做，
+  沙箱配置纹丝不动——qb15 删了两次、日志都写 `remove box done`，`[qb15]` 段却一直有完整 23 个键。
+  正确做法是官方文档给的 `SbieIni.exe set <段名> * ""`（整段一次性删除，见 sandboxie-plus/Sandboxie#2620）。
+  现在 `Sandboxie.DeleteSection` 用这个语法，并**回查确认段真的没了**才返回成功；失败会写日志并在界面上提示，不再假装成功。
+- **删除沙箱时补清漏删的东西**：角色档案 `roles\qbN.json`、账号备注、`logs\qbN.state.json`、
+  `qbN.renew`、`need-scan` 系列标记、以及 `C:\Sandbox\<用户>\qbN` 磁盘目录
+  （`delete_sandbox_silent` 偶尔不认路，尤其沙箱从没启动过时）。原来只删金库和配置段，
+  残留的角色档案会让复用同一编号的新沙箱继承上一个号的角色名。
+- **向不存在的沙箱名调用 `Start.exe` 会弹出「无效的沙盒名参数」模态框**，无人值守时会把流程卡死：
+  新增 `Sandboxie.BoxExists()`，并在 `StartInBox` / `Terminate` / `DeleteContentsSilent`
+  和命令行分发处统一校验。现在对已删除的沙箱执行 `launch` / `stop` 会直接返回
+  「qbN 在 Sandboxie 里不存在（可能已被删除），请先在本程序里新建沙箱」，
+  状态写入 `Failed`，不再触发 Sandboxie 的弹窗。
+- **列表会显示已删除沙箱的残骸**：`QueryBoxes` 改用「段名 + 段内必须有配置」双重判定，
+  跳过历史版本删除失败留下的空段（`[qbN]` 段头还在、键已清空）。
+
+### 新增
+- `Sandboxie.SectionHasContent()` / `BoxExists()`：判断沙箱是否真实存在。
+- `BoxSetup.RemoveBox` 改为返回 `bool`（配置段是否确认删除），
+  GUI 与 `ToolsWindow` 在未完全成功时给出明确提示，命令行以退出码 1 反映失败。
+
 ## [1.5.11] - 2026-11-05
 
 ### 修复

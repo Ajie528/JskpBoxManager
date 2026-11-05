@@ -139,6 +139,8 @@ WANTED = {
 DYN_RVA = {
     "auto_auth": 0xD4390,          # 完整 AutoAuth 流程（推荐 hook / 调用这个）
     "auto_auth_build": 0xD7710,    # 其中的请求构造（写 cmdid 3198 + URL）
+    "manual_auth": 0xD4710,        # 完整 ManualAuth 流程（扫码）
+    "manual_auth_build": 0xD77C0,  # 其中的请求构造（写 cmdid 3453 + URL）
     "auth_chain_leaf": 0x229B70,   # 通用发送包装（不是 AutoAuth，勿用）
     "auto_auth_switch": 0x222FF0,  # 日志名为 __SendAutoAuthRequestWithIDCSwitch（未验证）
 }

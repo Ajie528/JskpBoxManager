@@ -168,10 +168,194 @@ JskpBoxManager.exe lean qb1 --modes RuntimeOnly --seconds 120 --skip-stop
 
 **结论：不做。** 保持「Full 路径 + 每天一次冷启」为唯一续期方式；`RuntimeOnly` 只作为 lean 的省时前置尝试。
 
-## 6. 建议
+## 6. 自实现协议发包：已打通 mmtls，卡在 AutoAuth 业务层（2026-11-05）
 
-- 主方案保持「官方运行时续期 + 凭证只进不退」（Full 路径）。
-- 先跑第 5 节第 1 步，拿到轮换与过期规律，再定保活频率（目前默认每天一次）。
-- 精简保活仅在 qb1 继续试验；未验证前不要默认打开其它号。
-- 暂不投入 mmtls 直连。
+> 这一节推翻了本文开头的「暂不投入」结论：**mmtls 协议本身已经用 Python 完整跑通**，
+> 只剩 AutoAuth 的业务参数没对上。参考实现：[525815266/YYB-Go-Enhanced](https://github.com/525815266/YYB-Go-Enhanced)。
+
+### 6.1 参考实现做了什么
+
+它用 Go 重写了整套 mmtls + ilink 协议，**完全不依赖 QQ 浏览器 / WeChatAppEx**：
+
+```
+internal/protocol/
+  mmtls_protocol.go   协议常量、记录层、shortlink 封包
+  mmtls_crypto.go     HKDF / AES-GCM / ECDH
+  mmtls_client.go     完整握手（ClientHello → ServerHello → CertVerify → NST → Finished）
+  autoauth.go         AutoAuth 业务（cmdid 3198）+ 密钥轮换
+  ilink.go            wpkg 头、Hybrid ECDH、session 解析
+```
+
+它的保活不是「冷启动进游戏」，而是**按 token 到期时间提前直接用 TCP 发 AutoAuth**：
+
+```go
+// keepalive.go
+credentialsDueForRefresh(creds, now, ahead)   // 按 ExpiresAt - ahead 判断
+keepAliveFailureBackoff(...)                   // 失败退避：5min / token 过期 15min
+```
+
+### 6.2 我们的实测结果：握手完全打通
+
+用 `tools/mmtls_probe.py` 在本机实测（qb15）：
+
+```
+ClientHello (212B) → ServerHello cipher=0xc02b group=1 serverPubLen=65
+  → CertVerify (0x0f)
+  → NewSessionTicket (0x04)
+  → Finished (0x14)   ← ServerFinished 校验通过
+→ ClientFinished 已发
+
+=== 握手成功 ===
+NewSessionTicket 数量: 2
+  type=1(PSK_ACCESS)  lifetime=604800s   (7 天)
+  type=2(PSK_REFRESH) lifetime=2592000s  (30 天)
+```
+
+**这意味着协议层（最难的密钥派生、记录层、AAD、握手时序）已经全部正确。**
+
+关键参数（都已验证）：
+
+| 项 | 值 |
+|---|---|
+| 记录版本 | `0xf103` |
+| 握手密码套件 | `0xc02b`（ECDHE P-256） |
+| PSK 套件 | `0x00a8` |
+| shortlink magic | `0x1110`，ver `0x076d` |
+| 记录 AAD | `seq(8B) + ct(1B) + 0xf1 0x03 + cipherLen(2B)` |
+| 握手密钥 | `expand_label(secret, "handshake key expansion", hsHash, 56)` → `[cKey|cIV|sKey|sIV]` |
+| 应用密钥 | `expand_label(master, "application data key expansion", hFinal, 56)` |
+| PSK 派生 | `expand_label(secret, "PSK_ACCESS"/"PSK_REFRESH", hCertV, 32)` |
+
+### 6.3 AutoAuth 请求：能发出去、服务端能读懂，但业务层回 -2
+
+用 `tools/mmtls_autoauth.py --send` 实测：
+
+```
+=== 读取凭证 ===
+  uin=25985013636912110 keyLen=162 encKeyLen=24 deviceLen=32 f9Len=35
+=== AutoAuth 明文 204 字节 ===
+=== Hybrid 加密后 435 字节 ===
+=== 完整请求体 578 字节（含 wpkg 头）===
+[握手] 完成
+=== 发送 AutoAuth (cmdid 3198) ===
+响应 cmd=3198 bodyLen=269
+响应头 ints={2:0, 4:0, ..., 23:0, 25:17, 26:4, 28:1}   ← 传输层/应用层全部 0（通过）
+[marker] 解密成功 21 字节
+响应: {1: {1: -2, 2: ""}, 2: {4: 0, 5: ""}}
+❌ 业务层拒绝 code = -2
+```
+
+**判读**：
+
+- `ints[4]=0`（传输层 OK）、`ints[23]=0`（应用层 OK）→ **服务端完整解析了我们的请求**
+- 响应密文 `0a0d08feffffffffffffffff011200120420002a00` 解密成功 → **加密链路完全正确**
+- 但 `base.code = -2`（`0xFFFFFFFFFFFFFFFE` 的有符号解读）→ **业务层拒绝**
+
+### 6.4 已排除的原因
+
+| 尝试 | 结果 |
+|---|---|
+| `appVersion` ∈ {1901, 524545, 1504, 1900, 2100} | 全部 `-2` |
+| `AutoAuth.Device` 用 `kTdiKeyDeviceId`(32B) vs `ServerId[:32]` | 全部 `-2` |
+| wpkg 头 `ints[25]=17` vs `16` | 全部 `-2` |
+| wpkg 头「直接构造」vs「解码后重组」 | **字节完全相同**（验证过 `identical: True`），排除该因素 |
+
+### 6.5 当前判断：`AutoAuth.Device` 的来源可能不对
+
+参考实现里 `AutoAuth.Device` 的来历很关键：
+
+```go
+// 来自 ManualAuth 的绑定，不是 tdi_account.txt 的字段
+type autoAuthState struct {
+    Device []byte   // ← 初次来自 login_buffer 的 field 2
+    Key    []byte
+    EncKey []byte
+}
+
+func parseLoginBuffer(loginBufferB64 string) (loginMeta, error) {
+    fields := pbParse(raw)
+    ticket, _ := fields[1].([]byte)
+    device, _ := fields[2].([]byte)   // ← Device 在这里
+    ...
+    meta := loginMeta{Ticket: ticket, DeviceID: device, ...}
+}
+```
+
+即：**`AutoAuth.Device` = `login_buffer` 的 field 2**，而 `login_buffer` 是**扫码时服务端下发、只存在于内存/响应里**的，不落盘。
+
+我们从 `tdi_account.txt` 拿到的 `kTdiKeyDeviceId`（32 字节）**很可能不是同一个值**。
+
+### 6.6 已排除的参数组合（2026-11-05，共 20+ 种）
+
+用「新旧两套凭证」反复试，全部 `code=-2`：
+
+| 维度 | 试过的值 | 结果 |
+|------|----------|------|
+| `appVersion` | 1901 / 524545 / 1504 / 1900 / 2100 | 全 `-2` |
+| `AutoAuth.Device` 来源 | `kTdiKeyDeviceId`(32B) / `ServerId[:32]` | 全 `-2` |
+| 明文嵌套层数 | 1 层 / 2 层 / 3 层 | 1 层 → `-20009`（传输层拒）；2/3 层 → `-2` |
+| wpkg `ints[25]` | 17 / 16 | 17 → `-2`；16 → `-20007`（传输层拒） |
+| wpkg `ints[2]`/`[22]` | 完整 64 位 uin / 32 位截断 | 全 `-2` |
+| 凭证新旧 | 16:14 的旧 key / 11:00 的新 key | 全 `-2` |
+
+**从数据库找 device 也失败**：`applet.db`（84KB）无 sqlite 头（加密）、`applet.db-wal`（1.6MB）、`mpkv.db`（全 0）
+里都**搜不到 `DeviceId` 的原始字节**。
+
+结论：`AutoAuth.Device` 只存在于 `login_buffer`（扫码响应），本地没有任何副本。
+
+### 6.7 扫码 hook 的硬障碍：Frida 在 ilink 上注入不可靠
+
+要抓 `login_buffer` 必须 hook 扫码流程（`ManualAuth`，cmdid 3453）。静态定位已完成：
+
+```
+/ilink/ilinkapp/sys/ilinkapp_manualauth → 0xD77C0 (161B) 构造（写 cmdid 0xD7D + URL）
+                                        → 0xD4710 (895B) 唯一调用者（完整流程）
+```
+
+但**实际 hook 全部失败**，原因是 `ProcessNotRespondingError`：
+
+| 时间 | 场景 | ilink 注入结果 |
+|------|------|----------------|
+| 11:00 | 程序 launch，**未加 ManualAuth hook**，凭证有效（免扫） | ✅ `attached=5, err=0` |
+| 11:13 | 手动 + child gating | ❌ 1 次失败，进程死 |
+| 11:16 | 手动 + ilink 不 gating（放行后补挂） | ✅ 成功但慢 10 秒，错过 ManualAuth |
+| 11:22 | 手动 + child gating | ❌ 失败 |
+| 11:29 | 程序 launch + `hookManualAuth` 在 init 里挂 | ❌ **41 次失败** |
+| 11:33 | 程序 launch + **延迟到 RPC 挂**（init 不挂） | ❌ 仍 41 次失败 |
+
+关键推论：
+
+- **只要走扫码（而非免扫），ilink 的注入就很容易超时**——它比免扫路径初始化更重。
+- `enable_child_gating`（出生即拦截）在 ilink 上**必然失败**：进程被挂起后注入超时、随即被终止。
+- 把 hook 从 `init()` 移到 RPC 延迟挂载**也没解决**（11:33 仍 41 次失败），
+  说明瓶颈在 frida-agent 注入本身，不在我们的 hook 代码。
+- qb15 反复启停 20+ 次后更差；qb1 一直 `err=0`，说明这是**沙箱实例状态**问题，不是全局故障。
+
+### 6.8 下一步
+
+1. **在干净沙箱上重试**（如 qb5，凭证 11-05 03:44、未反复启停过），先只挂最轻的 hook，验证 ilink 能否稳定注入。
+2. **抓真实 AutoAuth 请求明文**：在 `0x0D7710`(构造) / `0x0D4390`(完整流程) 内部 dump `hybrid_encrypt` 的入参，
+   能看到官方正确的 `Device` 与 `appVersion`（静态定位见 `docs/ilink长连接与免扫掉线.md` 9A.4）。
+3. **扫码时记录 `login_buffer`**：需在 ilink 注入稳定的前提下进行；否则改成
+   「先让扫码完成 → ilink 存活 → 立刻 attach」，牺牲 ManualAuth 但可扫内存。
+
+### 6.9 工具清单
+
+| 文件 | 用途 |
+|------|------|
+| `tools/mmtls_probe.py` | 只做 mmtls 握手，验证协议正确性（**已成功**） |
+| `tools/mmtls_autoauth.py` | 完整 AutoAuth：读凭证 → 构造 → 发送 → 解密响应（`--send` 才发） |
+| `tools/mmtls_autoauth_try.py` | 参数矩阵试错（appVersion × device × wpkg 变体） |
+| `tools/lean-refresh/locate_manualauth_static.py` | 静态定位 ManualAuth 构造/流程函数 |
+| `tools/lean-refresh/locate_autoauth_static.py` | 静态定位 AutoAuth 构造/流程函数 |
+
+依赖：`py -3 -m pip install cryptography lz4`
+
+## 6A. 建议
+
+- 主方案保持「官方运行时续期 + 凭证只进不退」（Full 路径）——**当前零风险且已验证**。
+- mmtls 自实现**协议层已通**（握手 / 加密 / 解密 / shortlink 全部验证），只差业务参数。
+- 卡点两处：`AutoAuth.Device` 的来源、扫码时 Frida 注入 ilink 不稳定。
+- 下一步优先在**干净沙箱**验证注入稳定性，再决定是否继续投入。
+
 

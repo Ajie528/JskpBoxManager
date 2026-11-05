@@ -111,7 +111,7 @@ public partial class App : Application
 
     static bool NeedsCliConsole(string cmd) => cmd.ToLowerInvariant() is
         "version" or "--version" or "update" or "server" or "getcode" or "wxcode"
-        or "capture" or "keylog" or "token" or "unpack" or "observe" or "hook" or "lean" or "trim" or "status" or "role"
+        or "capture" or "keylog" or "token" or "unpack" or "observe" or "hook" or "trim" or "status" or "role"
         or "recover" or "cred-save" or "cred-load" or "help" or "/?" or "-h" or "--help";
 
     static int RunCli(string[] args)
@@ -146,7 +146,7 @@ public partial class App : Application
             ApplyAppDir(args);
             if (!Sandboxie.IsBoxName(box))
             {
-                Console("用法：JskpBoxManager.exe launch|refresh|stop|clear|status|role|protorenew|scanbase|observe|hook|lean|getcode|capture|keylog|token|unpack|server qbN [--appdir 目录]");
+                Console("用法：JskpBoxManager.exe launch|refresh|stop|clear|status|role|protorenew|scanbase|observe|hook|getcode|capture|keylog|token|unpack|server qbN [--appdir 目录]");
                 return 2;
             }
             // 沙箱在 Sandboxie 里没有配置时，任何启动/清理动作都会让 Start.exe 弹
@@ -163,7 +163,6 @@ public partial class App : Application
                 case "refresh": return new RefreshSession(box).Run();
                 case "observe": return new ObserveSession(box, args.Skip(2)).Run();
                 case "hook": return new HookObserveSession(box, args.Skip(2)).Run();
-                case "lean": return new LeanProbeSession(box, args.Skip(2)).Run();
                 case "capture": return new CaptureSession(box, args.Skip(2)).Run();
                 case "keylog": return new SslKeylogSession(box, args.Skip(2)).Run();
                 case "token": return new TokenSession(box, args.Skip(2)).Run();
@@ -248,7 +247,7 @@ public partial class App : Application
     }
 
     /// <summary>
-    /// --appdir 指向含 profiles 的安装目录。hook/lean 在 exe 旁没有金库时（例如从仓库 bin 目录运行），
+    /// --appdir 指向含 profiles 的安装目录。hook 在 exe 旁没有金库时（例如从仓库 bin 目录运行），
     /// 在 exe 所在目录及上级目录（含 dist）里找 JskpBoxManager-* 安装目录，取 qb1 最近用过的那个。
     /// </summary>
     static void ApplyAppDir(string[] args)
@@ -261,7 +260,7 @@ public partial class App : Application
         }
         var cmd = args[0].ToLowerInvariant();
         // capture/keylog/unpack/getcode 必须和界面、协议服务用同一个目录，不能跳到别的安装目录
-        if (cmd is not ("hook" or "lean")) return;
+        if (cmd is not ("hook")) return;
         if (Directory.Exists(Path.Combine(AppPaths.Profiles, "qb1"))) return;
         var roots = new List<string>();
         for (var d = new DirectoryInfo(AppPaths.AppDir); d != null && roots.Count < 20; d = d.Parent)

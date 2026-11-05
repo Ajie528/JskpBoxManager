@@ -1,34 +1,27 @@
-# 精简保活实验 + Frida 观测（仅 qb1）
+# Frida 观测脚本（仅 qb1）
 
-入口是主程序的 C# 命令：
+入口是主程序的 C# 命令，不再使用 PowerShell。
 
 | 命令 | 作用 |
 |------|------|
-| `JskpBoxManager.exe hook qb1` | 箱内启动观测程序，截 ilink 明文日志（含 AutoAuth 授权结果）、凭证文件读写、对外连接 |
-| `JskpBoxManager.exe lean qb1` | 冷启动候选 Blank / NoUrl / RuntimeOnly（可加 Full），看密钥是否换新 |
+| `JskpBoxManager.exe hook qb1` | 等「向僵尸开炮」窗口，attach `hook_ilink.js`，并监视凭证文件 |
+| `JskpBoxManager.exe protorenew qb1` | 不开浏览器，直接用协议换新密钥（需沙箱已停） |
 
-本目录文件：
+本目录只保留 Frida 脚本：
 
 | 文件 | 作用 |
 |------|------|
-| `hook_watch.py` | 在 qb1 箱内运行：预热注入，WeChatAppEx 主进程一出现就 attach 并拦截子进程，ILinkServiceHost 出生即挂 |
-| `hook_ilink.js` | 注入脚本：ilink 日志（`CustomAppender::append`）、凭证文件、connect / DNS |
-| `xlog_locate.py` | 按 RTTI 在 `ilink2.dll` 里找日志函数的 RVA，结果缓存到 `xlog_rva_cache.json` |
-| `hook_longlink.js` | 长连接观测：noop 心跳次数/间隔、`App layer sessiontimeout` 触发点与调用栈；可选拦截会话超时 |
-| `longlink_locate.py` | 按日志宏字面量定位 `__NoopResp` / `__RunReadWrite` / `__OnAppSessionTimeout` 的 RVA，缓存到 `longlink_rva_cache.json` |
+| `hook_ilink.js` | 模块列表 + `CreateFileW` / `MoveFileExW` |
+| `hook_attach.py` | Python Frida API attach |
 
-依赖：Python 3、`py -3 -m pip install frida psutil pefile`。`build.ps1` 会把本目录打进发布包的 `tools\lean-refresh\`。
+硬锁 **qb1**。依赖：Sandboxie-Plus、QQ 浏览器、`py -3 -m pip install frida`。
 
-正式保活勾选「记录授权结果」（`keepalive.json` 的 `"probeAuth": true`）时，也用 `hook_watch.py` 截每次 AutoAuth 的 ret / error_msg。
+详细步骤见 [`docs/Hook观测使用说明.md`](../../docs/Hook观测使用说明.md)。
 
 ```text
-JskpBoxManager.exe hook qb1 --seconds 60
-JskpBoxManager.exe hook qb1 --no-launch --no-stop --seconds 3600
+JskpBoxManager.exe hook qb1 --appdir D:\a_game_scrpit\JskpBoxManager-exe --mode Full --seconds 180
+JskpBoxManager.exe protorenew qb1 --appdir D:\a_game_scrpit\JskpBoxManager-exe
 ```
 
-详细步骤、输出解读和排障见 [`docs/Hook观测使用说明.md`](../../docs/Hook观测使用说明.md)。
-
-长连接 / 会话超时观测（noop 心跳、`App layer sessiontimeout`、可选的拦截实验）见
-[`docs/ilink长连接与免扫掉线.md`](../../docs/ilink长连接与免扫掉线.md)。直接用 `hook_watch.py` 时加 `--block-timeout` 才会拦截会话超时，默认只观测。
-
-`keepalive.json` 每箱可设 `"leanRefresh": true`（默认关；当前仅建议 qb1）。开启后正式 `refresh` 先试精简候选，失败回退 Full。
+> 「精简保活」（Blank / NoUrl / RuntimeOnly 候选）已在 1.5.20 移除：三次实测证明
+> `AutoAuth` 必须由游戏中心页面触发，只启运行时不会换钥。省资源的需求由纯协议续期承担。

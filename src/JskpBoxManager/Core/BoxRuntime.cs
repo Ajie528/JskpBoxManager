@@ -32,8 +32,8 @@ public static class BoxRuntime
         Log.Box(box, "cleared sandbox copy of browser core (it had hidden chrome_elf.dll)");
     }
 
-    /// <summary>保活/启动用的浏览器启动模式。Full=现有游戏中心；其余为精简保活候选。</summary>
-    public enum LaunchMode { Full, Blank, NoUrl, RuntimeOnly }
+    /// <summary>保活/启动用的浏览器启动命令。Full=游戏中心；RuntimeOnly=只拉起微信运行时（常驻恢复用）。</summary>
+    public enum LaunchMode { Full, RuntimeOnly }
 
     public static List<string> LaunchArgs(string box, LaunchMode mode = LaunchMode.Full)
     {
@@ -52,9 +52,7 @@ public static class BoxRuntime
             "--remote-debugging-port=" + BoxPaths.DebugPort(box), "--remote-allow-origins=*",
             "--wmpf_root_dir=" + BoxPaths.WmpfLive(box),
         };
-        if (mode == LaunchMode.Blank) args.Add("about:blank");
-        else if (mode == LaunchMode.Full) args.Add(AppInfo.GameUrl);
-        // NoUrl: no trailing URL
+        args.Add(AppInfo.GameUrl);
         return args;
     }
 

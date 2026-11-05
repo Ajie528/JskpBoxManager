@@ -3,7 +3,30 @@
 版本号规则：`主版本.次版本.修订号`。只修 bug 加修订号；加功能加次版本号；数据格式或用法有不兼容变化加主版本号。
 每次发版在最上面新增一节，并同步修改 `Directory.Build.props` 里的 `<Version>`。
 
-## [1.5.19] - 2026-11-05
+## [1.5.20] - 2026-11-05
+
+### 移除：精简保活
+这个选项已经被两次实测证伪，留着只有坏处：
+
+| 候选 | 10-29 | 11-04 复测（v1.5.9） |
+|------|-------|---------------------|
+| `Blank`（about:blank） | 拉不起 WeChatAppEx | 同 |
+| `NoUrl` | 同 | 同 |
+| `RuntimeOnly` | 未见换钥 | 进程起来了（`wxPid=29244`），**120 秒内一次 AutoAuth 都不发** |
+
+结论：`AutoAuth` 必须由游戏中心页面触发，只启运行时不够，三个候选永远不会成功。
+开着只会让保活先白跑约 6 分钟（3 候选 × 2 分钟 + 三次停箱重启）再回退 Full。
+
+- GUI：「静默保活」里的「精简保活」勾选项删除。
+- `KeepPolicy.LeanRefresh` 字段、`keepalive.json` 的 `leanRefresh` 读写删除（旧键忽略，保存时不再写回）。
+- `RefreshSession` 的 lean 分支删除；`TryCold` 去掉已无意义的 `leanNudge` 参数，
+  统一走完整启动（游戏中心 + CDP reload + nudge）。
+- `BoxRuntime.LaunchMode` 去掉 `Blank` / `NoUrl`，保留 `Full` 与 `RuntimeOnly`
+  （后者仍用于常驻模式下微信运行时挂掉后的重新拉起）。
+- 命令行 `lean qbN` 与 `Core/LeanProbeSession.cs` 删除。
+- 部署目录里 16 个沙箱的 `leanRefresh` 一直是 `false`，实际无影响。
+
+省资源的需求由**纯协议续期**承担（0.5 秒、不开浏览器）。
 
 ### 排查：AutoAuth 响应里没有有效期字段
 新增 `JSKP_DUMP_AUTOAUTH=1` 导出开关，把协议续期响应的 protobuf 全部字段写进

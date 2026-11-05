@@ -176,7 +176,7 @@ python=C:\...\python.exe frida=17.24.3
 
 ## 6. 和正式保活的关系
 
-`hook` 只是观测工具，不改保活策略。正式换钥走 `refresh`（`RefreshSession`）；qb1 可在 `keepalive.json` 打开 `leanRefresh` 先试精简启动，失败回退 Full。
+`hook` 只是观测工具，不改保活策略。正式换钥走 `refresh`（`RefreshSession`）或纯协议续期（`protorenew qbN`）。
 
 ### 6.1 手动观测授权结果（1.5.18 起，保活里已移除）
 
@@ -195,11 +195,5 @@ JskpBoxManager.exe hook qb1 --no-launch --seconds 120
 
 自动续期请走 **纯协议续期**（`protorenew` 或保活里的 `protocolRenew`），不需要 Python：
 协议层全部在 `Core/MmtlsClient.cs` + `Core/MmtlsProtocol.cs`，只观测不改包的那套 Frida 与它无关。
-
-精简候选对照（不挂 Frida）：
-
-```text
-JskpBoxManager.exe lean qb1 --modes Blank,NoUrl,RuntimeOnly --seconds 180
-```
 
 **注意**：同一个微信号只能在一个地方保持免扫。两台电脑的 qb1 用同一个号时，后扫码的那台会把先前那台的凭证顶掉，先前那台的 AutoAuth 就会失败。

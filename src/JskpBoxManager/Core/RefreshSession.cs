@@ -5,7 +5,7 @@ namespace JskpBoxManager.Core;
 /// <summary>
 /// 计划任务触发的静默保活（JskpBoxManager.exe refresh qbN）：冷启动一次，等微信运行时自动授权换新密钥，存进金库后停箱。
 /// 和旧版不同：游戏正开着时不再强行重启（正在用的会话本身就是有效的），只存一次凭证。
-/// LeanRefresh=true 时先试精简启动（Blank/NoUrl/RuntimeOnly），失败再回退 Full。
+/// 开启 ProtocolRenew 时先走纯协议续期（不开浏览器），成功即结束。
 /// </summary>
 public sealed class RefreshSession
 {
@@ -161,44 +161,11 @@ public sealed class RefreshSession
         BoxRuntime.EnsureWxRuntimeInBox(_box);
         VaultSync.PushVaultToLive(_box);
 
-        bool lean = cfg.For(_box).LeanRefresh;
-        ColdResult r = null;
+        ColdResult r;
         string usedMode = "Full";
 
-        if (lean)
-        {
-            L("refresh mode=lean (Blank -> NoUrl -> RuntimeOnly; fallback Full)");
-            foreach (var mode in new[] { BoxRuntime.LaunchMode.Blank, BoxRuntime.LaunchMode.NoUrl, BoxRuntime.LaunchMode.RuntimeOnly })
-            {
-                r = TryCold(frozenKey, mode, leanNudge: false, timeoutMin: 2, maxAttempts: 1);
-                usedMode = mode.ToString();
-                if (r.Renewed || r.QrFail || r.Suspected) break;
-                if (r.CredCleared) { L($"refresh lean {mode}: credential cleared -> stop lean chain"); break; }
-                L($"refresh lean {mode} no renew -> next candidate");
-                BoxRuntime.StopForce(_box, false);
-                BoxRuntime.RegisterLauncher(_box, "refresh");
-                Thread.Sleep(3000);
-                BoxRuntime.EnsureWxRuntimeInBox(_box);
-                VaultSync.PushVaultToLive(_box);
-            }
-            if (r != null && !r.Renewed && !r.QrFail && !r.Suspected && !r.CredCleared)
-            {
-                L("refresh lean exhausted -> fallback Full");
-                BoxRuntime.StopForce(_box, false);
-                BoxRuntime.RegisterLauncher(_box, "refresh");
-                Thread.Sleep(3000);
-                BoxRuntime.EnsureWxRuntimeInBox(_box);
-                VaultSync.PushVaultToLive(_box);
-                r = TryCold(frozenKey, BoxRuntime.LaunchMode.Full, leanNudge: true, timeoutMin: 6, maxAttempts: 2);
-                usedMode = "Full(fallback)";
-            }
-        }
-        else
-        {
-            L("refresh mode=full");
-            r = TryCold(frozenKey, BoxRuntime.LaunchMode.Full, leanNudge: true, timeoutMin: 6, maxAttempts: 2);
-            usedMode = "Full";
-        }
+        L("refresh mode=full");
+        r = TryCold(frozenKey, BoxRuntime.LaunchMode.Full, timeoutMin: 6, maxAttempts: 2);
 
         r ??= new ColdResult { LaunchUtc = DateTime.UtcNow };
         bool softRetry = false;
@@ -213,7 +180,7 @@ public sealed class RefreshSession
             Thread.Sleep(3000);
             BoxRuntime.EnsureWxRuntimeInBox(_box);
             VaultSync.PushVaultToLive(_box);
-            r = TryCold(frozenKey, BoxRuntime.LaunchMode.Full, leanNudge: true, timeoutMin: 6, maxAttempts: 1, suspectHoldSec: 60);
+            r = TryCold(frozenKey, BoxRuntime.LaunchMode.Full, timeoutMin: 6, maxAttempts: 1, suspectHoldSec: 60);
             usedMode += "+retry";
         }
         bool ok = false;
@@ -233,7 +200,7 @@ public sealed class RefreshSession
         Ilink.WriteEvent(_box, "refresh", new JsonObject
         {
             ["result"] = outcome, ["keySha"] = Ilink.Live(_box).KeyHash, ["frozenKey"] = frozenKey,
-            ["mode"] = usedMode, ["lean"] = lean, ["credCleared"] = r.CredCleared, ["softRetry"] = softRetry,
+            ["mode"] = usedMode, ["credCleared"] = r.CredCleared, ["softRetry"] = softRetry,
         });
 
         if (ok)
@@ -327,9 +294,8 @@ public sealed class RefreshSession
 
     enum ProtocolRenewOutcome { Renewed, Revoked, Fallback }
 
-    /// <param name="leanNudge">Full 模式才做 CDP reload / GameUrl nudge；精简模式只等密钥换新。</param>
     /// <param name="suspectHoldSec">凭证清空且扫码页持续这么久仍没等到服务端 ret=-13，才算疑似失效。</param>
-    ColdResult TryCold(string frozenKey, BoxRuntime.LaunchMode mode, bool leanNudge, int timeoutMin, int maxAttempts, int suspectHoldSec = 15)
+    ColdResult TryCold(string frozenKey, BoxRuntime.LaunchMode mode, int timeoutMin, int maxAttempts, int suspectHoldSec = 15)
     {
         var r = new ColdResult();
         for (int attempt = 1; attempt <= maxAttempts; attempt++)
@@ -384,31 +350,21 @@ public sealed class RefreshSession
                 }
                 clearedQrSince = null;
                 v.CloseRestorePage();
-                if (leanNudge && (DateTime.Now - lastTab).TotalSeconds >= 8) { Cdp.CloseExtraTabs(_box); lastTab = DateTime.Now; }
+                if ((DateTime.Now - lastTab).TotalSeconds >= 8) { Cdp.CloseExtraTabs(_box); lastTab = DateTime.Now; }
                 if (v.HasGameWindow) { r.SawGame = true; L("refresh: game window up -> check ilink credential"); break; }
                 double wait = (DateTime.Now - started).TotalSeconds;
 
                 if (v.WeChatRuntimeUp)
                 {
                     sawWx = true; wxGone = 0;
-                    if (leanNudge)
-                    {
-                        if (!reloadDone && wait >= 35) { reloadDone = true; Cdp.ReloadGameCenter(_box); }
-                        if (!nudged && wait >= 50) { nudged = true; BoxRuntime.StartBrowser(_box, "refresh-nudge", BoxRuntime.LaunchMode.Full); }
-                    }
-                    // 精简模式：有运行时就耐心等密钥；Full 仍按 180s 无游戏窗重试
-                    if (leanNudge && wait >= 180) { L("refresh: runtime 180s without game window -> retry"); needRetry = true; break; }
+                    if (!reloadDone && wait >= 35) { reloadDone = true; Cdp.ReloadGameCenter(_box); }
+                    if (!nudged && wait >= 50) { nudged = true; BoxRuntime.StartBrowser(_box, "refresh-nudge", BoxRuntime.LaunchMode.Full); }
+                    if (wait >= 180) { L("refresh: runtime 180s without game window -> retry"); needRetry = true; break; }
                     continue;
                 }
                 if (v.HasWeChat) { sawWx = true; wxGone = 0; } else if (sawWx) wxGone++;
-                // 精简候选：1 分钟内完全看不到微信运行时 → 早退换下一个 / 回退 Full
-                if (!leanNudge && !sawWx && wait >= 60)
-                {
-                    L($"refresh lean {mode}: no WeChat in 60s -> abandon candidate");
-                    break;
-                }
 
-                if (leanNudge && v.HasMiniProgramFail(out var pt))
+                if (v.HasMiniProgramFail(out var pt))
                 {
                     if (++mpFail <= 4) v.ClickMiniProgramRetry(pt);
                     else if (mpFail >= 8) { L("refresh: mini-program fail -> cold retry"); needRetry = true; break; }

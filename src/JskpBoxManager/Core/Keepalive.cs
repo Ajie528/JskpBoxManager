@@ -11,8 +11,6 @@ public sealed class KeepPolicy
     public string Schedule = "daily"; // daily | interval（默认每天一次，少滚密钥）
     public int IntervalHours = 4;
     public string DailyTime = "04:00";
-    /// <summary>精简保活：不打开游戏中心页，优先 Blank/NoUrl/RuntimeOnly；失败回退 Full。默认关。</summary>
-    public bool LeanRefresh = false;
     /// <summary>关游戏窗后不整箱停，藏窗压内存，保留 QQBrowser+WeChatAppEx 上的 ilink 长连接。默认关。</summary>
     public bool ResidentKeepalive = false;
     /// <summary>
@@ -29,7 +27,6 @@ public sealed class KeepPolicy
         var baseDesc = Schedule == "daily"
             ? $"每天 {Keepalive.RunAt(box, this):HH:mm}"
             : $"每 {IntervalHours} 小时";
-        if (LeanRefresh) baseDesc += "·精简";
         if (ResidentKeepalive) baseDesc += "·常驻";
         if (ProtocolRenew) baseDesc += "·协议";
         return baseDesc;
@@ -85,9 +82,9 @@ public static class Keepalive
             if (h != null) p.IntervalHours = Math.Clamp(h.Value, 1, 24);
             var d = JsonFile.Str(o, "dailyTime");
             if (d.Length > 0) p.DailyTime = NormalizeClock(d, p.DailyTime);
-            p.LeanRefresh = JsonFile.Bool(o, "leanRefresh") ?? false;
             p.ResidentKeepalive = JsonFile.Bool(o, "residentKeepalive") ?? false;
             // probeAuth / probeAuthLive / invokeAutoAuth 是已移除的 Frida 记录开关，旧配置里的键忽略。
+            // leanRefresh 是已移除的「精简保活」，同样忽略旧键。
             p.ProtocolRenew = JsonFile.Bool(o, "protocolRenew") ?? false;
         }
         return p;
@@ -119,7 +116,6 @@ public static class Keepalive
                 ["schedule"] = kv.Value.Schedule,
                 ["intervalHours"] = kv.Value.IntervalHours,
                 ["dailyTime"] = kv.Value.DailyTime,
-                ["leanRefresh"] = kv.Value.LeanRefresh,
                 ["residentKeepalive"] = kv.Value.ResidentKeepalive,
                 ["protocolRenew"] = kv.Value.ProtocolRenew,
             };

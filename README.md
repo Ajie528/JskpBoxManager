@@ -130,7 +130,7 @@ JskpBoxManager.exe status qb1       输出状态（可重定向到文件）
 JskpBoxManager.exe role qb1         读一次角色和攻击力（加 --dry 只显示不写入）
 JskpBoxManager.exe observe qb1      观测微信/游戏窗与凭证变化（日志 logs\observe-qb1.jsonl）
 JskpBoxManager.exe hook qb1         Frida 只读 hook（仅 qb1，日志 logs\frida-ilink-qb1.jsonl）
-JskpBoxManager.exe lean qb1         精简启动候选实验（仅 qb1）
+JskpBoxManager.exe protorenew qb1  不开浏览器，直接用协议换新密钥（需沙箱已停）
 JskpBoxManager.exe cred-save qb1 --dir 目录   导出整套凭证（重放实验用，只读）
 JskpBoxManager.exe cred-load qb1 --dir 目录   把导出的凭证写回沙箱 live（需先停箱）
 JskpBoxManager.exe token qb1        一条龙抓包解密，输出业务 token（需装 Wireshark）

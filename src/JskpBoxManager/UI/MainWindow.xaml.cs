@@ -246,7 +246,6 @@ public partial class MainWindow : Window
             var keep = Keepalive.Load();
             var pol = keep.For(cur.Box);
             ChkKeep.IsChecked = pol.Enabled;
-            ChkLeanRefresh.IsChecked = pol.LeanRefresh;
             ChkResidentKeep.IsChecked = pol.ResidentKeepalive;
             ChkProtocolRenew.IsChecked = pol.ProtocolRenew;
             TxtHours.Text = pol.IntervalHours.ToString();
@@ -564,7 +563,6 @@ public partial class MainWindow : Window
             return;
         }
         bool enabled = ChkKeep.IsChecked == true;
-        bool lean = ChkLeanRefresh.IsChecked == true;
         bool resident = ChkResidentKeep.IsChecked == true;
         bool protoRenew = ChkProtocolRenew.IsChecked == true;
         bool daily = RadDaily.IsChecked == true;
@@ -575,7 +573,7 @@ public partial class MainWindow : Window
                 cfg.Boxes[b] = new KeepPolicy
                 {
                     Enabled = enabled, Schedule = daily ? "daily" : "interval",
-                    IntervalHours = hours, DailyTime = $"{hh:D2}:{mm:D2}", LeanRefresh = lean,
+                    IntervalHours = hours, DailyTime = $"{hh:D2}:{mm:D2}",
                     ResidentKeepalive = resident,
                     ProtocolRenew = protoRenew,
                 };

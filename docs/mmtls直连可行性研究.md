@@ -96,33 +96,26 @@
   - 停掉某个号的保活，记录它多少天后开始要求扫码，得到「不使用多久会失效」。
   - 一直保活某个号，记录它是否在某个固定天数后仍要求扫码，得到「最长存活期」。
    这三个数决定了保活间隔该设多少，也决定了任何方案（包括直连）的上限。
-2. **精简运行时保活**（已开工，见下方「精简保活实验结果」）  
-   命令：`JskpBoxManager.exe lean qb1`（硬锁 qb1，C#，用 BoxView 认进程）。正式保活见 `keepalive.json` 的 `leanRefresh`（默认关，仅建议 qb1 先开）。
+2. ~~**精简运行时保活**~~（**已于 1.5.20 移除**，见下方「精简保活实验结果」：三个候选都被证伪）
 3. **Hook 观测**（已开工）  
    命令：`JskpBoxManager.exe hook qb1`，观测程序在 qb1 箱内运行，ILinkServiceHost 出生即挂，截 ilink 明文日志（含 AutoAuth 的 ret / error_msg）、凭证文件读写和对外连接，不改包。依赖 `pip install frida psutil pefile`。  
    已确认：免扫保活就是 ilink 带旧凭证向 `longcloud.weixin.com` 发 `ilinkapp_autoauth`（cmdid 3198），ret=0 时写回新凭证。  
    **详细说明书**：[Hook观测使用说明.md](Hook观测使用说明.md)
 4. **完整直连**：在 1–3 都做完、确认服务端没有最长存活期、而官方运行时又确实无法满足需求时才值得考虑。
 
-### 精简保活 / Hook 用法（仅 qb1）
+### Hook 用法（仅 qb1）
 
 ```text
-# 精简启动候选（Blank → NoUrl → RuntimeOnly），看能否换新密钥
-JskpBoxManager.exe lean qb1
-
-# 指定模式；Full 仅作对照（会走游戏中心）
-JskpBoxManager.exe lean qb1 --modes RuntimeOnly --seconds 180
-
 # Frida 观测（详见 Hook观测使用说明.md）
 JskpBoxManager.exe hook qb1 --seconds 60
 ```
 
-日志：`logs\lean-refresh-qb1.jsonl`、`logs\frida-ilink-qb1.jsonl`。  
+日志：`logs\frida-ilink-qb1.jsonl`。  
 Hook 逐步说明、参数、日志字段与排障见 [Hook观测使用说明.md](Hook观测使用说明.md)。
 
-正式程序：保活设置勾选「精简保活」，或 JSON `"leanRefresh": true`。开启后 refresh 先试 Blank/NoUrl/RuntimeOnly，失败自动回退 Full。
+省资源的需求改由**纯协议续期**承担（见 6D / 6E）：0.5 秒完成、不开浏览器。
 
-### 精简保活实验结果（2026-10-29，R7000P qb1）
+### 精简保活实验结果（2026-10-29，R7000P qb1）——功能已于 1.5.20 移除
 
 金库密钥 `a6516c7d…`（当天 08:57 扫码所得）。
 
@@ -136,7 +129,7 @@ Hook 逐步说明、参数、日志字段与排障见 [Hook观测使用说明.md
 结论（阶段性）：
 
 - **单纯去掉 GameUrl 或只启 WeChatAppEx，目前不能替代正式保活**；AutoAuth 仍依赖游戏中心 / 小游戏启动路径。
-- 正式 `leanRefresh` 仍可开在 qb1 上：会快速试精简候选，无微信则早退并**回退 Full**，不改变其它号默认行为。
+- ~~正式 `leanRefresh` 仍可开在 qb1 上~~ → **1.5.20 已把这个选项和 `leanRefresh` 配置项一起删除**。
 - 下一步：用 Hook/文件监视对比「Full 成功换钥」时的进程命令行与 `tdi_account.txt` 写入时机，再决定是否存在更轻的官方启动参数（例如只拉 WMPF 会话而不进游戏）。
 
 #### 复测结论（2026-11-04，本机 qb1，v1.5.9）——此路确认不通
@@ -160,7 +153,9 @@ JskpBoxManager.exe lean qb1 --modes RuntimeOnly --seconds 120 --skip-stop
 - **微信运行时能被拉起**（`wxPid=29244`、`boxPids` 稳定 5～9 个），但**120 秒内一次 `AutoAuth` 都不发**，密钥完全不变。
 - 与 10-29 那次结果一致，跨版本复现（1.5.6 → 1.5.9），可以定论：**`AutoAuth` 必须由游戏中心页面触发**，光有 `WeChatAppEx` 进程不够。
 - 推论：**「低成本探测凭证是否有效（不进游戏）」这条路走不通。** 检查凭证有效性唯一可行方式仍是真进一次游戏，也就是现在的每日静默保活本身。
-- `leanRefresh` 仍保留为「先试轻量、失败回退 Full」的省钱路径，但不要指望它替代 Full。
+- **1.5.20 决定删除**：既然三个候选永远不会成功，留着只会让保活先白跑约 6 分钟（3 候选 × 2 分钟 + 三次停箱重启）再回退 Full。
+  `LeanRefresh` 配置项、GUI 勾选项、`RefreshSession` 的 lean 分支、`LaunchMode.Blank/NoUrl`、`lean` 命令一并移除。
+  `LaunchMode.RuntimeOnly` 保留，仅用于常驻模式下运行时挂掉后的重新拉起。
 
 ### 能否从微信直接按 appid 拉起小游戏？（2026-11-04 评估）
 

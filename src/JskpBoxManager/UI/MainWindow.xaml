@@ -222,9 +222,6 @@
                         <Separator Margin="0,12"/>
                         <TextBlock Text="静默保活" Style="{StaticResource SectionTitle}"/>
                         <CheckBox x:Name="ChkKeep" Content="为选中的沙箱启用保活" Margin="0,0,0,8"/>
-                        <CheckBox x:Name="ChkLeanRefresh" Margin="0,0,0,8">
-                            <TextBlock Text="精简保活（不打开游戏中心；失败回退完整启动）" TextWrapping="Wrap"/>
-                        </CheckBox>
                         <CheckBox x:Name="ChkResidentKeep" Margin="0,0,0,8">
                             <TextBlock Text="关游戏后常驻轻量运行时（保留 ilink 长连接；藏窗压内存，不整箱停掉）" TextWrapping="Wrap"/>
                         </CheckBox>

@@ -186,12 +186,17 @@ public static class MmtlsProtocol
 
     // ---------------- Hybrid ECDH ----------------
 
-    public sealed class HybridTemp
+    public sealed class HybridTemp : IDisposable
     {
-        public required ECDiffieHellman Eph { get; init; }
-        public required byte[] Okm { get; init; }
-        public required byte[] Comp { get; init; }
-        public required byte[] RequestCipher { get; init; }
+        public ECDiffieHellman Eph { get; init; }
+        public byte[] Okm { get; init; }
+        public byte[] Comp { get; init; }
+        public byte[] RequestCipher { get; init; }
+
+        public void Dispose()
+        {
+            try { Eph?.Dispose(); } catch { }
+        }
     }
 
     /// <summary>

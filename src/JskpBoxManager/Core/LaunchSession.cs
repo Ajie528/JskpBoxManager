@@ -88,9 +88,7 @@ public sealed class LaunchSession
         ProbePoll();
         var keepPol = Keepalive.Load().For(_box);
         _probe = AuthProbe.Start(_box, _probeEnv, LiveProbeSeconds, out var err,
-            keepPol.BlockSessionTimeout, keepPol.InvokeAutoAuth);
-        if (keepPol.BlockSessionTimeout)
-            L("live auth probe: block session timeout is ON (experimental) — ilink will NOT self-exit on App layer sessiontimeout");
+            keepPol.InvokeAutoAuth);
         if (keepPol.InvokeAutoAuth)
             L("live auth probe: invoke-autoauth is ON (experimental) — will re-call AutoAuth after capturing this");
         _probeNotes = 0;

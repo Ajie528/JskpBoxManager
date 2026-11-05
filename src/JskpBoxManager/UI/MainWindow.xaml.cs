@@ -250,7 +250,6 @@ public partial class MainWindow : Window
             ChkProbeAuth.IsChecked = pol.ProbeAuth;
             ChkProbeAuthLive.IsChecked = pol.ProbeAuthLive;
             ChkResidentKeep.IsChecked = pol.ResidentKeepalive;
-            ChkBlockSessionTimeout.IsChecked = pol.BlockSessionTimeout;
             ChkProtocolRenew.IsChecked = pol.ProtocolRenew;
             TxtHours.Text = pol.IntervalHours.ToString();
             var hm = pol.DailyTime.Split(':');
@@ -475,7 +474,7 @@ public partial class MainWindow : Window
         var cur = Current;
         if (cur == null || Selected.Count != 1) { SetStatus("请先选择一个沙箱"); return; }
 
-        var pending = ProtocolRenew.PendingAttempt(cur.Box);
+        var pending = ProtocolRenew.LastAttemptAt(cur.Box);
         var warn = "这个操作会直接连微信服务器换新密钥：\n\n"
                  + "· 不启动浏览器，几秒完成\n"
                  + "· **服务端会立刻作废旧 key**，所以结果必须成功，否则该号要重新扫码\n"
@@ -558,7 +557,6 @@ public partial class MainWindow : Window
         bool probe = ChkProbeAuth.IsChecked == true;
         bool probeLive = ChkProbeAuthLive.IsChecked == true;
         bool resident = ChkResidentKeep.IsChecked == true;
-        bool blockTimeout = ChkBlockSessionTimeout.IsChecked == true;
         bool protoRenew = ChkProtocolRenew.IsChecked == true;
         bool daily = RadDaily.IsChecked == true;
         var errors = await RunBusy("正在保存保活设置并同步计划任务…", () =>
@@ -569,7 +567,7 @@ public partial class MainWindow : Window
                 {
                     Enabled = enabled, Schedule = daily ? "daily" : "interval",
                     IntervalHours = hours, DailyTime = $"{hh:D2}:{mm:D2}", LeanRefresh = lean, ProbeAuth = probe,
-                    ProbeAuthLive = probeLive, ResidentKeepalive = resident, BlockSessionTimeout = blockTimeout,
+                    ProbeAuthLive = probeLive, ResidentKeepalive = resident,
                     ProtocolRenew = protoRenew,
                 };
             Keepalive.Save(cfg);

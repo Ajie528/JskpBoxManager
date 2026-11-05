@@ -86,7 +86,6 @@ class Watcher:
         self.source = Path(a.script).read_text(encoding="utf-8")
         # 长连接观测脚本（可选）：独立注入 ilink 角色，hook 心跳 / 会话超时
         self.longlink_path = Path(a.longlink_script) if a.longlink_script else None
-        self.block_timeout = bool(a.block_timeout)
         self.longlink_source = None
         if self.longlink_path and self.longlink_path.exists():
             self.longlink_source = self.longlink_path.read_text(encoding="utf-8")
@@ -158,7 +157,7 @@ class Watcher:
         elif ev == "session-timeout":
             text = f"{now()} [会话超时] {p.get('action')} #{p.get('total')} 调用栈={p.get('stack')}"
         elif ev == "longlink-hooked":
-            text = f"{now()} [长连接观测已装] rva={p.get('rva')} 拦截={p.get('blockSessionTimeout')}"
+            text = f"{now()} [长连接观测已装] rva={p.get('rva')}"
         elif ev == "autoauth-hooked":
             text = f"{now()} [已挂上 AutoAuth] rva={p.get('rva')}"
         elif ev == "autoauth-call":
@@ -271,10 +270,10 @@ class Watcher:
             sc = session.create_script(self.longlink_source)
             sc.on("message", lambda m, d, pid=pid: self.on_message(pid, "ilink", m, d))
             sc.load()
-            res = sc.exports_sync.init({"rva": lrv, "role": "ilink", "blockSessionTimeout": self.block_timeout})
+            res = sc.exports_sync.init({"rva": lrv, "role": "ilink"})
             self.longlink_at[pid] = sc
-            self.write({"ev": "longlink-attached", "pid": pid, "rva": lrv, "block": self.block_timeout, "init": res},
-                       f"{now()} [长连接观测] pid={pid} {'(已拦截会话超时)' if self.block_timeout else '(只观测)'}")
+            self.write({"ev": "longlink-attached", "pid": pid, "rva": lrv, "init": res},
+                       f"{now()} [长连接观测] pid={pid} (只观测)")
         except Exception as exc:
             self.write({"ev": "longlink-err", "pid": pid, "err": str(exc)},
                        f"{now()} [长连接观测失败] pid={pid}: {exc}")
@@ -519,8 +518,6 @@ def main() -> int:
     ap.add_argument("--script", default=str(Path(__file__).with_name("hook_ilink.js")))
     ap.add_argument("--longlink-script", default=str(Path(__file__).with_name("hook_longlink.js")),
                     help="长连接观测脚本；传空字符串可关闭")
-    ap.add_argument("--block-timeout", action="store_true",
-                    help="拦截 ilink 的会话超时回调（实验用；默认只观测，进程仍会被运行时收掉）")
     ap.add_argument("--invoke-autoauth", action="store_true",
                     help="抓到 TdiAuthManager 的 this 指针后立刻主动再调一次 SendAutoAuthRequestAsync（实验用）")
     a = ap.parse_args()

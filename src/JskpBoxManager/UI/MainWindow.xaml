@@ -238,10 +238,6 @@
                             <TextBlock Text="保活时先用纯协议续期（不开浏览器，几秒完成；失败自动回退冷启动）" TextWrapping="Wrap"
                                        ToolTip="直接连微信服务器发 AutoAuth 换新密钥，不启动 QQ 浏览器和微信运行时，通常 2 秒内完成。成功就完全跳过冷启动；被服务端明确拒绝(-13/-14)时直接标「需要扫码」；其它失败自动回退原来的冷启动流程。"/>
                         </CheckBox>
-                        <CheckBox x:Name="ChkBlockSessionTimeout" Margin="0,0,0,8" Foreground="#B45309">
-                            <TextBlock Text="实验：拦截会话超时不让运行时退出（只用于验证；默认只观测）" TextWrapping="Wrap"
-                                       ToolTip="勾上后，运行时收到服务端 App layer sessiontimeout 也不会清登录态/退出进程。用来验证「长连接还在时业务是否真不可用」。可能产生僵尸连接，别在重要的号上开。"/>
-                        </CheckBox>
                         <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
                             <RadioButton x:Name="RadDaily" Content="每天" VerticalAlignment="Center" GroupName="sched" Checked="Sched_Changed"/>
                             <TextBox x:Name="TxtHour" Width="38" Margin="6,0,2,0" Padding="3" HorizontalContentAlignment="Center"/>

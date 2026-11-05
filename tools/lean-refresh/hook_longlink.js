@@ -15,16 +15,13 @@
  *   - 会话超时：__OnAppSessionTimeout 被调用（谁触发、调用栈）
  *   - 所有 ilink 明文日志（由 hook_ilink.js 的 xlog hook 提供）
  *
- * 拦截（默认关，需显式 blockSessionTimeout=true）：
- *   - 拦掉 __OnAppSessionTimeout 的调用，让进程不执行 TdiClearLoginStatus / Uninit。
- *   - 风险：服务端已经判定会话失效，进程活着也不代表业务还能用，可能只是僵尸连接。
- *     这个开关只用于实验，不要默认打开。
+ * 只观测，不干预：`__OnAppSessionTimeout` 原样执行，进程该退出就退出。
  */
 'use strict';
 
-let cfg = { rva: {}, blockSessionTimeout: false };
+let cfg = { rva: {} };
 let hooked = false;
-const stats = { noop: 0, lastNoopAt: 0, sessionTimeout: 0, blocked: 0, statusChanges: 0 };
+const stats = { noop: 0, lastNoopAt: 0, sessionTimeout: 0, statusChanges: 0 };
 
 function emit(obj) {
   send(Object.assign({ ts: Date.now(), pid: Process.id, role: cfg.role || 'ilink' }, obj));
@@ -88,25 +85,16 @@ function hookSessionTimeout(mod) {
   if (rva == null) return false;
   try {
     const addr = mod.base.add(rva);
-    if (cfg.blockSessionTimeout) {
-      // 拦截：直接返回，跳过 TdiClearLoginStatus / Uninit，赌长连接还能继续用。
-      Interceptor.replace(addr, new NativeCallback(function () {
-        stats.blocked++;
-        emit({ ev: 'session-timeout', action: 'blocked', total: stats.blocked });
-      }, 'void', []));
-      emit({ ev: 'hook', target: 'on_session_timeout', mode: 'replace(block)' });
-    } else {
-      Interceptor.attach(addr, {
-        onEnter() {
-          stats.sessionTimeout++;
-          emit({
-            ev: 'session-timeout', action: 'observed', total: stats.sessionTimeout,
-            stack: callerChain(this, 6)
-          });
-        }
-      });
-      emit({ ev: 'hook', target: 'on_session_timeout', mode: 'attach(observe)' });
-    }
+    Interceptor.attach(addr, {
+      onEnter() {
+        stats.sessionTimeout++;
+        emit({
+          ev: 'session-timeout', action: 'observed', total: stats.sessionTimeout,
+          stack: callerChain(this, 6)
+        });
+      }
+    });
+    emit({ ev: 'hook', target: 'on_session_timeout', mode: 'attach(observe)' });
     return true;
   } catch (e) {
     emit({ ev: 'hook-error', target: 'on_session_timeout', err: String(e) });
@@ -145,7 +133,7 @@ function start() {
   };
   emit({
     ev: 'longlink-hooked', module: mod.name, base: mod.base.toString(),
-    rva: cfg.rva, blockSessionTimeout: !!cfg.blockSessionTimeout, results: ok
+    rva: cfg.rva, results: ok
   });
   return true;
 }
@@ -160,9 +148,5 @@ rpc.exports = {
     }
     return { hooked, cfg };
   },
-  stats() { return Object.assign({}, stats); },
-  setBlock(on) {
-    emit({ ev: 'note', msg: 'setBlock ignored at runtime; restart the watcher with blockSessionTimeout', want: !!on });
-    return cfg.blockSessionTimeout;
-  }
+  stats() { return Object.assign({}, stats); }
 };

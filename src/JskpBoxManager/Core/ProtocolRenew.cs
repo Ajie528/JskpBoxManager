@@ -55,7 +55,7 @@ public static class ProtocolRenew
     public static Credential ReadCredential(string box)
     {
         var roots = new[] { BoxPaths.WmpfLive(box), BoxPaths.WmpfVault(box) };
-        string? best = null;
+        string best = null;
         DateTime bestAt = DateTime.MinValue;
         foreach (var root in roots)
         {
@@ -102,7 +102,7 @@ public static class ProtocolRenew
         try { return Convert.FromBase64String(s); } catch { return Array.Empty<byte>(); }
     }
 
-    static void WriteCredential(Credential c, byte[] newKey, byte[] newEnc, byte[]? newServerId)
+    static void WriteCredential(Credential c, byte[] newKey, byte[] newEnc, byte[] newServerId)
     {
         var nk = Convert.ToBase64String(newKey);
         var ne = Convert.ToBase64String(newEnc);
@@ -140,7 +140,8 @@ public static class ProtocolRenew
 
     // ---------------- attempted 标记 ----------------
 
-    public static DateTime? PendingAttempt(string box)
+    /// <summary>上一次续期留下的「已发送但结果未知」时间；没有标记返回 null。</summary>
+    public static DateTime? LastAttemptAt(string box)
     {
         try
         {
@@ -153,7 +154,7 @@ public static class ProtocolRenew
         catch { return null; }
     }
 
-    public static bool AttemptPending(string box) => PendingAttempt(box) != null;
+    public static bool AttemptPending(string box) => LastAttemptAt(box) != null;
 
     public static void ClearAttempt(string box)
     {
@@ -204,7 +205,7 @@ public static class ProtocolRenew
         {
             var plain = MmtlsProtocol.BuildAutoAuthPlain(cred.DeviceId, cred.AutoKey);
             var (hybrid, temp) = MmtlsProtocol.HybridEncrypt(plain, cred.EncKey);
-            using var tempGuard = temp.Eph;
+            using var tempGuard = temp;
             var appId = Encoding.ASCII.GetBytes(cred.IlinkAppId);
             var body = MmtlsProtocol.Concat(
                 MmtlsProtocol.SessionWpkgHead(uin, cred.ServerId, appId), hybrid);

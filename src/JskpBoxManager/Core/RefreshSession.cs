@@ -365,7 +365,7 @@ public sealed class RefreshSession
             {
                 var rp = Keepalive.Load().For(_box);
                 probe = AuthProbe.Start(_box, _probeEnv, timeoutMin * 60 + 180, out var probeErr,
-                    rp.BlockSessionTimeout, rp.InvokeAutoAuth);
+                    rp.InvokeAutoAuth);
                 if (probe == null) L("refresh: auth probe not started -> " + probeErr);
             }
             var baseline = Ilink.Baseline(_box);

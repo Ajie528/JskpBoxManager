@@ -4,7 +4,7 @@
 「用 Hook 保住心跳」这条路走到哪一步、为什么走不通。
 
 对应代码：`tools/lean-refresh/hook_longlink.js`、`tools/lean-refresh/longlink_locate.py`、
-`tools/lean-refresh/hook_watch.py`（`--longlink-script` / `--block-timeout`）。
+`tools/lean-refresh/hook_watch.py`（`--longlink-script`）。
 
 ---
 
@@ -209,30 +209,18 @@ py -3 hook_watch.py --box qb1 --out C:\Users\<你>\jskp-frida-qb1.jsonl --second
 JskpBoxManager.exe launch qb1     # 勾了「启动与游戏中也记录授权」即可
 ```
 
-### 7.2 拦截会话超时（实验，谨慎）
+### 7.2 拦截会话超时（已移除）
 
-**两种方式**，效果相同：
+这个开关**已在 1.5.17 移除**。它当初只是为了验证一个假设：
+「服务端判定 session timeout 后，如果拦住进程不让它退出，长连接还在的话业务是否还能继续用」。
 
-**方式一：GUI 勾选（推荐）**
+假设已经被否证——2026-11-04 qb15 常驻实测：关游戏后 **35 分钟** ilink 仍然存活、
+CPU 持续增长、心跳稳定在 180 秒、`session-timeout` **0 次**。
+也就是说掉线根本不是 session timeout 引起的，而是程序自己停箱把进程杀了
+（再加上每日保活被跳过）。拦不拦这个回调，对结果没有影响。
 
-主界面选中沙箱 → 「静默保活」区 → 勾上橙色的
-**「实验：拦截会话超时不让运行时退出（只用于验证；默认只观测）」** → 「保存保活设置」。
-
-勾选后该号下次启动/保活时，`hook_watch.py` 会自动带 `--block-timeout`，日志会写：
-
-```
-live auth probe: block session timeout is ON (experimental) — ilink will NOT self-exit on App layer sessiontimeout
-```
-
-配置存在 `keepalive.json` 的 `"blockSessionTimeout": true`。
-
-**方式二：命令行**
-
-```text
-py -3 hook_watch.py --box qb1 --out ... --seconds 600 --block-timeout
-```
-
-预期结果与解读：
+现在观测器**只观测不干预**：`__OnAppSessionTimeout` 原样执行，进程该退出就退出，
+日志照常记录 `session-timeout` 事件和调用栈。预期结果与解读：
 
 | 观察 | 含义 |
 |------|------|
@@ -284,10 +272,10 @@ py -3 hook_watch.py --box qb1 --out ... --seconds 600 --block-timeout
 
 ### 8.2 `hook_longlink.js`
 
-只注入 ilink 角色进程，`rpc.exports.init({rva, blockSessionTimeout})`：
+只注入 ilink 角色进程，`rpc.exports.init({rva, role})`：
 
 - `noop` 事件：记录心跳次数与相邻间隔（验证心跳健康度）
-- `session-timeout` 事件：记录触发次数与调用栈（`observed` / `blocked`）
+- `session-timeout` 事件：记录触发次数与调用栈（只观测，不拦截）
 - `readwrite` 事件：只记耗时 >50ms 的读写循环（正常是空转）
 
 ### 8.3 已知限制
@@ -408,8 +396,8 @@ if not role:
    但还没跑满一天。如果常驻能扛过，就可以替代每日冷启。
 2. **`aereportkvcomm` 上报频率**与 `SmcCore hit freqlimit` 积压的关系：
    qb4 那次 `sessiontimeout` 前 1 分钟有大量上报积压，是否与「长时间不活跃 → 集中补报」有关。
-3. **`--block-timeout` 是否还有必要**：本次实测 `sessiontimeout` 零次，说明正常场景用不上；
-   保留它用于将来验证其他路径是否会触发该回调。
+3. ~~**`--block-timeout` 是否还有必要**~~：本次实测 `sessiontimeout` 零次，说明正常场景用不上。
+   已在 1.5.17 移除该选项，观测器改为只观测不干预。
 
 ## 9A. 主动触发 AutoAuth 的三条路（2026-11-04 试过两条不通，第三条待收尾）
 
@@ -692,7 +680,6 @@ ilink 进程创建
 ```json
 {"ev": "longlink-hooked", "pid": 59348, "role": "ilink",
  "rva": {"noop_resp": 3396400, "run_read_write": 3345680, "on_session_timeout": 1481104, "unpack_response": 1729376},
- "blockSessionTimeout": false,
  "results": {"noop_resp": true, "on_session_timeout": true, "run_read_write": true}}
 ```
 

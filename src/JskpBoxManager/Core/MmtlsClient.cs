@@ -314,8 +314,8 @@ public sealed class MmtlsClient : IDisposable
         var hsCKey = kb[0..16]; var hsSKey = kb[16..32];
         var hsCIv = kb[32..44]; var hsSIv = kb[44..56];
 
-        byte[]? hCertV = null;
-        byte[]? hFinal = null;
+        byte[] hCertV = null;
+        byte[] hFinal = null;
         while (true)
         {
             var (ct2, cp) = RecvRecord();
@@ -352,7 +352,7 @@ public sealed class MmtlsClient : IDisposable
         _tx++;
     }
 
-    void ParseNst(byte[] body, byte[] secret, byte[]? hCertV)
+    void ParseNst(byte[] body, byte[] secret, byte[] hCertV)
     {
         if (body.Length == 0) return;
         int count = body[0], o = 1;

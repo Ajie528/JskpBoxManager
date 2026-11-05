@@ -3,6 +3,32 @@
 版本号规则：`主版本.次版本.修订号`。只修 bug 加修订号；加功能加次版本号；数据格式或用法有不兼容变化加主版本号。
 每次发版在最上面新增一节，并同步修改 `Directory.Build.props` 里的 `<Version>`。
 
+## [1.5.17] - 2026-11-05
+
+### 移除：实验「拦截会话超时不让运行时退出」
+这个开关只用于验证「长连接还在时业务是否真的不可用」，结论已经拿到
+（详见 `docs/ilink长连接与免扫掉线.md`：关游戏后 35 分钟 ilink 仍存活、
+心跳 180 秒稳定、`session-timeout` 0 次，说明掉线不是它导致的）。
+带着一个会干预运行时行为的实验开关发版没有意义，整体移除：
+
+- GUI：「静默保活」区那个橙色勾选项删除。
+- `KeepPolicy.BlockSessionTimeout` 字段、`keepalive.json` 的 `blockSessionTimeout` 读写删除；
+  已有配置里的这个键会被忽略（不再读取），也顺手清掉了部署目录里的残留。
+- `AuthProbe.Start` 去掉 `blockSessionTimeout` 参数与 `--block-timeout` 传参。
+- `tools/lean-refresh/hook_watch.py`：移除 `--block-timeout` 选项；
+  `hook_longlink.js`：移除 `Interceptor.replace` 拦截分支和 `setBlock` RPC，
+  现在**只观测不干预**，`__OnAppSessionTimeout` 原样执行。
+
+### 修复
+- **编译时 6 条 `CS8632` 警告**：项目设了 `<Nullable>disable</Nullable>`，
+  但 1.5.15/1.5.16 新加的代码用了 `string?` / `byte[]?` 注解。
+  已去掉引用类型上的 `?`（`DateTime?` 是值类型可空，合法，保留）。
+  现在 `dotnet build` 零警告。
+- **`HybridTemp.Eph` 从不释放**（真实的句柄泄漏）：每次协议续期都会创建
+  `ECDiffieHellman` 用于解密响应，用完没 Dispose。现在 `HybridTemp` 实现
+  `IDisposable`，调用方 `using var tempGuard = temp;` 覆盖整段流程。
+  单次泄漏量小，但保活长期反复跑会累积。
+
 ## [1.5.16] - 2026-11-05
 
 ### 重构：协议续期改为原生 C#，彻底去掉 Python 依赖

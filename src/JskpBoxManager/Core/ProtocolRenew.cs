@@ -278,6 +278,13 @@ public static class ProtocolRenew
         => JsonFile.Str(JsonFile.ReadObject(RotatedFile(box)), "keySha");
 
     /// <summary>
+    /// 「续期快照」最多认多久。运行时把旧 key 写回只发生在续期后几十秒内；
+    /// 超过这个时间还留着快照，就会把之后「有意恢复的旧凭证」误判成被写回。
+    /// qb16 就因此来回打架：恢复 → Save 立刻又改回快照里的死 key → 再恢复…
+    /// </summary>
+    const double SnapshotMaxMinutes = 30;
+
+    /// <summary>
     /// 运行时把续期结果写回旧 key 时用：把快照里的新 key 写回去。
     /// 只在「live 变回了续期前的旧 key」时才动手——运行时自己合法换新（live 是第三把 key）不算。
     /// 返回 true 表示确实发生了「新 key 被覆盖」并已还原。
@@ -288,6 +295,16 @@ public static class ProtocolRenew
         var hash = JsonFile.Str(o, "keySha");
         var prevHash = JsonFile.Str(o, "prevKeySha");
         if (hash.Length == 0 || prevHash.Length == 0) return false;
+
+        // 快照过期就别再拿它纠错了，否则会一直把后续的正常变更拉回旧值
+        var atText = JsonFile.Str(o, "at");
+        if (DateTime.TryParse(atText, out var at) && (DateTime.Now - at).TotalMinutes > SnapshotMaxMinutes)
+        {
+            try { File.Delete(RotatedFile(box)); } catch { }
+            Log.Box(box, $"protocol renew: snapshot expired ({(DateTime.Now - at).TotalMinutes:F0}min) -> dropped, no restore");
+            return false;
+        }
+
         var live = Ilink.Live(box);
         if (!live.Valid) return false;
         if (live.KeyHash == hash) return false;        // 还是新 key，没被覆盖
@@ -305,6 +322,8 @@ public static class ProtocolRenew
         try
         {
             WriteCredential(cred, key, enc, B64(JsonFile.Str(o, "serverId")));
+            // 已经用掉了，删掉快照，避免同一次续期被反复"纠正"
+            try { File.Delete(RotatedFile(box)); } catch { }
             Log.Box(box, $"protocol renew: runtime wrote back old key {live.KeyHash} -> restored renewed key {hash} ({reason})");
             Ilink.WriteEvent(box, "key-restored", new JsonObject
             {
@@ -317,6 +336,18 @@ public static class ProtocolRenew
             Log.Box(box, "protocol renew: restore renewed key failed " + ex.Message);
             return false;
         }
+    }
+
+    /// <summary>丢掉续期快照：当有人「有意」换了一套凭证（恢复历史、导入、清登录）时调用。</summary>
+    public static void DropSnapshot(string box, string reason)
+    {
+        try
+        {
+            if (!File.Exists(RotatedFile(box))) return;
+            File.Delete(RotatedFile(box));
+            Log.Box(box, "protocol renew: snapshot dropped (" + reason + ")");
+        }
+        catch { }
     }
 
     public static void ClearAttempt(string box)

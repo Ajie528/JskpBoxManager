@@ -27,6 +27,8 @@ public partial class NotifyWindow : Window
         TxtToken.Text = cfg.Token;
         TxtHours.Text = cfg.WarnHours.ToString("0.#");
         TxtRepeat.Text = cfg.RepeatHours.ToString("0.#");
+        ChkProbe.IsChecked = cfg.ProbeEnabled;
+        TxtProbeMinutes.Text = cfg.ProbeMinutes.ToString();
         UpdateHelp();
     }
 
@@ -69,6 +71,9 @@ public partial class NotifyWindow : Window
         else cfg.WarnHours = ProtocolRenew.KeyMaxAgeHours;
         if (double.TryParse(TxtRepeat.Text.Trim(), out var r) && r >= 1) cfg.RepeatHours = r;
         else cfg.RepeatHours = 6;
+        cfg.ProbeEnabled = ChkProbe.IsChecked == true;
+        if (int.TryParse(TxtProbeMinutes.Text.Trim(), out var pm)) cfg.ProbeMinutes = Math.Clamp(pm, 1, 720);
+        else cfg.ProbeMinutes = 2;
         return cfg;
     }
 
@@ -78,9 +83,12 @@ public partial class NotifyWindow : Window
         NotifyConfig.Save(cfg);
         TxtHours.Text = cfg.WarnHours.ToString("0.#");
         TxtRepeat.Text = cfg.RepeatHours.ToString("0.#");
+        TxtProbeMinutes.Text = cfg.ProbeMinutes.ToString();
+        if (cfg.ProbeEnabled) CredentialProbe.Start(); else CredentialProbe.Stop();
         MessageBox.Show(this,
-            cfg.Ready ? $"已保存。\n\n{cfg.Describe()}，凭证超过 {cfg.WarnHours:0.#} 小时没续期就会推送。"
-                      : "已保存，但还没勾选启用或没填推送密钥，暂时不会推送。",
+            (cfg.Ready ? $"已保存。\n\n{cfg.Describe()}，凭证超过 {cfg.WarnHours:0.#} 小时没续期就会推送。"
+                      : "已保存，但还没勾选启用或没填推送密钥，暂时不会推送。")
+            + (cfg.ProbeEnabled ? $"\n\n已开启主动探测：每 {cfg.ProbeMinutes} 分钟连服务器验证一次。" : ""),
             "过期提醒", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 

@@ -93,14 +93,25 @@ public static class Sandboxie
     }
 
     /// <summary>沙箱内进程。Start.exe /listpids 先输出个数，再逐行输出 PID。</summary>
+    /// <summary>沙箱内进程。Start.exe /listpids 先输出个数，再逐行输出 PID（末尾可能多一行 0）。</summary>
     public static List<int> Pids(string box)
     {
         if (!EnvDetect.SbieOk) return new List<int>();
         var (_, output) = ProcessUtil.Run(EnvDetect.SbieStart, new[] { "/box:" + box, "/listpids" }, 15000);
-        var lines = output.Split('\n').Select(s => s.Trim()).Where(s => Regex.IsMatch(s, @"^\d+$")).Select(int.Parse).ToList();
-        if (lines.Count >= 1 && lines.Count == lines[0] + 1)
-            return lines[0] <= 0 ? new List<int>() : lines.Skip(1).ToList();
-        return lines.Where(x => x > 0).ToList();
+        var nums = output.Split('\n').Select(s => s.Trim())
+            .Where(s => Regex.IsMatch(s, @"^\d+$")).Select(int.Parse).ToList();
+        if (nums.Count == 0) return new List<int>();      // 空沙箱：绝不能返回别的东西
+
+        // 第一条是进程数。注意末尾可能带一个 0（Start.exe 收尾行），所以允许 count 或 count+1。
+        int declared = nums[0];
+        var rest = nums.Skip(1).Where(x => x > 0).ToList();
+        if (declared <= 0) return new List<int>();
+        if (rest.Count == declared) return rest;
+        // 数量对不上（可能是别的版本格式）：只在「没有明显收尾 0」时才信任剩余列表，
+        // 否则宁可返回空，也绝不把别的沙箱的 PID 当成自己的。
+        if (nums.Last() == 0 && rest.Count == declared + 1) return rest.Take(declared).ToList();
+        if (rest.Count > declared) return rest.Take(declared).ToList();
+        return rest;
     }
 
     /// <summary>listpids 本身的耗时：开机后 SbieSvc RPC 没就绪时会很慢。</summary>

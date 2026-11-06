@@ -1,7 +1,7 @@
 <Window x:Class="JskpBoxManager.UI.NotifyWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="过期提醒设置" Width="580" Height="620" MinWidth="500" MinHeight="540"
+        Title="过期提醒设置" Width="580" Height="760" MinWidth="500" MinHeight="600"
         WindowStartupLocation="CenterOwner" FontFamily="Microsoft YaHei UI" FontSize="13"
         Background="White" Icon="/app.ico">
     <Grid Margin="20,16,20,10">
@@ -56,11 +56,31 @@
                     <TextBlock Grid.Column="2" Text="小时内不重复提醒" VerticalAlignment="Center" Margin="8,0,0,0"/>
                 </Grid>
 
-                <Border Background="#F1F5F9" CornerRadius="6" Padding="12,10">
+                <Border Background="#F1F5F9" CornerRadius="6" Padding="12,10" Margin="0,0,0,14">
                     <StackPanel>
                         <TextBlock Text="什么时候会自动检查" FontWeight="SemiBold" FontSize="12" Margin="0,0,0,4"/>
                         <TextBlock Foreground="#475569" FontSize="12" TextWrapping="Wrap" LineHeight="19" Margin="0,0,0,4"
                                    Text="· 每次静默保活跑完，扫一遍所有沙箱&#x0a;· 管家界面开着时，每 10 分钟一次&#x0a;· 也可以随时点下面的「立即检查」"/>
+                    </StackPanel>
+                </Border>
+
+                <TextBlock Text="主动探测（提前发现过期）" Style="{StaticResource SectionTitle}"/>
+                <CheckBox x:Name="ChkProbe" Content="定时连服务器验证凭证是否还有效" Margin="0,0,0,6"/>
+                <Grid Margin="0,0,0,6">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="60"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="每隔" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                    <TextBox Grid.Column="1" x:Name="TxtProbeMinutes" Padding="4" HorizontalContentAlignment="Center"/>
+                    <TextBlock Grid.Column="2" Text="分钟探测一次" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                </Grid>
+                <Border Background="#FEF3C7" CornerRadius="6" Padding="12,10">
+                    <StackPanel>
+                        <TextBlock Text="探测会真实连微信服务器发 AutoAuth" FontWeight="SemiBold" FontSize="12" Margin="0,0,0,4" Foreground="#92400E"/>
+                        <TextBlock Foreground="#92400E" FontSize="12" TextWrapping="Wrap" LineHeight="19"
+                                   Text="· 返回 0 = 凭证有效，顺带换新 key（等于续期一次）&#x0a;· 返回非 0 = 已失效，立刻标「需要扫码」并推送提醒&#x0a;· 只对已停止的沙箱探测：游戏运行中会断掉会话，自动跳过"/>
                     </StackPanel>
                 </Border>
             </StackPanel>

@@ -388,18 +388,33 @@ public partial class App : Application
             return 2;
         }
         var boxes = Sandboxie.QueryBoxes();
-        var r = Notifier.Check(boxes, cfg);
-        if (r.Overdue == 0)
+        if (args.Contains("--probe"))
+        {
+            int ok = 0, bad = 0, skip = 0;
+            foreach (var b in boxes)
+            {
+                var r = CredentialProbe.Probe(b, cfg);
+                if (r.Skipped) { skip++; Console($"{b}  跳过：{r.Message}"); }
+                else if (r.Ok) { ok++; Console($"{b}  有效（已换新 key）"); }
+                else if (r.Rejected) { bad++; Console($"{b}  已失效：{r.Message}"); }
+                else { bad++; Console($"{b}  探测失败：{r.Message}"); }
+            }
+            Console($"探测完成：{ok} 有效，{bad} 失效/失败，{skip} 跳过");
+            return bad > 0 ? 1 : 0;
+        }
+
+        var r2 = Notifier.Check(boxes, cfg);
+        if (r2.Overdue == 0)
         {
             Console($"检查了 {boxes.Count} 个沙箱，没有超过 {cfg.WarnHours:0.#} 小时未续期的账号");
             return 0;
         }
-        if (r.Failed)
+        if (r2.Failed)
         {
-            Console($"发现 {r.Overdue} 个超期账号，但推送失败：{r.Error}");
+            Console($"发现 {r2.Overdue} 个超期账号，但推送失败：{r2.Error}");
             return 1;
         }
-        Console($"已提醒 {r.Sent} 个超期账号（通过 {cfg.Describe()}）");
+        Console($"已提醒 {r2.Sent} 个超期账号（通过 {cfg.Describe()}）");
         return 0;
     }
 

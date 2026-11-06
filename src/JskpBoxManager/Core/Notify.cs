@@ -23,6 +23,9 @@ public sealed class NotifyConfig
     public double WarnHours = ProtocolRenew.KeyMaxAgeHours;
     /// <summary>同一个账号两次提醒之间至少隔多少小时，避免刷屏。默认 6。</summary>
     public double RepeatHours = 6;
+    /// <summary>每 N 分钟主动连服务器探测一次凭证是否还有效（顺带续期）。默认关。</summary>
+    public bool ProbeEnabled;
+    public int ProbeMinutes = 2;
 
     public string Describe()
     {
@@ -48,6 +51,8 @@ public sealed class NotifyConfig
         cfg.Token = JsonFile.Str(o, "token").Trim();
         cfg.WarnHours = JsonFile.Double(o, "warnHours") ?? ProtocolRenew.KeyMaxAgeHours;
         cfg.RepeatHours = JsonFile.Double(o, "repeatHours") ?? 6;
+        cfg.ProbeEnabled = JsonFile.Bool(o, "probeEnabled") ?? false;
+        cfg.ProbeMinutes = Math.Clamp(JsonFile.Int(o, "probeMinutes") ?? 2, 1, 720);
         if (cfg.WarnHours < 1) cfg.WarnHours = 1;
         if (cfg.RepeatHours < 1) cfg.RepeatHours = 1;
         return cfg;
@@ -62,6 +67,8 @@ public sealed class NotifyConfig
             ["token"] = cfg.Token ?? "",
             ["warnHours"] = cfg.WarnHours,
             ["repeatHours"] = cfg.RepeatHours,
+            ["probeEnabled"] = cfg.ProbeEnabled,
+            ["probeMinutes"] = cfg.ProbeMinutes,
         });
     }
 

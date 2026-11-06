@@ -27,6 +27,7 @@ public partial class MainWindow : Window
         SyncProtocolUi();
         SyncNotifyUi();
         LoadTrimConfig();
+        if (NotifyConfig.Load().ProbeEnabled) CredentialProbe.Start();
         _timer.Tick += async (_, _) => { await RefreshAsync(); MaybeAutoTrim(); MaybeCheckNotify(); };
         Loaded += async (_, _) => await StartupAsync();
         Closed += (_, _) => { try { ProtocolServer.StopCurrent(); } catch { } };
@@ -321,7 +322,6 @@ public partial class MainWindow : Window
     // ---------- 操作 ----------
 
     void SetStatus(string text) => TxtStatus.Text = $"{DateTime.Now:HH:mm:ss}  {text}";
-
     async Task<T> RunBusy<T>(string message, Func<T> work)
     {
         _busy++;
@@ -649,6 +649,7 @@ public partial class MainWindow : Window
         var w = new NotifyWindow { Owner = this };
         w.ShowDialog();
         SyncNotifyUi();
+        if (NotifyConfig.Load().ProbeEnabled) CredentialProbe.Start(); else CredentialProbe.Stop();
     }
 
     void SyncProtocolUi()

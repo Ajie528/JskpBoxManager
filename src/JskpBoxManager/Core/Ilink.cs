@@ -469,6 +469,10 @@ public static class Ilink
         try { st = Read(srcDir); } catch { return false; }
         if (!st.Valid) return false;
 
+        // 有意换了一套凭证：续期快照描述的是「上一次协议续期的新 key」，
+        // 留着它会在下一次 Save 时把用户刚恢复的这把又改回去（qb16 就是这样卡死的）。
+        ProtocolRenew.DropSnapshot(box, "restore-credential-set");
+
         var liveRoot = BoxPaths.WmpfLive(box);
         if (Read(liveRoot).Valid) SaveHistorySnapshot(box, liveRoot, "pre-recover");
 
@@ -556,6 +560,7 @@ public static class Ilink
 
     public static void ClearVault(string box)
     {
+        ProtocolRenew.DropSnapshot(box, "clear-login");
         foreach (var p in new[] { BoxPaths.CredentialDir(box), System.IO.Path.Combine(BoxPaths.WmpfVault(box), "ilink") })
             try { if (Directory.Exists(p)) Directory.Delete(p, true); } catch { }
     }

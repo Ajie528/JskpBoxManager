@@ -316,10 +316,10 @@ public sealed class RefreshSession
         var sw = System.Diagnostics.Stopwatch.StartNew();
         var r = ProtocolRenew.Renew(_box);
         sw.Stop();
-
         var live = Ilink.Live(_box);
         if (r.Ok)
         {
+            CredentialProbe.RecordRotationPublic(_box, r.NewKeyHash, "refresh");
             try { VaultSync.PushVaultToLive(_box); } catch { }
             L($"protocol renew OK in {sw.ElapsedMilliseconds}ms key={r.NewKeyHash}");
             Ilink.WriteEvent(_box, "refresh", new JsonObject

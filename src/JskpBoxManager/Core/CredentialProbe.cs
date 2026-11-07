@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json.Nodes;
 
 namespace JskpBoxManager.Core;
@@ -6,14 +7,25 @@ namespace JskpBoxManager.Core;
 /// 凭证主动探测：每隔一段时间直接连服务器发一次 AutoAuth，用返回码判断这把 key 还能不能用。
 ///
 /// 为什么用 AutoAuth 当探针：它是唯一「不需要启动浏览器、又能让服务器明确回答凭证是否有效」的请求。
-///   · 返回 0   → 凭证有效（顺带把 key 换成新的，等于续期一次）
+///   · 返回 0   → 凭证有效（顺带把 key 换成新的）
 ///   · 返回 -13 / -14 / -2 → 凭证已作废或过期，立刻标「需要扫码」并推送提醒
+///
+/// **重要限制：AutoAuth 是轮换语义，探一次就换一把 key，协议层做不到「只验证不换」。**
+/// 所以探测频率不能太高：qb4 在 2026-11-07 凌晨被每 2 分钟的探测连滚 4 次 key，
+/// 当天下午整条授权链被服务端作废（连 10-31 的历史 key 都失效了）。
+/// 现在有双重保护：最短 30 分钟一次 + 每号每天最多换 MaxRotationsPerDay 次。
 ///
 /// 前提：**沙箱必须已停**。运行中的 WeChatAppEx 内存里握着旧 key，服务端作废旧 key 后
 /// 它会把旧值写回文件并断掉游戏会话（见 mmtls 研究 6F）。所以探测遇到运行中的沙箱直接跳过。
 /// </summary>
 public static class CredentialProbe
 {
+    /// <summary>探测的最短间隔（分钟）。再密就会变成「每几分钟滚一次 key」，服务端会当异常。</summary>
+    public const int MinProbeMinutes = 30;
+
+    /// <summary>单个号每天最多换几次 key。超过就跳过，等明天。</summary>
+    public const int MaxRotationsPerDay = 8;
+
     static readonly object Gate = new();
     static Thread _thread;
     static volatile bool _stop;
@@ -64,7 +76,11 @@ public static class CredentialProbe
                 Thread.Sleep(30_000);
                 continue;
             }
-            int minutes = Math.Clamp(cfg.ProbeMinutes, 1, 720);
+            // 探测会真实换 key（AutoAuth 是轮换语义，协议层做不到「只验证不换」）。
+            // 每 2 分钟探一次 = 每 2 分钟滚一次 key，服务端会判定异常并作废整条链
+            // （qb4 11-07 凌晨 4 分钟换 4 次，当天下午整条链报废，连 10-31 的历史 key 都失效）。
+            // 所以给一个安全下限：最快 30 分钟一次；每号每天最多换 8 次 key。
+            int minutes = Math.Clamp(cfg.ProbeMinutes, MinProbeMinutes, 720);
             try
             {
                 var boxes = Sandboxie.QueryBoxes();
@@ -127,7 +143,16 @@ public static class CredentialProbe
             return new ProbeResult(box, false, "上次续期结果未知（attempt 标记还在），跳过", 0, true);
         }
 
+        // 今天换够了就别再换：频繁轮换会让服务端把整条授权链判定为异常并全部作废
+        int today = RotationsToday(box);
+        if (today >= MaxRotationsPerDay)
+        {
+            Log.Box(box, $"probe: already rotated {today} times today (limit {MaxRotationsPerDay}) -> skip");
+            return new ProbeResult(box, false, $"今天已换过 {today} 次 key，跳过（防触发风控）", 0, true);
+        }
+
         var r = ProtocolRenew.Renew(box);
+        if (r.Ok) RecordRotation(box, r.NewKeyHash, "probe");
         var rec = new JsonObject
         {
             ["at"] = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
@@ -164,4 +189,38 @@ public static class CredentialProbe
 
     /// <summary>读某个沙箱最近一次探测结果（界面上展示用）。</summary>
     public static JsonObject LastState(string box) => JsonFile.ReadObject(StatePath(box));
+
+    // ---------------- 每日换 key 计数（防把整条链滚废） ----------------
+
+    static string RotateLogPath(string box) => Path.Combine(AppPaths.Logs, box + ".rotate-log");
+
+    /// <summary>今天已经换过几次 key。</summary>
+    public static int RotationsToday(string box)
+    {
+        try
+        {
+            var p = RotateLogPath(box);
+            if (!File.Exists(p)) return 0;
+            var today = DateTime.Today.ToString("yyyy-MM-dd");
+            return File.ReadAllLines(p).Count(l => l.StartsWith(today, StringComparison.Ordinal));
+        }
+        catch { return 0; }
+    }
+
+    static void RecordRotation(string box, string newKey, string why)
+    {
+        try
+        {
+            Directory.CreateDirectory(AppPaths.Logs);
+            File.AppendAllText(RotateLogPath(box),
+                $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} {newKey} {why}\r\n", new UTF8Encoding(false));
+        }
+        catch { }
+    }
+
+    /// <summary>保活等其它路径换 key 后也要记账，否则「每日上限」统计不到。</summary>
+    public static void RecordRotationPublic(string box, string newKey, string why) => RecordRotation(box, newKey, why);
+
+    /// <summary>今天是否已经换够了（到上限就不再探，避免服务端把整条链当异常）。</summary>
+    public static bool RotationBudgetExhausted(string box) => RotationsToday(box) >= MaxRotationsPerDay;
 }

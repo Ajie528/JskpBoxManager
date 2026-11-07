@@ -72,8 +72,8 @@ public partial class NotifyWindow : Window
         if (double.TryParse(TxtRepeat.Text.Trim(), out var r) && r >= 1) cfg.RepeatHours = r;
         else cfg.RepeatHours = 6;
         cfg.ProbeEnabled = ChkProbe.IsChecked == true;
-        if (int.TryParse(TxtProbeMinutes.Text.Trim(), out var pm)) cfg.ProbeMinutes = Math.Clamp(pm, 1, 720);
-        else cfg.ProbeMinutes = 2;
+        if (int.TryParse(TxtProbeMinutes.Text.Trim(), out var pm)) cfg.ProbeMinutes = Math.Clamp(pm, CredentialProbe.MinProbeMinutes, 720);
+        else cfg.ProbeMinutes = 120;
         return cfg;
     }
 

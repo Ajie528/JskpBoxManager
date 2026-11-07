@@ -74,13 +74,13 @@
                     </Grid.ColumnDefinitions>
                     <TextBlock Grid.Column="0" Text="每隔" VerticalAlignment="Center" Margin="0,0,8,0"/>
                     <TextBox Grid.Column="1" x:Name="TxtProbeMinutes" Padding="4" HorizontalContentAlignment="Center"/>
-                    <TextBlock Grid.Column="2" Text="分钟探测一次" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                    <TextBlock Grid.Column="2" Text="分钟探测一次（最短 30 分钟）" VerticalAlignment="Center" Margin="8,0,0,0"/>
                 </Grid>
                 <Border Background="#FEF3C7" CornerRadius="6" Padding="12,10">
                     <StackPanel>
-                        <TextBlock Text="探测会真实连微信服务器发 AutoAuth" FontWeight="SemiBold" FontSize="12" Margin="0,0,0,4" Foreground="#92400E"/>
+                        <TextBlock Text="⚠ 探测会真实换 key，别调太密" FontWeight="SemiBold" FontSize="12" Margin="0,0,0,4" Foreground="#92400E"/>
                         <TextBlock Foreground="#92400E" FontSize="12" TextWrapping="Wrap" LineHeight="19"
-                                   Text="· 返回 0 = 凭证有效，顺带换新 key（等于续期一次）&#x0a;· 返回非 0 = 已失效，立刻标「需要扫码」并推送提醒&#x0a;· 只对已停止的沙箱探测：游戏运行中会断掉会话，自动跳过"/>
+                                   Text="· 返回 0 = 凭证有效，同时把 key 换成新的（AutoAuth 是轮换语义，做不到只查不换）&#x0a;· 返回非 0 = 已失效，立刻标「需要扫码」并推送提醒&#x0a;· 只对已停止的沙箱探测：游戏运行中会断掉会话，自动跳过&#x0a;· 最短 30 分钟一次，每号每天最多换 8 次；太密会被服务端判异常，整条链一起作废"/>
                     </StackPanel>
                 </Border>
             </StackPanel>

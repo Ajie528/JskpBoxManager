@@ -36,6 +36,24 @@ public sealed class RecoverSession
                 i++;
                 Out($"[{i}/{tryList.Count}] 试 key {c.KeyShort}（{c.SavedAt:MM-dd HH:mm}{(c.IsVault ? " · 当前金库" : "")}）…");
                 BoxStatusFile.Write(_box, BoxPhase.Starting, $"恢复中：试 {c.KeyShort}（{i}/{tryList.Count}）");
+
+                // 先用协议续期（0.5 秒，不开浏览器）：服务端认可就一步到位换新 key。
+                // 这才是当初救回 qb10 / qb12 的方式；冷启动只作为「协议说不通」时的兜底。
+                var pr = TryOneByProtocol(c);
+                if (pr.Ok)
+                {
+                    Out($"✓ 成功：key {c.KeyShort} 协议续期通过，已换新 key {pr.NewKeyHash}。");
+                    L($"recover OK (protocol) with key {c.KeyHash} -> {pr.NewKeyHash}");
+                    Out("提示：这个号已恢复免扫，直接点「启动游戏」即可进入；不需要再扫码。");
+                    return 0;
+                }
+                if (pr.Rejected)
+                {
+                    Out($"  ✗ key {c.KeyShort} 服务端明确拒绝（{pr.Code}），换下一把。");
+                    continue;
+                }
+                Out($"  · key {c.KeyShort} 协议续期未成功（{pr.Message}），回退冷启动验证…");
+
                 if (TryOne(c))
                 {
                     Out($"✓ 成功：key {c.KeyShort} 能免扫，已进入游戏并存回金库。");
@@ -62,6 +80,81 @@ public sealed class RecoverSession
             BoxRuntime.UnregisterLauncher(_box);
             L("recover end");
         }
+    }
+
+    /// <summary>
+    /// 单把凭证的快速验证：停箱 → 写入这套凭证 → **协议续期**（0.5 秒，不开浏览器）。
+    /// 成功即说明服务端认可这把 key，且顺带换成了新 key（等于恢复 + 续期一步到位）。
+    /// 失败返回它的失败码，由调用方决定是否回退到冷启动验证。
+    ///
+    /// 这就是当初救回 qb10 / qb12 的方式：它们的金库旧 key（10-16 / 10-18）放了 20 多天
+    /// 仍然有效，协议续期一次就换成了新 key，根本不需要拉起浏览器。
+    /// </summary>
+    internal ProtocolRenew.Result TryOneByProtocol(CredCandidate c)
+    {
+        BoxRuntime.StopForce(_box, false);
+        BoxRuntime.RegisterLauncher(_box, "recover-protocol");
+        Thread.Sleep(2000);
+
+        NeedScan.Clear(_box);
+        Ilink.ClearRevokedKey(_box, c.KeyHash);
+        if (!Ilink.RestoreCredentialSet(_box, c.Dir))
+            return new ProtocolRenew.Result(false, "这份备份读不出有效凭证", "", long.MaxValue);
+
+        // 关键：ProtocolRenew.ReadCredential 会取 live 与金库中**较新**那份。
+        // 历史快照写进 live 后时间通常比金库旧，会被金库的 key 顶掉——那样测的就不是这把了。
+        // 所以必须把这一份同时写进金库，让两者一致。
+        SyncCandidateToVault(c);
+
+        var (renewable, blocked) = ProtocolRenew.CheckRenewable(_box);
+        if (!renewable)
+            return new ProtocolRenew.Result(false, "沙箱没停干净：" + blocked.Split('\n')[0], "", long.MaxValue);
+
+        // 再确认一次：现在读到的确实是这把 key
+        var live = Ilink.Live(_box);
+        if (!live.Valid || live.KeyHash != c.KeyHash)
+            L($"recover: warning, live key {live.KeyHash} differs from candidate {c.KeyHash}");
+
+        var r = ProtocolRenew.Renew(_box);
+        if (r.Ok)
+        {
+            CredentialProbe.RecordRotationPublic(_box, r.NewKeyHash, "recover-protocol");
+            try { VaultSync.PushVaultToLive(_box); } catch { }
+            try { Ilink.Save(_box, "recover-protocol"); } catch { }
+            NeedScan.Clear(_box);
+            NeedScan.ClearQrStreak(_box);
+            L($"recover: protocol renew OK with key {c.KeyShort} -> new {r.NewKeyHash}");
+            BoxStatusFile.Write(_box, BoxPhase.Stopped, "已用历史凭证恢复（协议续期）");
+        }
+        return r;
+    }
+
+    /// <summary>把候选凭证同时写进金库，避免「金库更新 → 协议续期读到金库那把」的错位。</summary>
+    void SyncCandidateToVault(CredCandidate c)
+    {
+        try
+        {
+            var vaultRoot = BoxPaths.WmpfVault(_box);
+            var src = c.Dir;
+            var acct = Ilink.AccountFile(src);
+            if (acct == null) return;
+            var rel = acct.FullName[src.TrimEnd('\\').Length..].TrimStart('\\');
+            var dst = Path.Combine(vaultRoot, rel);
+            Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
+            File.Copy(acct.FullName, dst, true);
+            // 保持时间戳一致，让「较新」判定落在这一份上
+            File.SetLastWriteTimeUtc(dst, File.GetLastWriteTimeUtc(acct.FullName));
+            var pskSrc = Path.Combine(src, @"ilink\default\psk.key");
+            var pskDst = Path.Combine(vaultRoot, @"ilink\default\psk.key");
+            if (File.Exists(pskSrc))
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(pskDst)!);
+                File.Copy(pskSrc, pskDst, true);
+                File.SetLastWriteTimeUtc(pskDst, File.GetLastWriteTimeUtc(pskSrc));
+            }
+            L($"recover: candidate {c.KeyShort} synced to vault so protocol renew uses the right key");
+        }
+        catch (Exception ex) { L("recover: sync candidate to vault failed " + ex.Message); }
     }
 
     /// <summary>写入这把 key 冷启一次，2 分钟内进游戏或换新密钥算成功；凭证被清空且扫码页持续约 20s 算这把被拒。</summary>

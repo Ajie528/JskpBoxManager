@@ -122,11 +122,35 @@ public partial class RecoverWindow : Window
     {
         if (Busy) { SetStatus("自动逐个试在跑，先停止再手动试"); return; }
         if (sender is not Button { Tag: Row row }) return;
-        if (MessageBox.Show(this, $"将停箱、清缓存并写入 key {row.Cand.KeyShort}，然后冷启动验证。\n进了游戏就是这把能用；若弹扫码说明这把也不行。继续？",
+        if (MessageBox.Show(this, $"将停箱、写入 key {row.Cand.KeyShort}，先试协议续期（不开浏览器、0.5 秒）；\n"
+                + "不通再回退冷启动验证。进了游戏或续期成功就是这把能用。继续？",
                 "试这把", MessageBoxButton.OKCancel, MessageBoxImage.Question) != MessageBoxResult.OK) return;
 
-        SetStatus($"正在写入 {row.Cand.KeyShort} 并冷启动…");
+        SetStatus($"正在写入 {row.Cand.KeyShort} 并验证…");
         Append($"\r\n== 手动试 key {row.Cand.KeyShort}（{row.Cand.SavedAt:MM-dd HH:mm}）==\r\n");
+
+        // 先走协议续期：这是最快、也最接近「当初救回 qb10/qb12」的方式
+        var pr = await Task.Run(() =>
+        {
+            var s = new RecoverSession(_box);
+            return s.TryOneByProtocol(row.Cand);
+        });
+        Append((pr.Ok ? "协议续期：成功，新 key " + pr.NewKeyHash : "协议续期：" + pr.Message) + "\r\n");
+        if (pr.Ok)
+        {
+            SetStatus("协议续期成功，已恢复");
+            Append("这个号已恢复免扫，直接点「启动游戏」即可进入，不需要扫码。\r\n");
+            LoadList();
+            return;
+        }
+        if (pr.Rejected)
+        {
+            SetStatus("这把已被服务端拒绝，换一把");
+            Append($"服务端明确拒绝（{pr.Code}），这把不行。\r\n");
+            return;
+        }
+
+        Append("回退冷启动验证…\r\n");
         var (ok, msg) = await Task.Run(() => BoxRuntime.TryHistoryKey(_box, row.Cand.Dir, row.Cand.KeyHash));
         Append(msg + "\r\n");
         if (!ok) { SetStatus(msg); return; }

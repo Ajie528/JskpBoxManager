@@ -194,21 +194,44 @@ public sealed class LaunchSession
             waitingQrAtEnd = result.WaitingQr;
             if (result.Opened) { opened = true; break; }
 
-            // 扫码框关掉两轮仍回来，且金库里没有更新的凭证可用时：
-            // 先别急着判「必须扫码」——历史快照里很可能还有一把能用的（qb15 11-05 就是这样，
-            // 弹码后手动点「历史凭证恢复」立刻进去了）。这里自动跑一遍逐个试。
+            // 扫码框出现且还有历史凭证可试时：先别急着判「必须扫码」。
+            // 历史快照里很可能还有一把能用的（qb10 / qb12 就是这样白等了好几天的），
+            // 这里逐把走协议续期确认，每把 0.5 秒，比冷启动验证快两个数量级。
             if (!didHistoryRecover && result.WaitingQr && result.SawQr && HistoryCanHelp())
             {
                 didHistoryRecover = true;
-                L("QR still up and no newer vault key -> try historical credentials automatically");
-                Phase(BoxPhase.Starting, "扫码框一直不走，正在用历史凭证逐个试…");
+                L("QR up -> try historical credentials via protocol renew (0.5s each)");
+                Phase(BoxPhase.Starting, "扫码框出现了，正在用历史凭证逐个试…");
                 if (TryHistoryRecover())
                 {
-                    L("history recover succeeded");
+                    L("history recover succeeded -> credential swapped, relaunching game");
                     NeedScan.Clear(_box);
                     NeedScan.ClearQrStreak(_box);
-                    opened = true;
-                    break;
+                    // 协议续期只是把 key 换好了，游戏还没起来：重开一次浏览器让新 key 生效
+                    if (attempt < maxAttempts)
+                    {
+                        BoxRuntime.EnsureWxRuntimeInBox(_box);
+                        BoxRuntime.Warmup(_box, false);
+                        BoxRuntime.ClearCrashRestore(_box);
+                        baseline = Ilink.Baseline(_box);
+                        L($"relaunch with recovered credential {Ilink.Live(_box)}");
+                        BoxRuntime.StartBrowser(_box, "history-recovered");
+                        var again = WaitForGame(baseline);
+                        waitingQrAtEnd = again.WaitingQr;
+                        if (again.Opened)
+                        {
+                            opened = true;
+                            break;
+                        }
+                        L("relaunch after history recovery did not open game -> continue");
+                    }
+                    else
+                    {
+                        // 已经用完次数：凭证是好的，只是这次没等到游戏窗，交给用户点一次启动即可
+                        L("history recover OK but no attempts left -> credential ready, user can launch again");
+                        opened = true;
+                        break;
+                    }
                 }
                 L("history recover failed -> fall back to wait for WeChat scan");
             }
@@ -300,9 +323,24 @@ public sealed class LaunchSession
         }
     }
 
+    /// <summary>是否还有可试的历史凭证（不含当前 live 那把）。用于决定「弹扫码框时是否值得提前返回」。</summary>
+    bool HistoryCandidatesExist()
+    {
+        try
+        {
+            var live = Ilink.Live(_box);
+            return Ilink.CredentialHistory(_box)
+                .Any(c => !c.Revoked && (!live.Valid || c.KeyHash != live.KeyHash));
+        }
+        catch { return false; }
+    }
+
     /// <summary>
-    /// 逐个试历史凭证（复用 RecoverSession.TryOne 的验证逻辑）。
-    /// 第一把能免扫进游戏就停，并把 live 收进金库。
+    /// 逐个试历史凭证恢复免扫。**优先协议续期**（0.5 秒/把，不开浏览器），
+    /// 协议明确拒绝就换下一把；只有网络类失败才回退冷启动验证。
+    ///
+    /// 为什么必须优先协议：弹扫码框时，冷启动验证每把要 1~2 分钟且反复重启沙箱，
+    /// 10 把就是十几分钟；协议续期每把 0.5 秒，且能直接确认服务端是否认可这把 key。
     /// </summary>
     bool TryHistoryRecover()
     {
@@ -320,13 +358,36 @@ public sealed class LaunchSession
             i++;
             L($"[{i}/{tryList.Count}] try historical key {c.KeyShort} ({c.SavedAt:MM-dd HH:mm}{(c.IsVault ? " · vault" : "")})");
             Phase(BoxPhase.Starting, $"正在用历史凭证恢复（{i}/{tryList.Count}）：试 {c.KeyShort}");
+
+            // 先协议续期：成功即恢复完成，且已换成新 key
+            try
+            {
+                var pr = rec.TryOneByProtocol(c);
+                if (pr.Ok)
+                {
+                    L($"history recover OK (protocol) with key {c.KeyHash} -> {pr.NewKeyHash}");
+                    Phase(BoxPhase.Stopped, "已用历史凭证恢复（协议续期），点「启动游戏」即可进入");
+                    return true;
+                }
+                if (pr.Rejected)
+                {
+                    L($"[{i}/{tryList.Count}] key {c.KeyShort} rejected by server ({pr.Code}) -> next");
+                    continue;
+                }
+                L($"[{i}/{tryList.Count}] key {c.KeyShort} protocol failed ({pr.Message}) -> try cold start for this key");
+            }
+            catch (Exception ex)
+            {
+                L($"history key {c.KeyShort} protocol error: {ex.Message}");
+            }
+
+            // 协议说不通（网络等）时才冷启动验证这一把
             try
             {
                 if (rec.TryOne(c))
                 {
-                    L($"history recover OK with key {c.KeyHash}");
+                    L($"history recover OK (cold start) with key {c.KeyHash}");
                     try { Ilink.Save(_box, "history-recover"); } catch { }
-                    // TryOne 里已经把游戏拉起来了，这里接管看门
                     Phase(BoxPhase.InGame, "已用历史凭证免扫恢复");
                     return true;
                 }
@@ -483,7 +544,7 @@ public sealed class LaunchSession
                                 L("saved login: QR overlay came back after dismiss -> cold retry once");
                                 return new(false, true, false, sawQr, credCleared && !revoked);
                             }
-                            L("saved login stale: QR overlay kept coming back -> require WeChat scan");
+                            L("saved login stale: QR overlay kept coming back -> hand over to history recovery");
                             savedLogin = false;
                             waitingQr = true;
                             qrResumed = false;
@@ -491,6 +552,10 @@ public sealed class LaunchSession
                             ScanHint.MarkQrScan(_box);
                             Phase(BoxPhase.WaitingScan, "需要用微信扫码登录");
                             v.ShowQrWindow();
+                            // 有历史凭证可试时提前返回：外层会用协议续期逐把确认（0.5 秒/把），
+                            // 比在这里干等用户扫码快得多（qb10/qb12 就是这样白等了好几天的）。
+                            // 没有历史凭证就继续等扫码，不打断正常流程。
+                            if (HistoryCandidatesExist()) return new(false, false, true, sawQr, credCleared && !revoked);
                         }
                         continue;
                     }
@@ -503,6 +568,8 @@ public sealed class LaunchSession
                         NeedScan.Set(_box, revoked ? "key-revoked" : "strict-qr-auth-page");
                         ScanHint.MarkQrScan(_box);
                         Phase(BoxPhase.WaitingScan, "需要用微信扫码登录");
+                        // 同上：有历史凭证就先让外层试协议续期，不打断「确实需要扫码」的正常流程。
+                        if (HistoryCandidatesExist()) return new(false, false, true, sawQr, credCleared && !revoked);
                     }
                     else if (LogDue(60))
                     {

@@ -83,18 +83,30 @@ public sealed class RecoverSession
     }
 
     /// <summary>
-    /// 单把凭证的快速验证：停箱 → 写入这套凭证 → **协议续期**（0.5 秒，不开浏览器）。
+    /// 单把凭证的快速验证：写入这套凭证 → **协议续期**（0.1 秒，不开浏览器）。
     /// 成功即说明服务端认可这把 key，且顺带换成了新 key（等于恢复 + 续期一步到位）。
     /// 失败返回它的失败码，由调用方决定是否回退到冷启动验证。
     ///
     /// 这就是当初救回 qb10 / qb12 的方式：它们的金库旧 key（10-16 / 10-18）放了 20 多天
     /// 仍然有效，协议续期一次就换成了新 key，根本不需要拉起浏览器。
+    ///
+    /// **关于停箱**：只有沙箱里还有进程时才需要停（运行时会锁住 tdi_account.txt 并把旧 key 写回）。
+    /// 连续试多把时，第一把停完后续都停着，后面的每把能省掉约 6 秒的停箱等待。
     /// </summary>
     internal ProtocolRenew.Result TryOneByProtocol(CredCandidate c)
     {
-        BoxRuntime.StopForce(_box, false);
-        BoxRuntime.RegisterLauncher(_box, "recover-protocol");
-        Thread.Sleep(2000);
+        // 只在确实有进程时才停箱；已经停着就直接写，省掉 6 秒/把
+        if (Sandboxie.Pids(_box).Count > 0)
+        {
+            BoxRuntime.StopForce(_box, false);
+            BoxRuntime.RegisterLauncher(_box, "recover-protocol");
+            Thread.Sleep(2000);
+        }
+        else
+        {
+            // 仍然登记 launcher，避免同时被别的保活流程抢走
+            BoxRuntime.RegisterLauncher(_box, "recover-protocol");
+        }
 
         NeedScan.Clear(_box);
         Ilink.ClearRevokedKey(_box, c.KeyHash);

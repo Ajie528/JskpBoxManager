@@ -11,6 +11,8 @@ public sealed class LaunchSession
     bool _suspectRetried;
     /// <summary>游戏运行中密钥已超龄，等游戏关闭后立刻续期。</summary>
     bool _renewPending;
+    /// <summary>历史凭证已全部试过且失败：之后的扫码框要原地等用户扫，不再提前返回。</summary>
+    bool _historyExhausted;
 
     public LaunchSession(string box) { _box = box; }
 
@@ -115,7 +117,17 @@ public sealed class LaunchSession
         // 协议续期一次就换成了新 key。以前只在「探测」里做，手动启动会直接等扫码。
         TryRestoreVaultWhenLiveInvalid();
 
-        if (NeedScan.Pending(_box)) L("need-scan pending -> ignore saved login, wait for WeChat QR");
+        if (NeedScan.Pending(_box))
+        {
+            L("need-scan pending -> ignore saved login, wait for WeChat QR");
+            // 之前已经把所有历史凭证试完并全部被拒：这次不必再花几分钟重试，
+            // 直接把扫码框摆给用户。真的换了新 key 时上面 ClearIfRenewed 会清掉标记。
+            if (NeedScan.Reason(_box).Contains("history-all-failed", StringComparison.OrdinalIgnoreCase))
+            {
+                _historyExhausted = true;
+                L("history already exhausted last time -> skip retrying, go straight to QR");
+            }
+        }
 
         var existing = new BoxView(_box);
         bool attach = false;
@@ -171,9 +183,9 @@ public sealed class LaunchSession
             try { NeedScan.ClearIfRenewed(_box); } catch { }
         }
 
-        bool opened = false, waitingQrAtEnd = false, didVaultRestore = false, forceFullWarmup = false;
-        bool didHistoryRecover = false;
-        const int maxAttempts = 3;
+    bool opened = false, waitingQrAtEnd = false, didVaultRestore = false, forceFullWarmup = false;
+    bool didHistoryRecover = _historyExhausted;
+    const int maxAttempts = 3;
         for (int attempt = 1; attempt <= maxAttempts && !opened; attempt++)
         {
             LaunchBaseline baseline = null;
@@ -233,7 +245,31 @@ public sealed class LaunchSession
                         break;
                     }
                 }
-                L("history recover failed -> fall back to wait for WeChat scan");
+                L("history recover failed -> all keys rejected, now present the QR page for manual scan");
+                _historyExhausted = true;
+                // 记下「历史已试完」：下次启动直接用 need-scan 判定，不必再花两分钟重试一遍。
+                // 一旦真的换了新 key（扫码/导入/探测成功），NeedScan.ClearIfRenewed 会自动清掉。
+                NeedScan.Set(_box, "history-all-failed");
+                // 关键：TryHistoryRecover 内部每把都会停箱，试完这里沙箱是空的。
+                // 必须重新拉起浏览器把扫码框摆到用户面前，否则会直接「launch ended without game」，
+                // 用户看到的就是「弹扫码框后直接停箱、没机会扫」。
+                try
+                {
+                    BoxRuntime.EnsureWxRuntimeInBox(_box);
+                    BoxRuntime.Warmup(_box, false);
+                    BoxRuntime.ClearCrashRestore(_box);
+                    baseline = Ilink.Baseline(_box);
+                    L("relaunch for manual QR scan");
+                    BoxRuntime.StartBrowser(_box, "qr-wait");
+                    var qrResult = WaitForGame(baseline);
+                    waitingQrAtEnd = qrResult.WaitingQr;
+                    if (qrResult.Opened)
+                    {
+                        opened = true;
+                        break;
+                    }
+                }
+                catch (Exception ex) { L("relaunch for QR failed: " + ex.Message); }
             }
 
             if (result.NeedColdRetry && attempt < maxAttempts)
@@ -555,7 +591,7 @@ public sealed class LaunchSession
                             // 有历史凭证可试时提前返回：外层会用协议续期逐把确认（0.5 秒/把），
                             // 比在这里干等用户扫码快得多（qb10/qb12 就是这样白等了好几天的）。
                             // 没有历史凭证就继续等扫码，不打断正常流程。
-                            if (HistoryCandidatesExist()) return new(false, false, true, sawQr, credCleared && !revoked);
+                            if (HistoryCandidatesExist() && !_historyExhausted) return new(false, false, true, sawQr, credCleared && !revoked);
                         }
                         continue;
                     }
@@ -569,7 +605,7 @@ public sealed class LaunchSession
                         ScanHint.MarkQrScan(_box);
                         Phase(BoxPhase.WaitingScan, "需要用微信扫码登录");
                         // 同上：有历史凭证就先让外层试协议续期，不打断「确实需要扫码」的正常流程。
-                        if (HistoryCandidatesExist()) return new(false, false, true, sawQr, credCleared && !revoked);
+                        if (HistoryCandidatesExist() && !_historyExhausted) return new(false, false, true, sawQr, credCleared && !revoked);
                     }
                     else if (LogDue(60))
                     {

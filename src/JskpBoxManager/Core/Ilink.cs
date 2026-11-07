@@ -50,7 +50,13 @@ public sealed record CredCandidate(string Dir, string KeyHash, string Uin, DateT
 /// </summary>
 public static class Ilink
 {
-    public const int HistoryKeep = 12;
+    /// <summary>
+    /// 每个沙箱保留多少份历史凭证快照。
+    /// 每份约 0.14 MB（tdi_account + psk + 配套文件），30 份约 4 MB/号，体积可忽略。
+    /// 保留多一点的用途：免扫失效时可以从更早的 key 里找还能用的（服务端不是「只认最新一把」，
+    /// 实测 10-16 的 key 放了 22 天仍有效）。
+    /// </summary>
+    public const int HistoryKeep = 30;
 
     static readonly string[] RoboExclude = { "/XF", "*.statistic", "monitordata_*", "/XD", "kvcomm" };
 

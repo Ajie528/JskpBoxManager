@@ -171,6 +171,22 @@ public sealed class RefreshSession
         }
         // 标记可能已经过时（之后又扫过码 / 直接开过沙箱 / 导入过凭证），先按「沙箱里是否已有更新的有效凭证」清一次
         try { NeedScan.ClearIfRenewed(_box); } catch { }
+
+        // live 无效但金库有旧凭证：先试金库，能续上就不用扫码。
+        // qb10 / qb12 就是这样被救回来的（金库 10-16 / 10-18 的 key 放了 20 多天仍然有效）。
+        if (!before.HasGameWindow && !before.HasQqOrGame)
+        {
+            var live0 = Ilink.Live(_box);
+            var vault0 = Ilink.VaultState(_box);
+            if (!live0.Valid && vault0.Valid && !Ilink.IsRevoked(_box, vault0.KeyHash))
+            {
+                L($"refresh: live invalid, vault has {vault0.KeyHash} at {vault0.WriteLocal} -> trying it first");
+                var res0 = Ilink.Restore(_box, "refresh-live-invalid");
+                L("refresh: vault restore result: " + res0);
+                try { NeedScan.ClearIfRenewed(_box); } catch { }
+            }
+        }
+
         if (NeedScan.Pending(_box))
         {
             L("refresh skipped (need QR scan — no cold start until manual login)");

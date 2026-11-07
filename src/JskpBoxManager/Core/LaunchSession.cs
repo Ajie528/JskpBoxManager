@@ -62,15 +62,59 @@ public sealed class LaunchSession
         return 0;
     }
 
+    /// <summary>
+    /// live 凭证无效、金库还有有效凭证时，把金库推回 live 并清掉过时的 need-scan。
+    ///
+    /// 为什么值得做：实测 qb10 / qb12 的 need-scan 挂了 4 天，金库里 10-16 / 10-18 的旧 key
+    /// 其实一直有效（协议续期一次就换成新 key）。旧逻辑直接「等扫码」，白白浪费了能用的凭证。
+    /// 服务端对真作废的 key 会回 -13，不会因为多试一次造成损害。
+    ///
+    /// 只在沙箱已停时动手——运行中推金库会覆盖运行时自己的状态。
+    /// </summary>
+    void TryRestoreVaultWhenLiveInvalid()
+    {
+        try
+        {
+            var live = Ilink.Live(_box);
+            if (live.Valid) return;                       // live 本来就好，不用管
+            var vault = Ilink.VaultState(_box);
+            if (!vault.Valid) return;                     // 金库也没有，只能扫
+            if (Ilink.IsRevoked(_box, vault.KeyHash))     // 金库这把已登记作废
+            {
+                L("vault credential is registered revoked -> skip auto restore");
+                return;
+            }
+            if (new BoxView(_box).HasQqOrGame)
+            {
+                L("live credential invalid but box is running -> skip vault restore (wait for QR)");
+                return;
+            }
+
+            L($"live credential invalid, vault has {vault.KeyHash} at {vault.WriteLocal} -> trying it first");
+            var res = Ilink.Restore(_box, "launch-live-invalid");
+            L("vault restore result: " + res);
+            if (res is not ("restored" or "same")) return;
+
+            // 推回去之后再清一次标记：新的写入时间已经晚于 need-scan 文件
+            try { NeedScan.ClearIfRenewed(_box); } catch { }
+        }
+        catch (Exception ex) { L("vault restore attempt failed: " + ex.Message); }
+    }
+
     void RunLocked()
     {
         if (!EnvDetect.SbieOk) throw new InvalidOperationException("找不到 Sandboxie-Plus");
         if (!EnvDetect.QqOk) throw new InvalidOperationException("找不到 QQ 浏览器");
-        Phase(BoxPhase.Starting, "正在启动…");
-        // 先看标记是不是过时了：标记之后沙箱里已经出现更新的有效凭证（重新扫码、直接开沙箱、导入凭证）
+        Phase(BoxPhase.Starting, "正在启动…");        // 先看标记是不是过时了：标记之后沙箱里已经出现更新的有效凭证（重新扫码、直接开沙箱、导入凭证）
         // 就不该再拿旧标记降级成「必须扫码」。以前只在进游戏后才清，结果钥匙已经换了还按需扫码处理
         // （qb15 11-04 12:07：钥匙 12:04:44 就换新了，标记停在 11:28:55，启动照样干等扫码框）。
         try { NeedScan.ClearIfRenewed(_box); } catch { }
+
+        // live 里的凭证无效、但金库里还有一把能用的：先推回 live 再判断。
+        // 实测 qb10 / qb12：need-scan 挂了 4 天，金库里 10-16 / 10-18 的旧 key 其实一直有效，
+        // 协议续期一次就换成了新 key。以前只在「探测」里做，手动启动会直接等扫码。
+        TryRestoreVaultWhenLiveInvalid();
+
         if (NeedScan.Pending(_box)) L("need-scan pending -> ignore saved login, wait for WeChat QR");
 
         var existing = new BoxView(_box);

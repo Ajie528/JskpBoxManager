@@ -39,6 +39,12 @@ public static class ProtocolRenew
     public sealed record Result(bool Ok, string Message, string NewKeyHash = "", long Code = long.MaxValue)
     {
         public bool Rejected => Code is -2 or -13 or -14;
+
+        // 纯探测（ProbeFile）成功后带回的新凭证：调用方停箱后再 CommitToFile 落盘
+        public byte[] PendingKey { get; init; }
+        public byte[] PendingEnc { get; init; }
+        public byte[] PendingServerId { get; init; }
+        public string SourceFile { get; init; } = "";
     }
 
     // ---------------- 凭证读写 ----------------
@@ -143,6 +149,86 @@ public static class ProtocolRenew
             }
             catch (Exception ex) { Log.Box(Path.GetFileName(c.VaultRoot), "protocol renew: vault sync failed " + ex.Message); }
         }
+    }
+
+    // ---------------- 纯探测（不写任何文件） ----------------
+
+    /// <summary>
+    /// 用指定的凭证文件内容试一次 AutoAuth，**完全不动沙箱文件**。
+    ///
+    /// 这是「弹扫码框时先判断历史 key 还能不能用」的最优方式：
+    ///   · 不发文件、不碰 live、不停箱、不开浏览器
+    ///   · 服务端认可 → 返回 0 并带回新 key（此时才需要停箱写入）
+    ///   · 服务端拒绝 → 返回 -13，这把直接淘汰
+    ///
+    /// 注意：**服务端一旦接受就会作废旧 key**。所以这里不能当作「只读校验」，
+    /// 成功时必须把新 key 落盘，否则旧 key 已被作废、新 key 又丢了。
+    /// 调用方拿到 Ok=true 后必须立即停箱并写入。
+    /// </summary>
+    public static Result ProbeFile(string path, string boxForLog = "", string host = DefaultHost, int port = DefaultPort)
+    {
+        Credential cred;
+        try { cred = ReadCredentialFile(path); }
+        catch (Exception ex) { return new Result(false, "读不到这份凭证：" + ex.Message, "", long.MaxValue); }
+
+        if (cred.AutoKey.Length == 0) return new Result(false, "没有 kTdiKeyAutoauthKey", "", long.MaxValue);
+        if (cred.EncKey.Length != 24) return new Result(false, $"encKey 长度 {cred.EncKey.Length}", "", long.MaxValue);
+        if (cred.IlinkAppId.Length == 0) return new Result(false, "找不到 kTdiKeyIlinkAppId", "", long.MaxValue);
+        if (!ulong.TryParse(cred.Uin, out var uin)) return new Result(false, "Uin 不是数字：" + cred.Uin, "", long.MaxValue);
+
+        var oldHash = Ilink.ShortSha256(Encoding.UTF8.GetBytes(
+            Convert.ToBase64String(cred.AutoKey) + "|" + Convert.ToBase64String(cred.EncKey)));
+        var (ok, code, newKey, newEnc, newSrv, why) = Exchange(cred, uin, host, port);
+        if (!ok) return new Result(false, why, "", code);
+        var hash = Ilink.ShortSha256(Encoding.UTF8.GetBytes(
+            Convert.ToBase64String(newKey) + "|" + Convert.ToBase64String(newEnc)));
+        // 新 key 先存在返回对象里，由调用方停箱后调用 CommitToFile 落盘
+        return new Result(true, $"这把可用（{oldHash} -> {hash}）", hash, 0)
+        {
+            PendingKey = newKey,
+            PendingEnc = newEnc,
+            PendingServerId = newSrv,
+            SourceFile = path,
+        };
+    }
+
+    /// <summary>把探测成功后拿到的新 key 写进指定文件（以及同目录金库副本）。调用方应先停箱。</summary>
+    public static bool CommitToFile(Result r, out string error)
+    {
+        error = "";
+        if (r?.PendingKey == null || r.PendingKey.Length == 0) { error = "没有待写入的新凭证"; return false; }
+        try
+        {
+            var cred = ReadCredentialFile(r.SourceFile);
+            WriteCredential(cred, r.PendingKey, r.PendingEnc, r.PendingServerId);
+            return true;
+        }
+        catch (Exception ex) { error = ex.Message; return false; }
+    }
+
+    /// <summary>从任意一个 tdi_account.txt 读数（不依赖沙箱结构）。</summary>
+    public static Credential ReadCredentialFile(string path)
+    {
+        if (!File.Exists(path)) throw new FileNotFoundException("找不到 " + path);
+        var lines = File.ReadAllLines(path, Encoding.UTF8).ToList();
+        var kv = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var line in lines)
+        {
+            int i = line.IndexOf('=');
+            if (i <= 0) continue;
+            kv[line[..i].Trim()] = line[(i + 1)..].Trim();
+        }
+        var c = new Credential { Path = path, Lines = lines, VaultRoot = "" };
+        c.Uin = kv.GetValueOrDefault("kTdiKeyUin", "");
+        c.AutoKey = B64(kv.GetValueOrDefault("kTdiKeyAutoauthKey", ""));
+        c.EncKey = B64(kv.GetValueOrDefault("kTdiKeyAutoauthEncKey", ""));
+        c.DeviceId = B64(kv.GetValueOrDefault("kTdiKeyDeviceId", ""));
+        c.ServerId = B64(kv.GetValueOrDefault("kTdiKeyServerId", ""));
+        c.IlinkAppId = kv.GetValueOrDefault("kTdiKeyIlinkAppId", "");
+        if (c.IlinkAppId.Length == 0)
+            foreach (var part in path.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+                if (part.StartsWith("ilinkapp_", StringComparison.Ordinal)) c.IlinkAppId = part;
+        return c;
     }
 
     // ---------------- attempted 标记 ----------------
@@ -402,61 +488,21 @@ public static class ProtocolRenew
         // ---- 2. 发送 ----
         try
         {
-            var plain = MmtlsProtocol.BuildAutoAuthPlain(cred.DeviceId, cred.AutoKey);
-            var (hybrid, temp) = MmtlsProtocol.HybridEncrypt(plain, cred.EncKey);
-            using var tempGuard = temp;
-            var appId = Encoding.ASCII.GetBytes(cred.IlinkAppId);
-            var body = MmtlsProtocol.Concat(
-                MmtlsProtocol.SessionWpkgHead(uin, cred.ServerId, appId), hybrid);
-
             if (dryRun)
-                return new Result(true, $"演练完成：明文 {plain.Length} 字节，hybrid {hybrid.Length} 字节，"
-                    + $"请求体 {body.Length} 字节（未发送）");
+            {
+                var plainDry = MmtlsProtocol.BuildAutoAuthPlain(cred.DeviceId, cred.AutoKey);
+                var (hybDry, tmpDry) = MmtlsProtocol.HybridEncrypt(plainDry, cred.EncKey);
+                tmpDry.Dispose();
+                var bodyDry = MmtlsProtocol.Concat(
+                    MmtlsProtocol.SessionWpkgHead(uin, cred.ServerId, Encoding.ASCII.GetBytes(cred.IlinkAppId)), hybDry);
+                return new Result(true, $"演练完成：明文 {plainDry.Length} 字节，hybrid {hybDry.Length} 字节，"
+                    + $"请求体 {bodyDry.Length} 字节（未发送）");
+            }
 
-            using var conn = new MmtlsClient(host, port);
-            conn.Handshake();
-            conn.SendApp(MmtlsProtocol.CmdAutoAuth, body);
-            var (cmd, _, resp) = conn.RecvApp();
-            if (cmd != MmtlsProtocol.CmdAutoAuth)
-                return Fail(box, $"响应 cmdid 是 {cmd}，不是 {MmtlsProtocol.CmdAutoAuth}", long.MaxValue);
+            var (ok, code, newKey, newEnc, newSrv, why) = Exchange(cred, uin, host, port);
+            if (!ok) return Fail(box, why, code);
 
-            // 响应体 = wpkg 头 + HybridEcdhResponse。头解析不出来时用特征串兜底。
-            var hybridResp = StripWpkgHead(resp);
-            byte[] decoded;
-            try { decoded = MmtlsProtocol.HybridDecrypt(hybridResp, temp); }
-            catch (Exception ex) { return Fail(box, "响应解密失败：" + ex.Message, long.MaxValue); }
-
-            // ---- 3. 解析业务结果 ----
-            var f = MmtlsProtocol.PbParse(decoded);
-            if (!f.TryGetValue(1, out var baseF) || baseF.Bytes.Length == 0)
-                return Fail(box, "响应缺 base 结果块", long.MaxValue);
-            var bf = MmtlsProtocol.PbParse(baseF.Bytes);
-            long code = bf.TryGetValue(1, out var codeF) ? MmtlsProtocol.AsSigned(codeF.Num) : long.MaxValue;
-            if (code != 0)
-                return Fail(box, code switch
-                {
-                    -2 => "服务端拒绝（-2）：这把凭证已不可用或设备信息不匹配",
-                    -13 => "凭证已被服务端作废（-13）：多半是同一微信号在别处扫码顶掉，需要重新扫码",
-                    -14 => "服务端拒绝（-14）：会话/票据已失效",
-                    _ => $"业务层返回 {code}",
-                }, code);
-
-            if (!f.TryGetValue(2, out var unified) || unified.Bytes.Length == 0)
-                return Fail(box, "响应缺 unified 块，拿不到新凭证", 0);
-
-            var uf = MmtlsProtocol.PbParse(unified.Bytes);
-            if (!uf.TryGetValue(2, out var sectF))
-                return Fail(box, "响应缺 session 段", 0);
-            var sect = MmtlsProtocol.PbParse(sectF.Bytes);
-            if (Environment.GetEnvironmentVariable("JSKP_DUMP_AUTOAUTH") == "1")
-                DumpUnknownFields(box, uf, sect);
-            byte[] newKey = sect.TryGetValue(3, out var k) ? k.Bytes : Array.Empty<byte>();
-            byte[] newEnc = sect.TryGetValue(4, out var e) ? e.Bytes : Array.Empty<byte>();
-            byte[] newSrv = sect.TryGetValue(9, out var s) ? s.Bytes : Array.Empty<byte>();
-            if (newKey.Length == 0 || newEnc.Length != 24)
-                return Fail(box, $"服务端返回的新凭证不完整（key={newKey.Length} enc={newEnc.Length}）", 0);
-
-            // ---- 4. 写回 ----
+            // ---- 3. 写回 ----
             try { WriteCredential(cred, newKey, newEnc, newSrv); }
             catch (Exception ex) { return Fail(box, "写回凭证失败：" + ex.Message, 0); }
             ClearAttempt(box);
@@ -474,6 +520,62 @@ public static class ProtocolRenew
         {
             return Fail(box, ex.Message, long.MaxValue);
         }
+    }
+
+    /// <summary>
+    /// 真正发一次 AutoAuth 并解析结果。不写任何文件——把「网络交换」和「落盘」分开，
+    /// 才能做到「弹扫码框时先不停箱判断历史 key 还能不能用」。
+    /// </summary>
+    static (bool Ok, long Code, byte[] NewKey, byte[] NewEnc, byte[] NewSrv, string Why)
+        Exchange(Credential cred, ulong uin, string host, int port)
+    {
+        var plain = MmtlsProtocol.BuildAutoAuthPlain(cred.DeviceId, cred.AutoKey);
+        var (hybrid, temp) = MmtlsProtocol.HybridEncrypt(plain, cred.EncKey);
+        using var tempGuard = temp;
+        var appId = Encoding.ASCII.GetBytes(cred.IlinkAppId);
+        var body = MmtlsProtocol.Concat(
+            MmtlsProtocol.SessionWpkgHead(uin, cred.ServerId, appId), hybrid);
+
+        using var conn = new MmtlsClient(host, port);
+        conn.Handshake();
+        conn.SendApp(MmtlsProtocol.CmdAutoAuth, body);
+        var (cmd, _, resp) = conn.RecvApp();
+        if (cmd != MmtlsProtocol.CmdAutoAuth)
+            return (false, long.MaxValue, null, null, null, $"响应 cmdid 是 {cmd}，不是 {MmtlsProtocol.CmdAutoAuth}");
+
+        var hybridResp = StripWpkgHead(resp);
+        byte[] decoded;
+        try { decoded = MmtlsProtocol.HybridDecrypt(hybridResp, temp); }
+        catch (Exception ex) { return (false, long.MaxValue, null, null, null, "响应解密失败：" + ex.Message); }
+
+        var f = MmtlsProtocol.PbParse(decoded);
+        if (!f.TryGetValue(1, out var baseF) || baseF.Bytes.Length == 0)
+            return (false, long.MaxValue, null, null, null, "响应缺 base 结果块");
+        var bf = MmtlsProtocol.PbParse(baseF.Bytes);
+        long code = bf.TryGetValue(1, out var codeF) ? MmtlsProtocol.AsSigned(codeF.Num) : long.MaxValue;
+        if (code != 0)
+            return (false, code, null, null, null, code switch
+            {
+                -2 => "服务端拒绝（-2）：这把凭证已不可用或设备信息不匹配",
+                -13 => "凭证已被服务端作废（-13）：多半是同一微信号在别处扫码顶掉，需要重新扫码",
+                -14 => "服务端拒绝（-14）：会话/票据已失效",
+                _ => $"业务层返回 {code}",
+            });
+
+        if (!f.TryGetValue(2, out var unified) || unified.Bytes.Length == 0)
+            return (false, 0, null, null, null, "响应缺 unified 块，拿不到新凭证");
+
+        var uf = MmtlsProtocol.PbParse(unified.Bytes);
+        if (!uf.TryGetValue(2, out var sectF))
+            return (false, 0, null, null, null, "响应缺 session 段");
+        var sect = MmtlsProtocol.PbParse(sectF.Bytes);
+        byte[] newKey = sect.TryGetValue(3, out var k) ? k.Bytes : Array.Empty<byte>();
+        byte[] newEnc = sect.TryGetValue(4, out var e) ? e.Bytes : Array.Empty<byte>();
+        byte[] newSrv = sect.TryGetValue(9, out var s) ? s.Bytes : Array.Empty<byte>();
+        if (newKey.Length == 0 || newEnc.Length != 24)
+            return (false, 0, null, null, null, $"服务端返回的新凭证不完整（key={newKey.Length} enc={newEnc.Length}）");
+
+        return (true, 0, newKey, newEnc, newSrv, "");
     }
 
     /// <summary>

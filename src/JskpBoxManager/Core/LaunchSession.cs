@@ -395,10 +395,11 @@ public sealed class LaunchSession
             L($"[{i}/{tryList.Count}] try historical key {c.KeyShort} ({c.SavedAt:MM-dd HH:mm}{(c.IsVault ? " · vault" : "")})");
             Phase(BoxPhase.Starting, $"正在用历史凭证恢复（{i}/{tryList.Count}）：试 {c.KeyShort}");
 
-            // 先协议续期：成功即恢复完成，且已换成新 key
+            // 先协议探测：**不停箱**直接拿快照里的 key 问服务器（纯网络，零成本）。
+            // 只有服务端认可（返回 0）时才停箱落盘——这就是「先不停箱判断，成功了才停」。
             try
             {
-                var pr = rec.TryOneByProtocol(c);
+                var pr = rec.ProbeHistoryKey(c);
                 if (pr.Ok)
                 {
                     L($"history recover OK (protocol) with key {c.KeyHash} -> {pr.NewKeyHash}");

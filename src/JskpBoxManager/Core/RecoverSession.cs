@@ -37,9 +37,9 @@ public sealed class RecoverSession
                 Out($"[{i}/{tryList.Count}] 试 key {c.KeyShort}（{c.SavedAt:MM-dd HH:mm}{(c.IsVault ? " · 当前金库" : "")}）…");
                 BoxStatusFile.Write(_box, BoxPhase.Starting, $"恢复中：试 {c.KeyShort}（{i}/{tryList.Count}）");
 
-                // 先用协议续期（0.5 秒，不开浏览器）：服务端认可就一步到位换新 key。
+                // 先用协议探测（0.1 秒，不开浏览器、不停箱）：服务端认可就一步到位换新 key。
                 // 这才是当初救回 qb10 / qb12 的方式；冷启动只作为「协议说不通」时的兜底。
-                var pr = TryOneByProtocol(c);
+                var pr = ProbeHistoryKey(c);
                 if (pr.Ok)
                 {
                     Out($"✓ 成功：key {c.KeyShort} 协议续期通过，已换新 key {pr.NewKeyHash}。");
@@ -80,6 +80,58 @@ public sealed class RecoverSession
             BoxRuntime.UnregisterLauncher(_box);
             L("recover end");
         }
+    }
+
+    /// <summary>
+    /// 单把凭证的快速验证，**不需要停箱**。
+    ///
+    /// 思路（用户提出的）：协议续期是纯网络操作，不碰任何沙箱文件。
+    /// 所以可以拿着历史快照里的 tdi_account.txt 直接发 AutoAuth：
+    ///   · 返回 -13/-14 → 这把废了，换下一把（全程零成本，不用停箱、不用起浏览器）
+    ///   · 返回 0      → 服务端已换新 key，**这时才停箱**，把新 key 写进 live 并推金库
+    ///
+    /// 关键约束：服务端一旦接受就会作废旧 key，所以成功后必须立即落盘，
+    /// 否则旧 key 已作废、新 key 又丢了。这个由 CommitToFile 保证。
+    /// </summary>
+    internal ProtocolRenew.Result ProbeHistoryKey(CredCandidate c)
+    {
+        // 找到这份快照里的 tdi_account.txt（不依赖沙箱结构）
+        var acct = Ilink.AccountFile(c.Dir);
+        if (acct == null || !acct.Exists)
+            return new ProtocolRenew.Result(false, "这份备份里没有 tdi_account.txt", "", long.MaxValue);
+
+        // 纯网络探测：不停箱、不写文件、不开浏览器
+        var r = ProtocolRenew.ProbeFile(acct.FullName, _box);
+        if (!r.Ok) return r;
+
+        // 服务端已认可并换新：现在才停箱落盘
+        L($"recover: key {c.KeyShort} accepted by server -> stopping box to write new credential");
+        BoxRuntime.StopForce(_box, false);
+        BoxRuntime.RegisterLauncher(_box, "recover-commit");
+        Thread.Sleep(1500);
+
+        // 把候选写进 live + 金库，再把探测拿到的新 key 覆盖上去
+        if (!Ilink.RestoreCredentialSet(_box, c.Dir))
+        {
+            // 写不进 live 也没关系：至少把新 key 写进快照目录
+            L($"recover: cannot restore {c.KeyShort} to live, writing new key to snapshot only");
+        }
+        SyncCandidateToVault(c);
+
+        if (!ProtocolRenew.CommitToFile(r, out var err))
+        {
+            L("recover: commit new key failed: " + err);
+            return new ProtocolRenew.Result(false, "拿到新 key 但写入失败：" + err, "", long.MaxValue);
+        }
+
+        CredentialProbe.RecordRotationPublic(_box, r.NewKeyHash, "recover-probe");
+        try { VaultSync.PushVaultToLive(_box); } catch { }
+        try { Ilink.Save(_box, "recover-probe"); } catch { }
+        NeedScan.Clear(_box);
+        NeedScan.ClearQrStreak(_box);
+        L($"recover: protocol OK with key {c.KeyShort} -> new {r.NewKeyHash}");
+        BoxStatusFile.Write(_box, BoxPhase.Stopped, "已用历史凭证恢复（协议续期）");
+        return r;
     }
 
     /// <summary>

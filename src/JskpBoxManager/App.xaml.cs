@@ -390,6 +390,24 @@ public partial class App : Application
         var boxes = Sandboxie.QueryBoxes();
         if (args.Contains("--probe"))
         {
+            if (args.Contains("--schedule"))
+            {
+                CredentialProbe.ReseedSchedule(boxes, cfg);
+                var s = CredentialProbe.Schedule();
+                if (s.Length == 0) Console("还没有探测计划（先启用主动探测并保存一次）");
+                else
+                {
+                    Console($"探测计划（间隔 {cfg.ProbeMinutes} 分钟，每号错开 + ±35% 随机抖动）：");
+                    DateTime? prev = null;
+                    foreach (var (b, due) in s)
+                    {
+                        var gap = prev == null ? "" : $"  (+{Math.Round((due - prev.Value).TotalMinutes, 1)} 分)";
+                        Console($"  {b,-6} 下次 {due:MM-dd HH:mm:ss}{gap}");
+                        prev = due;
+                    }
+                }
+                return 0;
+            }
             int ok = 0, bad = 0, skip = 0;
             foreach (var b in boxes)
             {

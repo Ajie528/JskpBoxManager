@@ -10,10 +10,16 @@ namespace JskpBoxManager.Core;
 ///   · 返回 0   → 凭证有效（顺带把 key 换成新的）
 ///   · 返回 -13 / -14 / -2 → 凭证已作废或过期，立刻标「需要扫码」并推送提醒
 ///
-/// **重要限制：AutoAuth 是轮换语义，探一次就换一把 key，协议层做不到「只验证不换」。**
+/// **重要限制 1：AutoAuth 是轮换语义，探一次就换一把 key，协议层做不到「只验证不换」。**
 /// 所以探测频率不能太高：qb4 在 2026-11-07 凌晨被每 2 分钟的探测连滚 4 次 key，
 /// 当天下午整条授权链被服务端作废（连 10-31 的历史 key 都失效了）。
-/// 现在有双重保护：最短 30 分钟一次 + 每号每天最多换 MaxRotationsPerDay 次。
+/// 保护：最短 30 分钟一次 + 每号每天最多换 MaxRotationsPerDay 次。
+///
+/// **重要限制 2：不能所有号在同一时刻同时发。** 同一个公网 IP 在几秒内连续
+/// 对十几个不同 uin 发 AutoAuth，本身就是异常特征。所以：
+///   · 每个号有自己的到期时间，互相错开；
+///   · 每次到期时间带随机抖动（±35%），不会周期性踩点；
+///   · 同一轮里也逐个探、中间隔随机 20~70 秒，绝不并发。
 ///
 /// 前提：**沙箱必须已停**。运行中的 WeChatAppEx 内存里握着旧 key，服务端作废旧 key 后
 /// 它会把旧值写回文件并断掉游戏会话（见 mmtls 研究 6F）。所以探测遇到运行中的沙箱直接跳过。
@@ -26,9 +32,19 @@ public static class CredentialProbe
     /// <summary>单个号每天最多换几次 key。超过就跳过，等明天。</summary>
     public const int MaxRotationsPerDay = 8;
 
+    /// <summary>到期时间的随机抖动比例：±35%，避免每天踩同一个时间点。</summary>
+    const double JitterFraction = 0.35;
+
+    /// <summary>同一轮里两个号之间的随机间隔（秒）。</summary>
+    const int MinGapSeconds = 20, MaxGapSeconds = 70;
+
+    /// <summary>调度循环的检查粒度（秒）。</summary>
+    const int TickSeconds = 20;
+
     static readonly object Gate = new();
     static Thread _thread;
     static volatile bool _stop;
+    static readonly Random Rng = new();
 
     public static bool Running => _thread is { IsAlive: true };
 
@@ -42,6 +58,55 @@ public static class CredentialProbe
         public bool Rejected => Code is -2 or -13 or -14;
     }
 
+    // ---------------- 每号独立到期时间（错开 + 抖动） ----------------
+
+    static string SchedulePath => Path.Combine(AppPaths.Logs, "probe-schedule.json");
+
+    static Dictionary<string, DateTime> LoadSchedule()
+    {
+        var d = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+        var o = JsonFile.ReadObject(SchedulePath);
+        if (o == null) return d;
+        foreach (var kv in o)
+        {
+            var s = JsonFile.Str(o, kv.Key);
+            if (DateTime.TryParse(s, out var t)) d[kv.Key] = t;
+        }
+        return d;
+    }
+
+    static void SaveSchedule(Dictionary<string, DateTime> d)
+    {
+        var o = new JsonObject();
+        foreach (var kv in d.OrderBy(x => Sandboxie.BoxNumber(x.Key), Comparer<int>.Default))
+            o[kv.Key] = kv.Value.ToString("yyyy-MM-dd HH:mm:ss");
+        try { JsonFile.WriteObject(SchedulePath, o); } catch { }
+    }
+
+    /// <summary>
+    /// 算下一次到期时间 = 现在 + 间隔 + 随机抖动。
+    /// 抖动是双向的（±35%），长期看不会漂移，也不会每天固定同一时刻。
+    /// </summary>
+    static DateTime NextDue(int minutes)
+    {
+        double baseSec = minutes * 60.0;
+        double jitter = baseSec * JitterFraction * (Rng.NextDouble() * 2 - 1);   // ±35%
+        var span = TimeSpan.FromSeconds(Math.Max(60, baseSec + jitter));
+        return DateTime.Now + span;
+    }
+
+    /// <summary>
+    /// 首次见到某个号时，把它的到期时间按箱号错开。
+    /// 这样即使所有号同时被启用，也不会挤在同一分钟。
+    /// </summary>
+    static DateTime InitialDue(string box, int minutes)
+    {
+        int n = Math.Max(1, Sandboxie.BoxNumber(box));
+        double spreadSec = Math.Min(minutes * 60.0, n * 97.0 + Rng.Next(0, 180));   // 每号错开约 1.6 分钟
+        return DateTime.Now + TimeSpan.FromSeconds(spreadSec);
+    }
+
+
     /// <summary>后台循环：按配置的间隔反复探测。重复调用是安全的（已在跑就忽略）。</summary>
     public static void Start()
     {
@@ -52,6 +117,8 @@ public static class CredentialProbe
             _thread = new Thread(Loop) { IsBackground = true, Name = "credential-probe" };
             _thread.Start();
         }
+        // 给还没登记过的号排上错开的初次探测时间（已登记的不动，保留原有节奏）
+        try { ReseedSchedule(); } catch { }
     }
 
     public static void Stop()
@@ -68,6 +135,8 @@ public static class CredentialProbe
         // 启动后先等一会儿，避开程序刚起来时正在做的冷启动/保活
         for (int i = 0; i < 20 && !_stop; i++) Thread.Sleep(1000);
 
+        var schedule = LoadSchedule();
+
         while (!_stop)
         {
             var cfg = NotifyConfig.Load();
@@ -76,39 +145,81 @@ public static class CredentialProbe
                 Thread.Sleep(30_000);
                 continue;
             }
-            // 探测会真实换 key（AutoAuth 是轮换语义，协议层做不到「只验证不换」）。
-            // 每 2 分钟探一次 = 每 2 分钟滚一次 key，服务端会判定异常并作废整条链
-            // （qb4 11-07 凌晨 4 分钟换 4 次，当天下午整条链报废，连 10-31 的历史 key 都失效）。
-            // 所以给一个安全下限：最快 30 分钟一次；每号每天最多换 8 次 key。
+
             int minutes = Math.Clamp(cfg.ProbeMinutes, MinProbeMinutes, 720);
-            try
+            var now = DateTime.Now;
+            var due = schedule.Where(kv => kv.Value <= now).Select(kv => kv.Key).ToList();
+            if (due.Count == 0)
             {
-                var boxes = Sandboxie.QueryBoxes();
-                int ok = 0, bad = 0, skipped = 0;
-                foreach (var box in boxes)
+                // 还没到任何号的到期时间：睡一小段再看
+                for (int i = 0; i < TickSeconds && !_stop; i++) Thread.Sleep(1000);
+                continue;
+            }
+
+            // 同一轮里有多个号到期：逐个探、中间隔随机 20~70 秒，绝不并发。
+            // 同一个公网 IP 几秒内连发十几个 AutoAuth 是明显的异常特征。
+            int ok = 0, bad = 0, skipped = 0;
+            for (int idx = 0; idx < due.Count && !_stop; idx++)
+            {
+                var box = due[idx];
+                var r = Probe(box, cfg);
+                if (r.Skipped) skipped++;
+                else if (r.Ok) ok++;
+                else if (r.Rejected) bad++;
+
+                // 每个号探完就排下一次（无论成功失败），带抖动避免踩点
+                schedule[box] = NextDue(minutes);
+
+                if (idx < due.Count - 1 && !_stop)
                 {
-                    if (_stop) break;
-                    var r = Probe(box, cfg);
-                    if (r.Skipped) skipped++;
-                    else if (r.Ok) ok++;
-                    else if (r.Rejected) bad++;
-                }
-                LastSummary = bad > 0
-                    ? $"{DateTime.Now:HH:mm} 探测：{ok} 正常，{bad} 已失效，{skipped} 跳过"
-                    : $"{DateTime.Now:HH:mm} 探测：{ok} 正常，{skipped} 跳过";
-                if (bad > 0)
-                {
-                    // 立刻把失效的号推给用户，不等 20 小时阈值
-                    try { Notifier.Check(Sandboxie.QueryBoxes(), cfg); } catch { }
+                    int gap = Rng.Next(MinGapSeconds, MaxGapSeconds + 1);
+                    Log.App($"probe: waiting {gap}s before next account (staggered)");
+                    for (int s = 0; s < gap && !_stop; s++) Thread.Sleep(1000);
                 }
             }
-            catch (Exception ex) { Log.App("probe loop: " + ex.Message); }
 
-            // 分片睡眠，方便 Stop 快速生效
-            int total = minutes * 60;
-            for (int i = 0; i < total && !_stop; i += 5) Thread.Sleep(5000);
+            SaveSchedule(schedule);
+            LastSummary = bad > 0
+                ? $"{DateTime.Now:HH:mm} 探测：{ok} 正常，{bad} 已失效，{skipped} 跳过"
+                : $"{DateTime.Now:HH:mm} 探测：{ok} 正常，{skipped} 跳过";
+            if (bad > 0)
+            {
+                // 立刻把失效的号推给用户，不等 20 小时阈值
+                try { Notifier.Check(Sandboxie.QueryBoxes(), cfg); } catch { }
+            }
+
+            for (int i = 0; i < TickSeconds && !_stop; i++) Thread.Sleep(1000);
         }
     }
+
+    /// <summary>
+    /// 把新出现的号登记进调度表（错开初次探测时间），并清掉已删除的号。
+    /// 界面/命令行启动时调用一次即可。</summary>
+    public static void ReseedSchedule(IEnumerable<string> boxes = null, NotifyConfig cfg = null)
+    {
+        cfg ??= NotifyConfig.Load();
+        int minutes = Math.Clamp(cfg.ProbeMinutes, MinProbeMinutes, 720);
+        var schedule = LoadSchedule();
+        var list = (boxes ?? Sandboxie.QueryBoxes()).ToList();
+        // 空列表多半是「界面还没加载完」而不是「沙箱都没了」：直接返回，别把计划清空
+        if (list.Count == 0 && boxes != null) return;
+        var set = new HashSet<string>(list, StringComparer.OrdinalIgnoreCase);
+        foreach (var kv in schedule.Keys.Where(k => !set.Contains(k)).ToList()) schedule.Remove(kv);
+        foreach (var b in list)
+            if (!schedule.ContainsKey(b)) schedule[b] = InitialDue(b, minutes);
+        SaveSchedule(schedule);
+    }
+
+    /// <summary>某个号下一次探测时间（界面展示用）。</summary>
+    public static DateTime? NextProbeAt(string box)
+    {
+        var s = LoadSchedule();
+        return s.TryGetValue(box, out var t) ? t : null;
+    }
+
+    /// <summary>所有号的探测计划（界面展示用）。</summary>
+    public static (string Box, DateTime Due)[] Schedule()
+        => LoadSchedule().OrderBy(kv => kv.Value).Select(kv => (kv.Key, kv.Value)).ToArray();
 
     /// <summary>
     /// 探测一个沙箱。会真实发 AutoAuth，成功即等于续期一次。

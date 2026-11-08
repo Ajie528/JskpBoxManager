@@ -103,6 +103,72 @@ public sealed class LaunchSession
         catch (Exception ex) { L("vault restore attempt failed: " + ex.Message); }
     }
 
+    /// <summary>
+    /// 启动前预检：用协议确认 live 这把 key 服务端还认不认（纯网络 0.1 秒，不动文件）。
+    ///
+    /// 目的：避免「启动 → 等 34 秒 → 凭证被清空 → 再等 106 秒」这种白跑。
+    ///   · 认可   → 服务端会顺带回一把新 key，直接写入（停箱状态），然后正常启动
+    ///   · -13    → 这把废了，用历史凭证逐把协议探测，找到一个能用的就换上去
+    ///   · 网络错 → 不折腾，照常启动（可能只是临时连不上）
+    ///
+    /// 只在沙箱已停、且 live 凭证有效时执行。开关由 notify.json 的 probeEnabled 控制，
+    /// 关掉就不预检（有些人不希望启动时多一次网络请求）。
+    /// </summary>
+    void PreflightCheckLiveKey()
+    {
+        try
+        {
+            var cfg = NotifyConfig.Load();
+            if (!cfg.ProbeEnabled) return;
+            if (Sandboxie.Pids(_box).Count > 0) return;
+
+            var live = Ilink.Live(_box);
+            if (!live.Valid)
+            {
+                L("preflight: live credential invalid -> skip (vault/history path will handle it)");
+                return;
+            }
+            if (ProtocolRenew.AttemptPending(_box))
+            {
+                L("preflight: previous renew result unknown -> skip");
+                return;
+            }
+            // 预检会真实换一把 key，别把每天的额度用在频繁启动上
+            int today = CredentialProbe.RotationsToday(_box);
+            if (today >= CredentialProbe.MaxRotationsPerDay)
+            {
+                L($"preflight: already rotated {today} times today -> skip preflight, launch as-is");
+                return;
+            }
+
+            L($"preflight: asking server whether live key {live.KeyHash} still works");
+            var r = ProtocolRenew.Renew(_box);
+            if (r.Ok)
+            {
+                CredentialProbe.RecordRotationPublic(_box, r.NewKeyHash, "preflight");
+                try { VaultSync.PushVaultToLive(_box); } catch { }
+                L($"preflight: key OK and refreshed -> {r.NewKeyHash} (will launch with this)");
+                return;
+            }
+            if (r.Rejected)
+            {
+                L($"preflight: key {live.KeyHash} rejected ({r.Code}) -> search history via protocol probe");
+                Phase(BoxPhase.Starting, "凭证已失效，正在用协议找可用的历史凭证…");
+                if (TryHistoryRecover())
+                {
+                    L("preflight: found a working historical key -> launching with it");
+                    NeedScan.Clear(_box);
+                    NeedScan.ClearQrStreak(_box);
+                    return;
+                }
+                L("preflight: no historical key works -> launching anyway (will land on QR)");
+                return;
+            }
+            L($"preflight: probe failed ({r.Message}) -> launch anyway");
+        }
+        catch (Exception ex) { L("preflight error: " + ex.Message); }
+    }
+
     void RunLocked()
     {
         if (!EnvDetect.SbieOk) throw new InvalidOperationException("找不到 Sandboxie-Plus");
@@ -181,6 +247,11 @@ public sealed class LaunchSession
             VaultSync.PrepareBeforeLaunch(_box);
             // 启动前准备刚把沙箱里更新的凭证收进金库，标记可能就此过时（同上，不能等到进游戏才清）
             try { NeedScan.ClearIfRenewed(_box); } catch { }
+
+            // 启动前预检：用协议快速问一下服务器「live 这把 key 还能不能用」（0.1 秒）。
+            // 能用就直接启动，省掉「启动 34 秒 → 被清空 → 再等 106 秒」的白跑。
+            // 不能用就先在停箱状态下换好 key，再启动一次成功。
+            PreflightCheckLiveKey();
         }
 
     bool opened = false, waitingQrAtEnd = false, didVaultRestore = false, forceFullWarmup = false;
@@ -205,6 +276,35 @@ public sealed class LaunchSession
             var result = WaitForGame(baseline);
             waitingQrAtEnd = result.WaitingQr;
             if (result.Opened) { opened = true; break; }
+
+            // 凭证被运行时清空（服务端不认这把 key）：立刻用协议逐把确认历史凭证，
+            // 不要再走「reload / nudge / 傻等」那 100 多秒。
+            if (result.CredCleared && !didHistoryRecover && HistoryCanHelp())
+            {
+                didHistoryRecover = true;
+                L("credential cleared by runtime -> try historical credentials via protocol probe");
+                Phase(BoxPhase.Starting, "凭证失效了，正在用协议逐个确认历史凭证…");
+                if (TryHistoryRecover())
+                {
+                    L("history recover succeeded -> relaunching game with new credential");
+                    NeedScan.Clear(_box);
+                    NeedScan.ClearQrStreak(_box);
+                    if (attempt < maxAttempts)
+                    {
+                        BoxRuntime.EnsureWxRuntimeInBox(_box);
+                        BoxRuntime.ClearCrashRestore(_box);
+                        baseline = Ilink.Baseline(_box);
+                        L($"relaunch with recovered credential {Ilink.Live(_box)}");
+                        BoxRuntime.StartBrowser(_box, "recovered");
+                        var again = WaitForGame(baseline);
+                        waitingQrAtEnd = again.WaitingQr;
+                        if (again.Opened) { opened = true; break; }
+                        L("relaunch after recovery did not open game -> continue");
+                    }
+                    else { opened = true; break; }
+                }
+                L("history recover failed -> continue cold retry path");
+            }
 
             // 扫码框出现且还有历史凭证可试时：先别急着判「必须扫码」。
             // 历史快照里很可能还有一把能用的（qb10 / qb12 就是这样白等了好几天的），
@@ -486,7 +586,12 @@ public sealed class LaunchSession
                 if (!revoked && !credCleared && baseline != null && Ilink.RevokedSinceLaunch(_box, baseline))
                 {
                     credCleared = true;
-                    L("credential cleared by runtime after launch -> wait; only a QR page confirms the key was revoked");
+                    L("credential cleared by runtime after launch -> hand over to protocol probe early");
+                    // 凭证被清空说明这把 key 服务端不认了：继续等游戏窗毫无意义
+                    // （qb4 11-08 15:34 就是这样白等了 106 秒）。
+                    // 立刻返回，交给外层用协议续期确认「是这把废了」还是「换一把就行」。
+                    if (!_historyExhausted && HistoryCandidatesExist())
+                        return new(false, false, false, sawQr, true);
                 }
 
                 var v = new BoxView(_box);

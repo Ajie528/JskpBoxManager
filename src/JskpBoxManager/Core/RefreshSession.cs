@@ -1,4 +1,4 @@
-using System.Text.Json.Nodes;
+﻿using System.Text.Json.Nodes;
 
 namespace JskpBoxManager.Core;
 
@@ -271,6 +271,31 @@ public sealed class RefreshSession
         }
         else
         {
+            // 冷启动也没续上：再用协议逐把确认历史凭证（每把 0.1 秒），
+            // 能救回来就不算失败，也不用标 need-scan。
+            // 先停箱：冷启动失败后沙箱里可能还有进程，历史凭证要写 live 必须没有进程占着。
+            if (HistoryProbePossible())
+            {
+                L("refresh FAIL -> try historical credentials via protocol before giving up");
+                BoxRuntime.StopForce(_box, false);
+                Thread.Sleep(1500);
+                if (TryHistoryRecoverByProtocol())
+                {
+                    NeedScan.Clear(_box);
+                    NeedScan.ClearQrStreak(_box);
+                    Ilink.WriteEvent(_box, "refresh", new JsonObject
+                    {
+                        ["result"] = "ok", ["keySha"] = Ilink.Live(_box).KeyHash, ["frozenKey"] = frozenKey,
+                        ["mode"] = usedMode + "+history", ["credCleared"] = r.CredCleared, ["softRetry"] = softRetry,
+                    });
+                    BoxStatusFile.Write(_box, BoxPhase.Stopped, "保活成功（历史凭证协议续期）");
+                    L("refresh session OK via historical credential");
+                    try { Notifier.CheckAndNotify(Sandboxie.QueryBoxes()); } catch { }
+                    return;
+                }
+                L("refresh: all historical credentials rejected too");
+            }
+
             if (r.Suspected)
             {
                 NeedScan.Set(_box, "suspected-revoked");
@@ -301,7 +326,25 @@ public sealed class RefreshSession
     {
         if (!ProtocolRenew.AttemptPending(_box) && !Ilink.VaultState(_box).Valid)
         {
-            L("protocol renew: 金库没有有效凭证 -> 回退冷启动");
+            // 金库这把已经不可读（被清空/格式坏了）不代表整个号没救：
+            // 历史快照里很可能还有能用的（qb10 / qb12 就是这样救回来的）。
+            // 直接冷启动会白跑几分钟，这里先用协议逐把确认（0.1 秒/把）。
+            L("protocol renew: 金库没有有效凭证 -> 先用协议试历史凭证");
+            if (TryHistoryRecoverByProtocol())
+            {
+                L("refresh OK via historical credential (vault was invalid)");
+                Ilink.WriteEvent(_box, "refresh", new JsonObject
+                {
+                    ["result"] = "ok", ["keySha"] = Ilink.Live(_box).KeyHash, ["frozenKey"] = frozenKey,
+                    ["mode"] = "HistoryProbe", ["lean"] = false, ["credCleared"] = true,
+                    ["softRetry"] = false,
+                });
+                NeedScan.Clear(_box);
+                NeedScan.ClearQrStreak(_box);
+                BoxStatusFile.Write(_box, BoxPhase.Stopped, "保活成功（历史凭证协议续期）");
+                return ProtocolRenewOutcome.Renewed;
+            }
+            L("protocol renew: 历史凭证也不可用 -> 回退冷启动");
             return ProtocolRenewOutcome.Fallback;
         }
 
@@ -334,10 +377,30 @@ public sealed class RefreshSession
             return ProtocolRenewOutcome.Renewed;
         }
 
-        // 服务端明确拒绝：说明这把 key 真不能用了，别再冷启动浪费时间，直接标「需要扫码」
+        // 服务端明确拒绝这把 key：不等于整个号没救——历史快照里可能还有能用的。
+        // 先用协议逐把确认（0.1 秒/把，不用停箱也不用开浏览器），
+        // 只有全部都被拒才真的标「需要扫码」。
+        // （qb4 11-09 03:30 就是这里直接放弃、白白浪费了一整轮历史凭证。）
         if (r.Code is -13 or -14)
         {
-            L($"protocol renew rejected ({r.Code}) -> 需要重新扫码，跳过冷启动");
+            L($"protocol renew rejected ({r.Code}) -> try historical credentials via protocol before giving up");
+            BoxStatusFile.Write(_box, BoxPhase.Starting, "当前凭证已失效，正在用协议逐个确认历史凭证…");
+            if (TryHistoryRecoverByProtocol())
+            {
+                L("refresh OK via historical credential (protocol)");
+                Ilink.WriteEvent(_box, "refresh", new JsonObject
+                {
+                    ["result"] = "ok", ["keySha"] = Ilink.Live(_box).KeyHash, ["frozenKey"] = frozenKey,
+                    ["mode"] = "HistoryProbe", ["lean"] = false, ["credCleared"] = false,
+                    ["softRetry"] = false, ["authRet"] = (int)r.Code, ["authMsg"] = r.Message,
+                });
+                NeedScan.Clear(_box);
+                NeedScan.ClearQrStreak(_box);
+                BoxStatusFile.Write(_box, BoxPhase.Stopped, "保活成功（历史凭证协议续期）");
+                return ProtocolRenewOutcome.Renewed;
+            }
+
+            L($"all historical credentials rejected too -> 需要重新扫码");
             Ilink.WriteEvent(_box, "refresh", new JsonObject
             {
                 ["result"] = "revoked", ["keySha"] = frozenKey, ["frozenKey"] = frozenKey,
@@ -353,6 +416,80 @@ public sealed class RefreshSession
     }
 
     enum ProtocolRenewOutcome { Renewed, Revoked, Fallback }
+
+    /// <summary>是否值得尝试历史凭证（有非作废、且不同于当前 live 的 key）。</summary>
+    bool HistoryProbePossible()
+    {
+        try
+        {
+            var live = Ilink.Live(_box);
+            return Ilink.CredentialHistory(_box)
+                .Any(c => !c.Revoked && (!live.Valid || c.KeyHash != live.KeyHash));
+        }
+        catch { return false; }
+    }
+
+    /// <summary>
+    /// 当前这把被判废后，逐把用协议确认历史快照里的 key（每把约 0.1 秒，不停箱不开浏览器）。
+    /// 找到第一把能用的就换上并存金库，返回 true。
+    ///
+    /// 和 RecoverSession.ProbeHistoryKey 的区别：这里**不重复停箱**——保活时沙箱本来就是停的，
+    /// 只有探测成功那一刻才需要确保沙箱已停（ProbeHistoryKey 内部会判断）。
+    /// </summary>
+    bool TryHistoryRecoverByProtocol()
+    {
+        List<CredCandidate> list;
+        try
+        {
+            var live = Ilink.Live(_box);
+            list = Ilink.CredentialHistory(_box)
+                .Where(c => !c.Revoked)
+                .Where(c => !live.Valid || c.KeyHash != live.KeyHash)
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            L("history probe: 读不到历史凭证列表 -> " + ex.Message);
+            return false;
+        }
+        if (list.Count == 0)
+        {
+            L("history probe: 没有可试的历史凭证");
+            return false;
+        }
+
+        L($"history probe: 共 {list.Count} 把可试（协议逐把确认，约 0.1 秒/把）");
+        var rec = new RecoverSession(_box);
+        int i = 0;
+        foreach (var c in list)
+        {
+            i++;
+            L($"[{i}/{list.Count}] history probe key {c.KeyShort} ({c.SavedAt:MM-dd HH:mm}{(c.IsVault ? " · vault" : "")})");
+            BoxStatusFile.Write(_box, BoxPhase.Refreshing, $"保活中：试历史凭证 {c.KeyShort}（{i}/{list.Count}）");
+            try
+            {
+                var pr = rec.ProbeHistoryKey(c);
+                if (pr.Ok)
+                {
+                    L($"history probe OK with key {c.KeyHash} -> new {pr.NewKeyHash}");
+                    // ProbeHistoryKey 内部已完成停箱 + 写 live + 推金库
+                    return true;
+                }
+                if (pr.Rejected)
+                {
+                    L($"[{i}/{list.Count}] key {c.KeyShort} rejected ({pr.Code}) -> next");
+                    continue;
+                }
+                L($"[{i}/{list.Count}] key {c.KeyShort} probe failed: {pr.Message} -> next");
+            }
+            catch (Exception ex)
+            {
+                L($"[{i}/{list.Count}] key {c.KeyShort} error: {ex.Message}");
+            }
+        }
+        L("history probe: 全部历史凭证都被服务端拒绝");
+        return false;
+    }
 
     /// <param name="suspectHoldSec">凭证清空且扫码页持续这么久仍没等到服务端 ret=-13，才算疑似失效。</param>
     ColdResult TryCold(string frozenKey, BoxRuntime.LaunchMode mode, int timeoutMin, int maxAttempts, int suspectHoldSec = 15)

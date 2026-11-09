@@ -3,6 +3,41 @@
 版本号规则：`主版本.次版本.修订号`。只修 bug 加修订号；加功能加次版本号；数据格式或用法有不兼容变化加主版本号。
 每次发版在最上面新增一节，并同步修改 `Directory.Build.props` 里的 `<Version>`。
 
+## [1.5.36] - 2026-11-09
+
+### 修复：保活协议续期失败后不试历史凭证，直接判死
+
+**qb4 实测**（11-09 03:30）：
+
+```
+03:30:02  protocol renew failed: 凭证已被服务端作废（-13）
+03:30:02  protocol renew rejected (-13) -> 需要重新扫码，跳过冷启动
+```
+
+只试了当前这一把就放弃，标了 need-scan。而历史快照里还有 30 份凭证。
+
+现在补了**三条**历史凭证兜底路径（全部用协议逐把确认，0.1 秒/把，
+只有命中那一刻才停箱写入）：
+
+| 触发点 | 原来 | 现在 |
+|--------|------|------|
+| 协议续期返回 `-13`/`-14` | 直接标 need-scan | 先逐把试历史凭证，全废才标 |
+| 金库凭证无效 | 直接回退冷启动 | 先逐把试历史凭证 |
+| 冷启动也失败 | 标 need-scan | 先逐把试历史凭证 |
+
+新增 `RefreshSession.TryHistoryRecoverByProtocol()` / `HistoryProbePossible()`。
+
+### 实测（qb14）
+
+```
+10:51:30  history probe: 共 14 把可试（协议逐把确认，约 0.1 秒/把）
+10:51:31  [1/14] key 6fd57847 accepted by server -> stopping box to write new credential
+10:51:39  history probe OK -> new 4742980d00a32ed6
+10:51:39  refresh OK via historical credential
+```
+
+第 1 把命中，9 秒完成保活，无需扫码。
+
 ## [1.5.35] - 2026-11-08
 
 ### 修复：冷启动白等 106 秒；新增启动前协议预检

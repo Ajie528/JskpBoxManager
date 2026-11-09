@@ -150,6 +150,14 @@
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
+                        <DataGridTemplateColumn Header="今日换 key" Width="86">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding RotationsText}" Foreground="{Binding RotationsFg}"
+                                               ToolTip="{Binding RotationsTip}" ToolTipService.ShowDuration="60000"/>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
                         <DataGridTemplateColumn Header="上次保活" Width="150">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
@@ -256,6 +264,48 @@
                         </StackPanel>
                         <TextBlock Foreground="{StaticResource Muted}" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,8"
                                    Text="默认每天冷启动一次即可（各号错开 10 分钟）。越勤越容易把免扫密钥滚断：实测闲置近 3 天仍可进，而每 2 小时续期反而约一天失效。游戏开着或常驻时只保存不重启。点「停止」仍会整箱关掉。"/>
+
+                        <Border Background="#F1F5F9" BorderBrush="{StaticResource Border}" BorderThickness="1"
+                                CornerRadius="6" Padding="10,8" Margin="0,0,0,10">
+                            <StackPanel>
+                                <TextBlock Text="轮换额度（防把授权链滚废）" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                                <Grid Margin="0,0,0,6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="46"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="每天最多换" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                    <TextBox Grid.Column="1" x:Name="TxtMaxRotations" Width="46" Padding="3" HorizontalContentAlignment="Center"
+                                             ToolTip="每个号每天最多允许换几次 AutoAuthKey。填 0 表示用默认 8 次。"/>
+                                    <TextBlock Grid.Column="2" Text="次 key" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                                </Grid>
+                                <Grid Margin="0,0,0,6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="46"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="密钥满" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                    <TextBox Grid.Column="1" x:Name="TxtForceHours" Width="46" Padding="3" HorizontalContentAlignment="Center"
+                                             ToolTip="密钥超过这么多小时就不管计划时刻，强制续期。填 0 用默认 20 小时。"/>
+                                    <TextBlock Grid.Column="2" Text="小时强制续期" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                                </Grid>
+                                <Grid Margin="0,0,0,6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="46"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="密钥不到" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                    <TextBox Grid.Column="1" x:Name="TxtMinKeyAge" Width="46" Padding="3" HorizontalContentAlignment="Center"
+                                             ToolTip="密钥还新于这么多小时时，连日常保活也先不动它（少滚一次 = 少一次风险）。填 0 用默认 6 小时。"/>
+                                    <TextBlock Grid.Column="2" Text="小时就别动它" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                                </Grid>
+                                <TextBlock x:Name="TxtQuotaNow" Foreground="#475569" FontSize="12" TextWrapping="Wrap" Margin="0,2,0,0"/>
+                            </StackPanel>
+                        </Border>
+
                         <Button x:Name="BtnKeepSave" Content="保存保活设置" Style="{StaticResource Btn}" Click="KeepSave_Click"/>
 
                         <Separator Margin="0,6,0,12"/>

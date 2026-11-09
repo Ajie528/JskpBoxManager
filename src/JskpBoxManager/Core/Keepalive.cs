@@ -20,6 +20,41 @@ public sealed class KeepPolicy
     /// </summary>
     public bool ProtocolRenew = false;
 
+    /// <summary>
+    /// 每个号每天最多换几次 key（风控上限）。超过就不再滚——频繁轮换会让服务端把整条授权链判成异常并全部作废。
+    /// 0 表示用默认值 <see cref="CredentialProbe.MaxRotationsPerDay"/>。
+    /// </summary>
+    public int MaxRotationsPerDay = 0;
+
+    /// <summary>密钥超过这么多小时必须强制续期（不管计划时刻）。0 = 用默认 20h。</summary>
+    public double ForceRenewHours = 0;
+
+    /// <summary>密钥还新于这么多小时时，日常计划也先不动它（少滚一次 = 少一次风险）。0 = 用默认 6h。</summary>
+    public double MinKeyAgeHours = 0;
+
+    /// <summary>有效值：没填就用全局默认（先看 notify.json 的全局设置，其次硬编码默认）。</summary>
+    public int EffectiveMaxRotations
+    {
+        get
+        {
+            if (MaxRotationsPerDay > 0) return MaxRotationsPerDay;
+            var g = NotifyConfig.Load().MaxRotationsPerDay;
+            return g > 0 ? g : CredentialProbe.MaxRotationsPerDay;
+        }
+    }
+
+    public double EffectiveForceRenewHours => ForceRenewHours > 0 ? ForceRenewHours : Keepalive.DefaultForceRenewHours;
+
+    public double EffectiveMinKeyAgeHours
+    {
+        get
+        {
+            if (MinKeyAgeHours > 0) return MinKeyAgeHours;
+            var g = NotifyConfig.Load().ProbeMinKeyAgeHours;
+            return g > 0 ? g : Keepalive.DefaultMinKeyAgeHours;
+        }
+    }
+
     public KeepPolicy Clone() => (KeepPolicy)MemberwiseClone();
 
     public string Describe(string box)
@@ -86,6 +121,10 @@ public static class Keepalive
             // probeAuth / probeAuthLive / invokeAutoAuth 是已移除的 Frida 记录开关，旧配置里的键忽略。
             // leanRefresh 是已移除的「精简保活」，同样忽略旧键。
             p.ProtocolRenew = JsonFile.Bool(o, "protocolRenew") ?? false;
+            // 轮换额度（v1.5.37 起可配）：缺键就沿用 defaults（从而回落到全局默认）
+            p.MaxRotationsPerDay = Math.Clamp(JsonFile.Int(o, "maxRotationsPerDay") ?? p.MaxRotationsPerDay, 0, 50);
+            p.ForceRenewHours = Math.Clamp(JsonFile.Double(o, "forceRenewHours") ?? p.ForceRenewHours, 0, 168);
+            p.MinKeyAgeHours = Math.Clamp(JsonFile.Double(o, "minKeyAgeHours") ?? p.MinKeyAgeHours, 0, 168);
         }
         return p;
     }
@@ -118,6 +157,9 @@ public static class Keepalive
                 ["dailyTime"] = kv.Value.DailyTime,
                 ["residentKeepalive"] = kv.Value.ResidentKeepalive,
                 ["protocolRenew"] = kv.Value.ProtocolRenew,
+                ["maxRotationsPerDay"] = kv.Value.MaxRotationsPerDay,
+                ["forceRenewHours"] = kv.Value.ForceRenewHours,
+                ["minKeyAgeHours"] = kv.Value.MinKeyAgeHours,
             };
         JsonFile.WriteObject(AppPaths.KeepaliveJson, new JsonObject
         {
@@ -138,6 +180,116 @@ public static class Keepalive
         var m = Regex.Match(p.DailyTime ?? "", @"^(\d{1,2}):(\d{2})$");
         if (m.Success) at = DateTime.Today.AddHours(int.Parse(m.Groups[1].Value)).AddMinutes(int.Parse(m.Groups[2].Value));
         return at.AddMinutes(StaggerMinutes(box));
+    }
+
+    // ---------- 「这次该不该续」的判断（v1.5.37）----------
+    //
+    // 以前是计划任务只在固定时刻喊一次，喊那次失败了就等明天——一次网络抖动
+    // 等于浪费一整天窗口。现在改成「每小时醒一次 + 沙箱自己判断该不该动」：
+    // 任务变频繁了，但真正会去碰上游的条件没变松，反而更严（加了退避与密钥年龄）。
+
+    /// <summary>密钥超过这个年龄，即使没到日常计划时间也应尽快续。可在界面按沙箱覆盖。</summary>
+    public const double DefaultForceRenewHours = 20;
+
+    /// <summary>密钥还新于这个年龄时，日常计划也先不动它（少滚一次 = 少一次风险）。可在界面按沙箱覆盖。</summary>
+    public const double DefaultMinKeyAgeHours = 6;
+
+    public sealed record WakeDecision(bool Run, string Reason)
+    {
+        public static WakeDecision No(string why) => new(false, why);
+        public static WakeDecision Yes(string why) => new(true, why);
+    }
+
+    /// <summary>
+    /// 计划任务唤醒后，决定这次是否真的执行保活。
+    /// 顺序即优先级：已明确需要扫码 > 失败退避 > 密钥超龄强制 > 密钥太新跳过 > 今天是否已到计划时刻。
+    /// </summary>
+    public static WakeDecision DecideWake(string box, KeepPolicy p, DateTime now)
+    {
+        // 1) 已经判定要重扫：别再空跑冷启动（旧逻辑也是在 Core 开头 return，这里提前省掉整个进程开销）
+        if (NeedScan.Pending(box))
+            return WakeDecision.No("need-scan pending");
+
+        // 2) 上次失败还在退避期。但如果密钥已经过硬上限（20h），退避不能让路——
+        //    等 6 小时基本等于让它自然过期，这时候必须继续试。
+        bool keyOverdue = false;
+        try { keyOverdue = ProtocolRenew.KeyOverdue(box); } catch { }
+        if (!keyOverdue && NeedScan.RetryPending(box))
+        {
+            var r = NeedScan.Retry(box);
+            return WakeDecision.No($"backoff {r?.MinutesLeft:0} min left after {r?.Failures} failure(s)");
+        }
+
+        double? keyAge = null;
+        try { keyAge = ProtocolRenew.KeyAgeHours(box); } catch { }
+
+        // 2.5) 完全没有可用凭证（也没历史快照可救）：自动保活救不了它，只会每小时拉起浏览器停在二维码页。
+        //      这种情况需要人工扫码，直接跳过。注意必须保留「历史里有可用 key」这条恢复路径（qb10/qb12 就是那样救回来的）。
+        if (keyAge is null)
+        {
+            bool anyHistory = false;
+            try { anyHistory = Ilink.CredentialHistory(box).Any(c => !c.Revoked); } catch { }
+            if (!anyHistory) return WakeDecision.No("no credential and no history snapshot -> needs manual scan");
+        }
+
+        // 3) 密钥超龄：不管计划时刻，立刻续（宁可多滚一次，也不能等它自己过期）
+        double forceHours = p.EffectiveForceRenewHours;
+        int quota = p.EffectiveMaxRotations;
+        if (keyAge is double aged && aged >= forceHours)
+        {
+            // 但连「今天已经换到上限」都超了的话，继续滚只会把整条链判成异常。
+            // 这里不再续，改为告警——这种情况多半是密钥已经被顶，靠滚是救不回来的。
+            if (CredentialProbe.RotationsToday(box) >= quota)
+                return WakeDecision.No($"key is {aged:F1}h old but already rotated {quota}x today -> stop, needs manual check");
+            return WakeDecision.Yes($"key is {aged:F1}h old (>= {forceHours}h) -> renew now");
+        }
+
+        // 4) 密钥太新：日常计划也让路，避免「每天固定滚一次」变成无意义的消耗
+        double minAge = p.EffectiveMinKeyAgeHours;
+        if (keyAge is double young && young < minAge)
+            return WakeDecision.No($"key is only {young:F1}h old (< {minAge}h) -> leave it alone");
+
+        // 5) 日常计划时刻：interval 模式看「距上次成功续期是否够久」，daily 模式按当天时刻 + 错峰
+        var last = LastSuccessUtc(box);
+        if (p.Schedule == "interval")
+        {
+            var due = (last ?? DateTime.UtcNow.AddHours(-p.IntervalHours)).AddHours(p.IntervalHours);
+            if (now.ToUniversalTime() < due)
+                return WakeDecision.No($"interval {p.IntervalHours}h not elapsed yet");
+            // 每小时唤醒会让 interval 模式一天跑很多轮：必须受每日轮换上限约束，
+            // 否则「每 4 小时一次」= 一天 6 次 × 各路径 = 远超风控上限。
+            if (CredentialProbe.RotationsToday(box) >= quota)
+                return WakeDecision.No($"rotated {quota}x today -> hold until tomorrow");
+            return WakeDecision.Yes($"interval {p.IntervalHours}h elapsed");
+        }
+        var at = RunAt(box, p);
+        // 当天计划时刻已过，且今天还没成功续过 → 该跑
+        bool passedToday = now >= at;
+        bool doneToday = last is DateTime l && l.ToLocalTime().Date == now.Date;
+        if (passedToday && !doneToday)
+        {
+            // 同上：每小时唤醒后，「今天已到点」这个条件整天都成立，
+            // 必须靠轮换额度兜住，避免补跑变成整天反复滚 key。
+            if (CredentialProbe.RotationsToday(box) >= quota)
+                return WakeDecision.No($"rotated {quota}x today -> hold until tomorrow");
+            return WakeDecision.Yes($"daily {at:HH:mm} slot");
+        }
+        return WakeDecision.No(doneToday ? "already renewed today" : $"daily slot {at:HH:mm} not reached");
+    }
+
+    /// <summary>最近一次成功续期（以金库里最新那把密钥的写入时间为准）。</summary>
+    public static DateTime? LastSuccessUtc(string box)
+    {
+        try
+        {
+            var live = Ilink.Live(box);
+            var vault = Ilink.VaultState(box);
+            DateTime best = DateTime.MinValue;
+            if (live.Valid && live.WriteUtc > best) best = live.WriteUtc;
+            if (vault.Valid && vault.WriteUtc > best) best = vault.WriteUtc;
+            return best == DateTime.MinValue ? null : best;
+        }
+        catch { return null; }
     }
 
     // ---------- 计划任务 ----------
@@ -174,18 +326,11 @@ public static class Keepalive
         }
         var p = cfg.For(box);
         var user = SecurityElement.Escape(Environment.UserDomainName + "\\" + Environment.UserName);
-        string trigger;
-        if (p.Schedule == "daily")
-        {
-            var at = RunAt(box, p);
-            if (at < DateTime.Now) at = at.AddDays(1);
-            trigger = $@"<CalendarTrigger><StartBoundary>{at:yyyy-MM-ddTHH:mm:ss}</StartBoundary><Enabled>true</Enabled><ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay></CalendarTrigger>";
-        }
-        else
-        {
-            var at = DateTime.Now.AddHours(p.IntervalHours).AddMinutes(StaggerMinutes(box) % 60);
-            trigger = $@"<TimeTrigger><Repetition><Interval>PT{p.IntervalHours}H</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition><StartBoundary>{at:yyyy-MM-ddTHH:mm:ss}</StartBoundary><Enabled>true</Enabled></TimeTrigger>";
-        }
+        // v1.5.37：一律改成「每小时唤醒一次」，由 DecideWake 在沙箱侧判断该不该真续。
+        // 这样一次临时失败可以在退避后几小时内补上，而不是等到明天；
+        // 真正的上游请求频次没有变松（受退避、密钥年龄、计划时刻三重约束）。
+        var start = DateTime.Now.AddMinutes(StaggerMinutes(box) % 60);
+        var trigger = $@"<TimeTrigger><Repetition><Interval>PT1H</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition><StartBoundary>{start:yyyy-MM-ddTHH:mm:ss}</StartBoundary><Enabled>true</Enabled></TimeTrigger>";
         var xml = $@"<?xml version=""1.0"" encoding=""UTF-16""?>
 <Task version=""1.2"" xmlns=""http://schemas.microsoft.com/windows/2004/02/mit/task"">
   <RegistrationInfo><Description>{SecurityElement.Escape(AppInfo.ProductName)} 静默保活 {box}</Description></RegistrationInfo>

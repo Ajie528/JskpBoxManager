@@ -24,6 +24,9 @@ public static class Diagnostics
             sb.AppendLine($"    live  {b.Live}");
             sb.AppendLine($"    vault {b.Vault}");
             if (b.Chain != null) sb.AppendLine($"    免扫链 {b.Chain.Text}");
+            if (b.RotationsTodayText.Length > 0)
+                sb.AppendLine($"    今日换key {b.RotationsTodayText} 次"
+                    + $"（密钥 {(b.KeyAgeHours is double kh ? $"{kh:F1}h" : "?")}，满 {b.ForceRenewHoursEffective:0.#}h 强制续，还剩 {b.RotationsLeft} 次额度）");
             if (b.ScanDays is double sd)
                 sb.AppendLine($"    扫码窗口 已过 {sd:0.#} 天{(b.ScanKnown ? "" : "（推算）")}"
                     + $" → 还剩 {Math.Max(0, BoxSummary.AuthWindowDays - sd):0.#} 天"

@@ -252,6 +252,10 @@ public partial class MainWindow : Window
             ChkResidentKeep.IsChecked = pol.ResidentKeepalive;
             ChkProtocolRenew.IsChecked = pol.ProtocolRenew;
             TxtHours.Text = pol.IntervalHours.ToString();
+            TxtMaxRotations.Text = pol.MaxRotationsPerDay.ToString();
+            TxtForceHours.Text = pol.ForceRenewHours.ToString("0.#");
+            TxtMinKeyAge.Text = pol.MinKeyAgeHours.ToString("0.#");
+            SyncQuotaNow(pol);
             var hm = pol.DailyTime.Split(':');
             TxtHour.Text = hm[0];
             TxtMinute.Text = hm.Length > 1 ? hm[1] : "00";
@@ -261,6 +265,8 @@ public partial class MainWindow : Window
         }
         TxtCred.Text = s == null ? "" : CredentialText(s);
         TxtRole.Text = s == null ? "" : RoleDetail(s);
+        // 定时刷新只更新「今天换了几次」这行实时提示，不动用户正在编辑的输入框
+        SyncQuotaNow();
         BtnRole.IsEnabled = sel.Count == 1 && s != null && s.InGame && _busy == 0;
         var lines = Log.Tail(AppPaths.BoxLog(cur.Box), 40);
         var text = string.Join("\n", lines.Select(l => l.Length > 20 ? l[11..] : l));
@@ -572,6 +578,29 @@ public partial class MainWindow : Window
         TxtHour.IsEnabled = TxtMinute.IsEnabled = daily;
     }
 
+    /// <summary>详情面板里那行「这个号今天已经换了几次」的实时说明。</summary>
+    void SyncQuotaNow(KeepPolicy pol = null)
+    {
+        if (TxtQuotaNow == null || _detailBox == null) return;
+        pol ??= Keepalive.Load().For(_detailBox);
+        try
+        {
+            int quota = pol.EffectiveMaxRotations;
+            int used = CredentialProbe.RotationsToday(_detailBox);
+            var age = ProtocolRenew.KeyAgeHours(_detailBox);
+            var parts = new List<string>
+            {
+                $"今天已换 {used}/{quota} 次",
+                used >= quota ? "额度用完，今天不再轮换" : $"还剩 {quota - used} 次",
+            };
+            if (age is double h) parts.Add($"密钥 {h:F1} 小时");
+            if (pol.EffectiveMinKeyAgeHours > 0 && age is double a && a < pol.EffectiveMinKeyAgeHours)
+                parts.Add($"还不到 {pol.EffectiveMinKeyAgeHours:0.#} 小时，保活会先跳过它");
+            TxtQuotaNow.Text = string.Join(" · ", parts);
+        }
+        catch { TxtQuotaNow.Text = ""; }
+    }
+
     async void KeepSave_Click(object sender, RoutedEventArgs e)
     {
         var boxes = Selected.Select(r => r.Box).ToList();
@@ -584,6 +613,32 @@ public partial class MainWindow : Window
         if (!int.TryParse(TxtHour.Text.Trim(), out var hh) || hh < 0 || hh > 23 || !int.TryParse(TxtMinute.Text.Trim(), out var mm) || mm < 0 || mm > 59)
         {
             MessageBox.Show(this, "每天的时刻请填 0～23 点、0～59 分。", "保活设置", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        // 轮换额度：0 = 用默认。上限 1～50，避免误填成 500 把授权链滚废。
+        if (!int.TryParse(TxtMaxRotations.Text.Trim(), out var maxRot) || maxRot < 0 || maxRot > 50)
+        {
+            MessageBox.Show(this, "「每天最多换几次」请填 0～50。填 0 表示用默认 8 次。\n\n为什么要有上限：每次换 key 都是一次真实轮换，太频繁会被服务端把整条授权链判成异常。",
+                "保活设置", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        if (!double.TryParse(TxtForceHours.Text.Trim(), out var forceH) || forceH < 0 || forceH > 168)
+        {
+            MessageBox.Show(this, "「密钥满几小时强制续期」请填 0～168。填 0 表示用默认 20 小时。",
+                "保活设置", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        if (!double.TryParse(TxtMinKeyAge.Text.Trim(), out var minAgeH) || minAgeH < 0 || minAgeH > 168)
+        {
+            MessageBox.Show(this, "「密钥不到几小时就别动它」请填 0～168。填 0 表示用默认 6 小时。",
+                "保活设置", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        if (forceH > 0 && minAgeH > 0 && minAgeH >= forceH)
+        {
+            MessageBox.Show(this, "「密钥不到 N 小时就别动它」必须小于「密钥满 M 小时强制续期」，否则永远都不会续。\n"
+                + $"现在填的是 {minAgeH:0.#} ≥ {forceH:0.#}。",
+                "保活设置", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
         bool enabled = ChkKeep.IsChecked == true;
@@ -600,6 +655,9 @@ public partial class MainWindow : Window
                     IntervalHours = hours, DailyTime = $"{hh:D2}:{mm:D2}",
                     ResidentKeepalive = resident,
                     ProtocolRenew = protoRenew,
+                    MaxRotationsPerDay = maxRot,
+                    ForceRenewHours = Math.Round(forceH, 1),
+                    MinKeyAgeHours = Math.Round(minAgeH, 1),
                 };
             Keepalive.Save(cfg);
             var errs = new List<string>();

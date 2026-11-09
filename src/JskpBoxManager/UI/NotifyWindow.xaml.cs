@@ -29,6 +29,9 @@ public partial class NotifyWindow : Window
         TxtRepeat.Text = cfg.RepeatHours.ToString("0.#");
         ChkProbe.IsChecked = cfg.ProbeEnabled;
         TxtProbeMinutes.Text = cfg.ProbeMinutes.ToString();
+        // 0 表示「用默认」，界面上显示实际生效值更直观
+        TxtProbeMinKeyAge.Text = (cfg.ProbeMinKeyAgeHours > 0 ? cfg.ProbeMinKeyAgeHours : Keepalive.DefaultMinKeyAgeHours).ToString("0.#");
+        TxtProbeQuota.Text = (cfg.MaxRotationsPerDay > 0 ? cfg.MaxRotationsPerDay : CredentialProbe.MaxRotationsPerDay).ToString();
         UpdateHelp();
     }
 
@@ -74,6 +77,10 @@ public partial class NotifyWindow : Window
         cfg.ProbeEnabled = ChkProbe.IsChecked == true;
         if (int.TryParse(TxtProbeMinutes.Text.Trim(), out var pm)) cfg.ProbeMinutes = Math.Clamp(pm, CredentialProbe.MinProbeMinutes, 720);
         else cfg.ProbeMinutes = 120;
+        if (double.TryParse(TxtProbeMinKeyAge.Text.Trim(), out var mka) && mka > 0 && mka <= 168) cfg.ProbeMinKeyAgeHours = mka;
+        else cfg.ProbeMinKeyAgeHours = 0;
+        if (int.TryParse(TxtProbeQuota.Text.Trim(), out var mq) && mq > 0 && mq <= 50) cfg.MaxRotationsPerDay = mq;
+        else cfg.MaxRotationsPerDay = 0;
         return cfg;
     }
 
@@ -84,11 +91,17 @@ public partial class NotifyWindow : Window
         TxtHours.Text = cfg.WarnHours.ToString("0.#");
         TxtRepeat.Text = cfg.RepeatHours.ToString("0.#");
         TxtProbeMinutes.Text = cfg.ProbeMinutes.ToString();
+        TxtProbeMinKeyAge.Text = (cfg.ProbeMinKeyAgeHours > 0 ? cfg.ProbeMinKeyAgeHours : Keepalive.DefaultMinKeyAgeHours).ToString("0.#");
+        TxtProbeQuota.Text = (cfg.MaxRotationsPerDay > 0 ? cfg.MaxRotationsPerDay : CredentialProbe.MaxRotationsPerDay).ToString();
         if (cfg.ProbeEnabled) CredentialProbe.Start(); else CredentialProbe.Stop();
         MessageBox.Show(this,
             (cfg.Ready ? $"已保存。\n\n{cfg.Describe()}，凭证超过 {cfg.WarnHours:0.#} 小时没续期就会推送。"
                       : "已保存，但还没勾选启用或没填推送密钥，暂时不会推送。")
-            + (cfg.ProbeEnabled ? $"\n\n已开启主动探测：每 {cfg.ProbeMinutes} 分钟连服务器验证一次。" : ""),
+            + (cfg.ProbeEnabled
+                ? $"\n\n已开启主动探测：每 {cfg.ProbeMinutes} 分钟连服务器验证一次；"
+                  + $"密钥不到 {Keepalive.DefaultMinKeyAgeHours:0.#} 小时不探，每个号每天最多换 "
+                  + $"{cfg.EffectiveMaxRotations} 次 key。"
+                : $"\n\n轮换额度已保存（每号每天最多 {cfg.EffectiveMaxRotations} 次），未开启探测时它仍约束保活与启动预检。"),
             "过期提醒", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 

@@ -29,6 +29,16 @@ public sealed class RefreshSession
         if (!cfg.EnabledFor(_box)) { L("refresh skipped (keepalive disabled in config)"); return 0; }
         if (!EnvDetect.SbieOk || !EnvDetect.QqOk) { L("refresh skipped (Sandboxie or QQBrowser not found)"); return 1; }
 
+        // v1.5.37：任务现在每小时醒一次，这里先判断「这次到底该不该动上游」。
+        // 判断很便宜（只读几个小文件），不通过就直接退出，不抢锁、不停箱。
+        var decision = Keepalive.DecideWake(_box, cfg.For(_box), DateTime.Now);
+        if (!decision.Run)
+        {
+            L("refresh skipped: " + decision.Reason);
+            return 0;
+        }
+        L("refresh due: " + decision.Reason);
+
         using var global = new Mutex(false, @"Local\JskpBoxManager.Keepalive");
         bool gotGlobal;
         try { gotGlobal = global.WaitOne(TimeSpan.FromMinutes(12)); } catch (AbandonedMutexException) { gotGlobal = true; }
@@ -265,6 +275,7 @@ public sealed class RefreshSession
         {
             NeedScan.Clear(_box);
             NeedScan.ClearQrStreak(_box);
+            NeedScan.ClearRetry(_box);   // v1.5.37：成功即解除退避，回到正常节奏
             BoxRuntime.StopForce(_box, false);
             BoxStatusFile.Write(_box, BoxPhase.Stopped, $"保活成功 {DateTime.Now:MM-dd HH:mm}");
             L($"refresh session OK mode={usedMode} -> box closed");
@@ -290,11 +301,19 @@ public sealed class RefreshSession
                     });
                     BoxStatusFile.Write(_box, BoxPhase.Stopped, "保活成功（历史凭证协议续期）");
                     L("refresh session OK via historical credential");
+                    NeedScan.ClearRetry(_box);
                     try { Notifier.CheckAndNotify(Sandboxie.QueryBoxes()); } catch { }
                     return;
                 }
                 L("refresh: all historical credentials rejected too");
             }
+
+            // v1.5.37：失败要登记退避，否则任务每小时醒来都会重跑一遍完整的停箱/冷启动，
+            // 既浪费资源，也可能因为反复冷启把密钥状态搅乱。
+            // 密钥已过硬上限时必须压缩退避——否则「等待」等于让它过期。
+            bool definitive = r.Suspected || r.QrFail;
+            bool urgent = ProtocolRenew.KeyOverdue(_box);
+            NeedScan.RegisterFailure(_box, outcome, definitive, urgent);
 
             if (r.Suspected)
             {
@@ -341,6 +360,7 @@ public sealed class RefreshSession
                 });
                 NeedScan.Clear(_box);
                 NeedScan.ClearQrStreak(_box);
+                NeedScan.ClearRetry(_box);
                 BoxStatusFile.Write(_box, BoxPhase.Stopped, "保活成功（历史凭证协议续期）");
                 return ProtocolRenewOutcome.Renewed;
             }
@@ -374,6 +394,7 @@ public sealed class RefreshSession
             });
             BoxStatusFile.Write(_box, BoxPhase.Stopped, "保活成功（协议续期）");
             L("refresh session OK via protocol renew");
+            NeedScan.ClearRetry(_box);
             return ProtocolRenewOutcome.Renewed;
         }
 
@@ -383,7 +404,10 @@ public sealed class RefreshSession
         // （qb4 11-09 03:30 就是这里直接放弃、白白浪费了一整轮历史凭证。）
         if (r.Code is -13 or -14)
         {
-            L($"protocol renew rejected ({r.Code}) -> try historical credentials via protocol before giving up");
+            // v1.5.37：先把「被服务端明确拒绝的那一把」登记作废，再去试历史。
+            // 不登记的话，下一轮保活/恢复会把这把死 key 再发一遍，纯属多打一次上游。
+            Ilink.RegisterRevokedKey(_box, frozenKey, "protocol-renew-" + r.Code);
+            L($"protocol renew rejected ({r.Code}) -> retired this key, trying historical credentials");
             BoxStatusFile.Write(_box, BoxPhase.Starting, "当前凭证已失效，正在用协议逐个确认历史凭证…");
             if (TryHistoryRecoverByProtocol())
             {
@@ -396,6 +420,7 @@ public sealed class RefreshSession
                 });
                 NeedScan.Clear(_box);
                 NeedScan.ClearQrStreak(_box);
+                NeedScan.ClearRetry(_box);
                 BoxStatusFile.Write(_box, BoxPhase.Stopped, "保活成功（历史凭证协议续期）");
                 return ProtocolRenewOutcome.Renewed;
             }

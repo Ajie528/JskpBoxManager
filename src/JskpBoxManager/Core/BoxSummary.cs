@@ -27,6 +27,14 @@ public sealed class BoxSummary
     public DateTime LastRenewUtc = DateTime.MinValue;
     public string Keepalive = "";
     public bool KeepaliveOn;
+    /// <summary>今天已换 key 次数 / 上限，如 "2/8"；无凭证时为空。</summary>
+    public string RotationsTodayText = "";
+    /// <summary>密钥年龄（小时），用于界面提示「还新，先不动」。</summary>
+    public double? KeyAgeHours;
+    /// <summary>今天剩余可换次数。</summary>
+    public int RotationsLeft;
+    /// <summary>该沙箱实际生效的「密钥满多少小时强制续期」。</summary>
+    public double ForceRenewHoursEffective = 20;
     /// <summary>完整说明（详情面板 / 悬停提示）。</summary>
     public string LastRefresh = "";
     /// <summary>表格里的短文本。</summary>
@@ -186,6 +194,17 @@ public sealed class BoxSummary
         var pol = keep.For(box);
         s.KeepaliveOn = keep.EnabledFor(box);
         s.Keepalive = !s.KeepaliveOn ? "关" : s.Login == LoginLevel.None ? "登录后生效" : pol.Describe(box);
+        // 今日轮换额度：让「每天最多换几次」在界面上看得见，而不是只存在于日志里
+        try
+        {
+            int quota = pol.EffectiveMaxRotations;
+            int used = CredentialProbe.RotationsToday(box);
+            s.RotationsLeft = Math.Max(0, quota - used);
+            if (s.Live.Valid || s.Vault.Valid) s.RotationsTodayText = $"{used}/{quota}";
+            s.KeyAgeHours = ProtocolRenew.KeyAgeHours(box);
+            s.ForceRenewHoursEffective = pol.EffectiveForceRenewHours;
+        }
+        catch { }
         if (lastRefresh.TryGetValue(box, out var ev)
             && DateTime.TryParseExact(JsonFile.Str(ev, "at"), "yyyy-MM-dd HH:mm:ss", null, System.Globalization.DateTimeStyles.None, out var at))
         {

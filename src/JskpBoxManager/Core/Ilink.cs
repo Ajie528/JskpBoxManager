@@ -338,6 +338,10 @@ public static class Ilink
                     ["writtenAt"] = live.WriteLocal, ["prevAt"] = vault.WriteLocal,
                     ["gapHours"] = Math.Round((live.WriteUtc - vault.WriteUtc).TotalHours, 2), ["reason"] = reason,
                 });
+                // v1.5.37：冷启动 / 手动开游戏滚出来的 key 以前只写事件、不进 rotate-log，
+                // 于是「每号每天最多换 8 次」这条风控判据对最常见的轮换方式完全失效。
+                // 这里补记账（按 key 哈希去重，重复保存不会重复计数）。
+                CredentialProbe.RecordRotationPublic(box, live.KeyHash, "runtime:" + reason);
             }
             else
             {
@@ -509,17 +513,21 @@ public static class Ilink
         return !Live(box).Valid;
     }
 
-    /// <summary>被别的设备扫码顶掉，或过期被拒：这把密钥和金库里同号更旧的密钥都不能再用来还原。</summary>
+    /// <summary>
+    /// 被别的设备扫码顶掉，或过期被拒：这把密钥不能再用来还原。
+    /// <para>
+    /// v1.5.37 修：以前这里会**连带**把金库里同号更旧的密钥一起登记作废。
+    /// 依据是「一把被顶，同号更旧的肯定也废」。但实测（qb10/qb12：10-16/10-18 的
+    /// key 放了 20 多天仍然能用）说明服务端不是只认最新一把——连带作废等于
+    /// 自己把可用的历史凭证判死，直接砍掉恢复能力。现在只登记**真正被拒的那一把**。
+    /// </para>
+    /// </summary>
     public static void RegisterRevoked(string box, LaunchBaseline b, string reason)
     {
         Directory.CreateDirectory(BoxPaths.CredentialDir(box));
-        var keys = new List<string> { b.KeyHash };
-        var vault = VaultState(box);
-        if (vault.Valid && vault.Uin == b.Uin && vault.WriteUtc <= b.KeyWriteUtc.AddSeconds(2)) keys.Add(vault.KeyHash);
         var at = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-        foreach (var k in keys.Where(k => !string.IsNullOrEmpty(k)).Distinct())
-            if (!IsRevoked(box, k))
-                try { File.AppendAllText(BoxPaths.RevokedFile(box), $"{k} {at} {reason}\r\n"); } catch { }
+        if (!string.IsNullOrEmpty(b.KeyHash) && !IsRevoked(box, b.KeyHash))
+            try { File.AppendAllText(BoxPaths.RevokedFile(box), $"{b.KeyHash} {at} {reason}\r\n"); } catch { }
         var age = Math.Round((b.LaunchUtc - b.KeyWriteUtc).TotalHours, 2);
         var chain = AuthChain.For(box);
         WriteEvent(box, "key-revoked", new JsonObject
@@ -529,7 +537,29 @@ public static class Ilink
             ["chainDays"] = chain == null ? null : Math.Round(chain.Days, 2),
             ["chainRenewals"] = chain?.Renewals, ["chainStartKnown"] = chain?.StartKnown,
         });
-        Log.Box(box, $"ilink key revoked by server (kicked by another device or expired) key={b.KeyHash} age={age}h -> need WeChat scan, vault copy not usable");
+        Log.Box(box, $"ilink key revoked by server (kicked by another device or expired) key={b.KeyHash} age={age}h -> this key is retired; older snapshots stay eligible for history probe");
+    }
+
+    /// <summary>
+    /// 直接按 key 哈希登记作废（不需要 LaunchBaseline）。
+    /// <para>
+    /// v1.5.37 新增：这是 <see cref="ProtocolRenew"/> 拿到服务端明确拒绝（-13/-14）
+    /// 后的落点。不做登记的后果是——历史探测每轮都会把已经死掉的 key 再试一遍，
+    /// 白白发出上游请求；而「少发一次无谓请求」正是这类账号能活久的前提。
+    /// 只登记被拒的那一把，不连带更旧的（实测旧 key 常常还能用）。
+    /// </para>
+    /// </summary>
+    public static void RegisterRevokedKey(string box, string keyHash, string reason)
+    {
+        if (string.IsNullOrWhiteSpace(keyHash) || IsRevoked(box, keyHash)) return;
+        try
+        {
+            Directory.CreateDirectory(BoxPaths.CredentialDir(box));
+            var at = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+            File.AppendAllText(BoxPaths.RevokedFile(box), $"{keyHash} {at} {reason}\r\n");
+            Log.Box(box, $"ilink key {keyHash[..Math.Min(8, keyHash.Length)]} retired ({reason})");
+        }
+        catch { }
     }
 
     /// <summary>只有金库凭证有效、未作废，且沙箱凭证无效或比金库旧时，「从金库还原再重开」才可能有用。</summary>

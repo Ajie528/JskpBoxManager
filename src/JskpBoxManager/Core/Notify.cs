@@ -27,6 +27,15 @@ public sealed class NotifyConfig
     public bool ProbeEnabled;
     public int ProbeMinutes = 120;
 
+    /// <summary>
+    /// 全局默认：密钥不到这么多小时就不做任何轮换（探测/预检都跳过），避免为「确认一下」白白滚掉一次额度。
+    /// 单个沙箱可在主界面「轮换额度」里覆盖。0 = 用 <see cref="Keepalive.DefaultMinKeyAgeHours"/>。
+    /// </summary>
+    public double ProbeMinKeyAgeHours = 0;
+
+    /// <summary>全局默认：每个号每天最多换几次 key。0 = 用 <see cref="CredentialProbe.MaxRotationsPerDay"/>。</summary>
+    public int MaxRotationsPerDay = 0;
+
     public string Describe()
     {
         var name = Channel switch
@@ -54,6 +63,8 @@ public sealed class NotifyConfig
         cfg.ProbeEnabled = JsonFile.Bool(o, "probeEnabled") ?? false;
         cfg.ProbeMinutes = Math.Clamp(JsonFile.Int(o, "probeMinutes") ?? 120,
             CredentialProbe.MinProbeMinutes, 720);
+        cfg.ProbeMinKeyAgeHours = Math.Clamp(JsonFile.Double(o, "probeMinKeyAgeHours") ?? 0, 0, 168);
+        cfg.MaxRotationsPerDay = Math.Clamp(JsonFile.Int(o, "maxRotationsPerDay") ?? 0, 0, 50);
         if (cfg.WarnHours < 1) cfg.WarnHours = 1;
         if (cfg.RepeatHours < 1) cfg.RepeatHours = 1;
         return cfg;
@@ -70,10 +81,18 @@ public sealed class NotifyConfig
             ["repeatHours"] = cfg.RepeatHours,
             ["probeEnabled"] = cfg.ProbeEnabled,
             ["probeMinutes"] = cfg.ProbeMinutes,
+            ["probeMinKeyAgeHours"] = cfg.ProbeMinKeyAgeHours,
+            ["maxRotationsPerDay"] = cfg.MaxRotationsPerDay,
         });
     }
 
     public bool Ready => Enabled && Token.Trim().Length > 0;
+
+    /// <summary>界面展示用：实际生效的每号每日轮换上限。</summary>
+    public int EffectiveMaxRotations => MaxRotationsPerDay > 0 ? MaxRotationsPerDay : CredentialProbe.MaxRotationsPerDay;
+
+    /// <summary>界面展示用：实际生效的「密钥不到多少小时不轮换」。</summary>
+    public double EffectiveMinKeyAgeHours => ProbeMinKeyAgeHours > 0 ? ProbeMinKeyAgeHours : Keepalive.DefaultMinKeyAgeHours;
 }
 
 /// <summary>

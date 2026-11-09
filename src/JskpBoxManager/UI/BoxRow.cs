@@ -32,6 +32,38 @@ public sealed class BoxRow : INotifyPropertyChanged
 
     public string RenewText => Summary == null || Summary.LastRenewUtc == DateTime.MinValue ? "—" : Ago(Summary.LastRenewUtc);
 
+    /// <summary>今日已换次数 / 上限。</summary>
+    public string RotationsText => Summary?.RotationsTodayText is { Length: > 0 } t ? t : "—";
+
+    public Brush RotationsFg => Summary switch
+    {
+        null => Brushes.Gray(),
+        { RotationsTodayText: not { Length: > 0 } } => Brushes.Gray(),
+        { RotationsLeft: 0 } => Brushes.Red(),
+        { RotationsLeft: 1 or 2 } => Brushes.Orange(),
+        _ => Brushes.Hex("#4B5563"),
+    };
+
+    public string RotationsTip
+    {
+        get
+        {
+            var s = Summary;
+            if (s == null) return "";
+            var lines = new List<string>();
+            lines.Add(s.RotationsTodayText is { Length: > 0 } t
+                ? $"今天已换 {t} 次 key（上限见右）"
+                : "今天还没换过 key");
+            if (s.KeyAgeHours is double h)
+                lines.Add($"当前密钥 {h:F1} 小时（满 {s.ForceRenewHoursEffective:0.#} 小时强制续期）");
+            if (s.RotationsLeft == 0)
+                lines.Add("今日额度已用完：不再轮换，等明天。频繁轮换会被服务端整链判废。");
+            else lines.Add($"今天还能换 {s.RotationsLeft} 次");
+            lines.Add("可在右侧「静默保活 → 轮换额度」里改每天最多换几次。");
+            return string.Join("\n", lines);
+        }
+    }
+
     public string ScanAgeText => Summary?.ScanAgeShort ?? "—";
     public string ScanAgeTip => Summary?.ScanAgeTip ?? "";
     public Brush ScanAgeFg => Summary switch

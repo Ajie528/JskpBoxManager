@@ -29,8 +29,11 @@ public static class CredentialProbe
     /// <summary>探测的最短间隔（分钟）。再密就会变成「每几分钟滚一次 key」，服务端会当异常。</summary>
     public const int MinProbeMinutes = 30;
 
-    /// <summary>单个号每天最多换几次 key。超过就跳过，等明天。</summary>
+    /// <summary>单个号每天最多换几次 key。超过就跳过，等明天。可在界面按沙箱覆盖。</summary>
     public const int MaxRotationsPerDay = 8;
+
+    // 「密钥还新就别为探测滚一次」的门槛已改到 Keepalive.DefaultMinKeyAgeHours（可按沙箱配置），
+    // 这里不再保留第二个常量，避免两处默认值各说各话。
 
     /// <summary>到期时间的随机抖动比例：±35%，避免每天踩同一个时间点。</summary>
     const double JitterFraction = 0.35;
@@ -254,11 +257,23 @@ public static class CredentialProbe
             return new ProbeResult(box, false, "上次续期结果未知（attempt 标记还在），跳过", 0, true);
         }
 
-        // 今天换够了就别再换：频繁轮换会让服务端把整条授权链判定为异常并全部作废
-        int today = RotationsToday(box);
-        if (today >= MaxRotationsPerDay)
+        // 密钥还新就别为了「确认一下」去滚它：AutoAuth 是轮换语义，探一次换一把，
+        // 白白消耗服务端容忍额度。真要确认，等密钥老化到门槛之后。
+        var pol = Keepalive.Load().For(box);
+        double minAge = pol.EffectiveMinKeyAgeHours;
+        var keyAge = ProtocolRenew.KeyAgeHours(box);
+        if (keyAge is double age && age < minAge)
         {
-            Log.Box(box, $"probe: already rotated {today} times today (limit {MaxRotationsPerDay}) -> skip");
+            Log.Box(box, $"probe: key is only {age:F1}h old (min {minAge}h) -> skip rotating just to verify");
+            return new ProbeResult(box, false, $"密钥才 {age:F1} 小时，不值得为探测滚一次", 0, true);
+        }
+
+        // 今天换够了就别再换：频繁轮换会让服务端把整条授权链判定为异常并全部作废
+        int quota = pol.EffectiveMaxRotations;
+        int today = RotationsToday(box);
+        if (today >= quota)
+        {
+            Log.Box(box, $"probe: already rotated {today} times today (limit {quota}) -> skip");
             return new ProbeResult(box, false, $"今天已换过 {today} 次 key，跳过（防触发风控）", 0, true);
         }
 
@@ -284,6 +299,13 @@ public static class CredentialProbe
         if (r.Rejected)
         {
             Log.Box(box, $"probe: 服务器判定凭证已失效（{r.Code}）-> 标需要扫码");
+            // v1.5.37：登记这把已死，避免历史探测反复重试同一把
+            try
+            {
+                var cur = Ilink.Live(box);
+                if (cur.Valid) Ilink.RegisterRevokedKey(box, cur.KeyHash, "probe-" + r.Code);
+            }
+            catch { }
             NeedScan.Set(box, "probe-revoked");
             BoxStatusFile.Write(box, BoxPhase.Failed, "凭证已被服务器作废，需要重新扫码");
             Ilink.WriteEvent(box, "probe-rejected", new JsonObject
@@ -305,23 +327,64 @@ public static class CredentialProbe
 
     static string RotateLogPath(string box) => Path.Combine(AppPaths.Logs, box + ".rotate-log");
 
-    /// <summary>今天已经换过几次 key。</summary>
+    /// <summary>今天已经换过几次 key（按 key 哈希去重，同一把重复保存只算一次）。</summary>
     public static int RotationsToday(string box)
     {
         try
         {
             var p = RotateLogPath(box);
             if (!File.Exists(p)) return 0;
-            var today = DateTime.Today.ToString("yyyy-MM-dd");
-            return File.ReadAllLines(p).Count(l => l.StartsWith(today, StringComparison.Ordinal));
+            var today = DateTime.Today.ToString("yyyy-MM-dd") + " ";
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var line in File.ReadLines(p))
+            {
+                if (!line.StartsWith(today, StringComparison.Ordinal)) continue;
+                // 行格式：「yyyy-MM-dd HH:mm:ss <keySha> <why>」
+                var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length >= 3) seen.Add(parts[2]);
+                else seen.Add(line);
+            }
+            return seen.Count;
         }
         catch { return 0; }
+    }
+
+    /// <summary>今天最后一次换 key 的时间；没有记录返回 null。用于「密钥太新就别再滚」的判断。</summary>
+    public static DateTime? LastRotationAt(string box)
+    {
+        try
+        {
+            var p = RotateLogPath(box);
+            if (!File.Exists(p)) return null;
+            foreach (var line in File.ReadLines(p).Reverse())
+            {
+                if (line.Length < 19) continue;
+                if (DateTime.TryParseExact(line[..19], "yyyy-MM-dd HH:mm:ss",
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        System.Globalization.DateTimeStyles.AssumeLocal, out var t))
+                    return t;
+            }
+        }
+        catch { }
+        return null;
     }
 
     static void RecordRotation(string box, string newKey, string why)
     {
         try
         {
+            // 同一把 key 不重复记账：Ilink.Save 会在每次保活/看门循环里被调用，
+            // 若不去重，一次轮换会被记几十次，「每日上限」立刻被虚假耗尽。
+            if (newKey.Length > 0)
+            {
+                var p0 = RotateLogPath(box);
+                var todayPrefix = DateTime.Today.ToString("yyyy-MM-dd") + " ";
+                if (File.Exists(p0))
+                    foreach (var line in File.ReadLines(p0))
+                        if (line.StartsWith(todayPrefix, StringComparison.Ordinal)
+                            && line.Contains(" " + newKey + " ", StringComparison.OrdinalIgnoreCase))
+                            return;
+            }
             Directory.CreateDirectory(AppPaths.Logs);
             File.AppendAllText(RotateLogPath(box),
                 $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} {newKey} {why}\r\n", new UTF8Encoding(false));
@@ -329,8 +392,18 @@ public static class CredentialProbe
         catch { }
     }
 
-    /// <summary>保活等其它路径换 key 后也要记账，否则「每日上限」统计不到。</summary>
+    /// <summary>
+    /// 保活等其它路径换 key 后也要记账，否则「每日上限」统计不到。
+    /// <para>
+    /// 这是 v1.5.37 补的：以前只有 <see cref="ProtocolRenew"/> 那条协议路径记账，
+    /// 冷启动和手动开游戏滚出来的新 key 只写 <c>key-rotated</c> 事件，不进 rotate-log，
+    /// 于是「今天已换 8 次」这条风控判据对最常见的轮换方式完全失效。
+    /// </para>
+    /// </summary>
     public static void RecordRotationPublic(string box, string newKey, string why) => RecordRotation(box, newKey, why);
+
+    /// <summary>今天还能换几次 key（到 0 表示该停了，避免把整条授权链滚废）。</summary>
+    public static int RotationsLeftToday(string box) => Math.Max(0, MaxRotationsPerDay - RotationsToday(box));
 
     /// <summary>今天是否已经换够了（到上限就不再探，避免服务端把整条链当异常）。</summary>
     public static bool RotationBudgetExhausted(string box) => RotationsToday(box) >= MaxRotationsPerDay;

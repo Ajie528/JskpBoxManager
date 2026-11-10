@@ -170,7 +170,17 @@ public sealed class AuthProbe
 
     static string ToolsDir()
     {
-        var starts = new[] { AppContext.BaseDirectory, Environment.CurrentDirectory, AppPaths.AppDir, Path.GetDirectoryName(Environment.ProcessPath) ?? "" };
+        // AppPaths.AppDir 必须排第一：它才是「数据目录/安装目录」。
+        // AppContext.BaseDirectory 在单文件发布时指向解压临时目录，
+        // 而用 --appdir 从仓库里跑时又指向仓库根——两者都可能命中**别的副本**的脚本，
+        // 于是拿安装目录跑、实际执行的是仓库那份（hook 实测就是如此）。
+        var starts = new[]
+        {
+            AppPaths.AppDir,
+            Path.GetDirectoryName(Environment.ProcessPath) ?? "",
+            AppContext.BaseDirectory,
+            Environment.CurrentDirectory,
+        };
         foreach (var s in starts)
         {
             if (string.IsNullOrEmpty(s)) continue;
@@ -178,7 +188,13 @@ public sealed class AuthProbe
             for (int i = 0; dir != null && i < 8; i++, dir = dir.Parent)
             {
                 var py = Path.Combine(dir.FullName, "tools", "lean-refresh", "hook_watch.py");
-                if (File.Exists(py)) return Path.GetDirectoryName(py)!;
+                if (File.Exists(py))
+                {
+                    var found = Path.GetDirectoryName(py)!;
+                    if (!string.Equals(found, Path.Combine(AppPaths.AppDir, "tools", "lean-refresh"), StringComparison.OrdinalIgnoreCase))
+                        Log.App($"tools: 用的是 {found}（不是程序目录下的那份）");
+                    return found;
+                }
             }
         }
         return "";

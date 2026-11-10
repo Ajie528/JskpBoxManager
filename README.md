@@ -7,12 +7,40 @@
 
 ## 需要先装的软件
 
-| 软件 | 说明 |
-| --- | --- |
-| Sandboxie-Plus | 装在哪个盘都行，程序会自动找 |
-| QQ 浏览器 | 正常安装即可；第一次在沙箱里打开小游戏时会自动装好微信小程序运行环境 |
+**日常使用（启动游戏、保活、扫码）只需要前两个**，其余只在用高级工具时才需要。
+
+| 软件 | 必需? | 说明 |
+| --- | --- | --- |
+| Sandboxie-Plus | **必需** | 装在哪个盘都行，程序会自动找 |
+| QQ 浏览器 | **必需** | 正常安装即可；第一次在沙箱里打开小游戏时会自动装好微信小程序运行环境 |
 
 本程序自带 .NET 运行时，不需要另外安装。
+
+### 可选：用高级工具时才需要
+
+| 软件 | 用到的功能 | 安装方式 |
+| --- | --- | --- |
+| **Python 3** | `hook`（Frida 观测）、`observe` | `winget install Python.Python.3.13`，或从 [python.org](https://www.python.org/downloads/windows/) 装（勾选 Add to PATH） |
+| **frida / psutil / pefile** | 同上（Python 包） | 程序检测到缺失会自动 `pip install`；也可手动：`py -3 -m pip install frida psutil pefile` |
+| **Wireshark**（含 tshark） | `token`（抓业务 Token）、`keylog` 配合解密 | `winget install WiresharkFoundation.Wireshark`，安装时勾选 TShark |
+
+几点说明：
+
+- **Python 装不了会自动装。** 程序只能检测 Python；没装 Python 时 `hook` 会提示
+  「找不到 Python 3」并给出安装命令，**不会自己装 Python**。三个 Python 包则是程序自动装的。
+- **`hook` 只允许 `qb1`。** 它会在沙箱内启动 Frida 只读观测脚本，截获 ilink 的明文授权返回；
+  为了不影响正在用的号，限定在 qb1 上做实验。
+- **`hook` 需要沙箱里的 Python 能被执行。** Sandboxie 默认允许执行主机程序，一般无需额外配置。
+  如果你的策略禁了 python.exe，需要在对应沙箱的配置里放行。
+- **Wireshark 必须带 TShark**（命令行版 tshark.exe），只有图形界面不够。
+  `token` 命令会自己找 `C:\Program Files\Wireshark\tshark.exe`。
+
+### 可选：开发/发版才需要
+
+| 软件 | 用途 |
+| --- | --- |
+| .NET 8 SDK | 编译源码：`winget install Microsoft.DotNet.SDK.8` |
+| GitHub CLI | 手动发版 / 看 CI：`winget install GitHub.cli`，然后 `gh auth login` |
 
 ## 安装 / 拷到别的电脑
 
@@ -147,6 +175,81 @@
 
 > 顶栏「协议服务」里的 `/wxapp/getCode`（CDP 取 wx.login code）对本游戏取不到码（微信运行时无调试端口），已改以 `/token` 为准，getCode 仅作兼容保留。
 
+### Frida 观测（hook）—— 需要 Python
+
+`hook` 用来**看清微信授权到底发生了什么**：在沙箱内挂一个只读的 Frida 脚本，截获
+`ilinkapp_autoauth` 的请求和明文返回（含 `ret` / `error_msg`），不改包、不改参数、不写任何凭证。
+
+#### 依赖
+
+| 依赖 | 是否自动装 |
+| --- | --- |
+| Python 3 | **不自动装**。程序会检测并提示，需自己装 |
+| `frida` / `psutil` / `pefile` | **自动装**（首次 `hook` 时程序会 `pip install`） |
+
+装 Python：
+
+```powershell
+winget install Python.Python.3.13
+# 或从 https://www.python.org/downloads/windows/ 下载，安装时勾选 "Add python.exe to PATH"
+```
+
+装好后自检（应能打印版本号）：
+
+```powershell
+py -3 --version
+py -3 -m pip install frida psutil pefile
+py -3 -c "import frida,psutil,pefile;print(frida.__version__)"
+```
+
+如果 `hook` 报「找不到 Python 3」或「Python 包不可用」，按提示把上面那段命令跑一遍即可。
+
+> 观测脚本在 `tools\lean-refresh\hook_watch.py`，**必须和 exe 放在一起**（发布包里已带）。
+> 程序会优先在**程序目录**里找 `tools\lean-refresh\hook_watch.py`，找不到才往上级目录找，
+> 都找不到会报「找不到 tools\lean-refresh\hook_watch.py」。
+> 如果同时存在仓库和安装目录两份，用的是**程序目录**那份；用了别处的会在 `logs\app.log` 里记一行。
+
+#### 用法
+
+```powershell
+# 观测一次冷启动（默认启动浏览器、跑 240 秒、结束停箱）
+.\JskpBoxManager.exe hook qb1
+
+# 只观测、不启动（沙箱里已有运行时在跑时用）
+.\JskpBoxManager.exe hook qb1 --no-launch --seconds 300
+
+# 观测完不停箱
+.\JskpBoxManager.exe hook qb1 --no-stop
+```
+
+| 参数 | 默认 | 说明 |
+| --- | --- | --- |
+| `--seconds N` | 240 | 观测时长，30～7200 |
+| `--no-launch` | 关 | 不冷启动，只挂到已运行的进程上 |
+| `--no-stop` | 关 | 结束时不停箱 |
+| `--mode` | Full | 启动模式（Full 等） |
+
+#### 产物
+
+| 文件 | 内容 |
+| --- | --- |
+| `logs\frida-ilink-qb1.jsonl` | 逐行 JSON 事件（结构化，便于脚本处理） |
+| `logs\frida-ilink-qb1.txt` | 人读版，含 `AutoAuthResponse ... ret = 0` 这类关键行 |
+
+**只允许 `qb1`**：这是实验功能，限定在一个号上，避免影响正在用的账号。
+同一时间只能有一个 hook 在跑（重复启动会提示先关掉那个窗口）。
+
+#### 拿它排查什么
+
+- 免扫失败时，看 `AutoAuthResponse` 的 `ret`（`0` 成功 / `-13` 作废）和 `error_msg`；
+- 区分「运行时压根没发 AutoAuth」（`--no-launch` 下看不到记录）和「发了但被拒」；
+- 确认 `sessiontimeout` 是否真的出现（实测关游戏本身不会触发，见 `docs/ilink长连接与免扫掉线.md`）。
+
+> 想要**纯协议**视角的原始响应（不依赖运行时、不发 Python），用 `autoauth-dump qb1` ——
+> 它直接连服务器发一次 AutoAuth 并把完整响应结构 dump 出来。两者的区别：
+> `hook` 看的是**官方运行时自己发的请求**，`autoauth-dump` 看的是**我们自己发的请求**。
+> 结论见 [docs/AutoAuth响应字段实测.md](docs/AutoAuth响应字段实测.md)。
+
 ### 关于「永久在线 / 不开游戏也在线」
 
 做不到纯 HTTP 的永久在线，两层都验证过：
@@ -193,7 +296,7 @@ JskpBoxManager.exe clear qb1        清除登录
 JskpBoxManager.exe status qb1       输出状态（可重定向到文件）
 JskpBoxManager.exe role qb1         读一次角色和攻击力（加 --dry 只显示不写入）
 JskpBoxManager.exe observe qb1      观测微信/游戏窗与凭证变化（日志 logs\observe-qb1.jsonl）
-JskpBoxManager.exe hook qb1         Frida 只读 hook（仅 qb1，日志 logs\frida-ilink-qb1.jsonl）
+JskpBoxManager.exe hook qb1         Frida 只读观测（仅 qb1；日志 logs\frida-ilink-qb1.jsonl；需 Python 3）
 JskpBoxManager.exe protorenew qb1  不开浏览器，直接用协议换新密钥（需沙箱已停）
 JskpBoxManager.exe notify           检查所有沙箱，超期未续期就推送微信
 JskpBoxManager.exe notify --probe   主动连服务器验证凭证是否还有效

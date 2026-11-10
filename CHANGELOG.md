@@ -3,6 +3,35 @@
 版本号规则：`主版本.次版本.修订号`。只修 bug 加修订号；加功能加次版本号；数据格式或用法有不兼容变化加主版本号。
 每次发版在最上面新增一节，并同步修改 `Directory.Build.props` 里的 `<Version>`。
 
+## [1.5.39] - 2026-11-10
+
+### 修复：`hook` 可能在跑「别的副本」的观测脚本
+
+`AuthProbe.ToolsDir()` 的查找顺序把 `AppContext.BaseDirectory` 排在第一位。这个值在
+单文件发布时指向**解压临时目录**，用 `--appdir` 从仓库里跑时又指向**仓库根**，
+于是拿安装目录跑、实际执行的却是仓库里那份 `hook_watch.py`。实测日志里就是：
+
+```
+auth probe watcher: ... D:\a_game_scrpit\JskpBoxManager\tools\lean-refresh\hook_watch.py
+                                   ↑ 仓库，不是 D:\a_game_scrpit\JskpBoxManager-exe
+```
+
+后果是改了脚本不生效、或者两个副本行为不一致时极难排查。
+现在 `AppPaths.AppDir`（真正的程序目录）排第一，并且发现用的不是程序目录那份时，
+会在 `logs\app.log` 里记一行。
+
+### 文档：补全 `hook` 的依赖说明
+
+README 之前完全没写 `hook` 需要装什么。现已新增「需要先装的软件」分节（必需 / 可选 / 开发三档）
+和「Frida 观测（hook）」整节：
+
+- 依赖表：**Python 3 不自动装**（程序只检测并提示），`frida` / `psutil` / `pefile` **自动装**；
+- 安装命令与自检命令（`py -3 -c "import frida,psutil,pefile"`）；
+- 参数说明（`--seconds` / `--no-launch` / `--no-stop` / `--mode`）与产物位置；
+- 明确 `hook` 与 `autoauth-dump` 的区别：前者看**官方运行时自己发的**请求，后者看**我们自己发的**。
+
+`Wireshark`（`token` / `keylog` 用）也在可选依赖里写清了「必须带 TShark」。
+
 ## [1.5.38] - 2026-11-10
 
 ### 修复：qb4 为什么又失效了（三个叠加的缺陷，都不是「服务端固定寿命」）

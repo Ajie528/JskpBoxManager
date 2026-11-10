@@ -425,6 +425,8 @@ public static class Ilink
     public static void ClearRevoked(string box)
     {
         try { File.Delete(BoxPaths.RevokedFile(box)); } catch { }
+        // 冷却记录一起清：用户明确表示「这些 key 我想再试一遍」
+        HistoryCooldown.ClearAll(box);
     }
 
     /// <summary>只撤销某一把 key 的作废登记（手动试这把历史 key 时用）。</summary>
@@ -470,6 +472,24 @@ public static class Ilink
             }
         }
         return list.OrderByDescending(c => c.IsVault).ThenByDescending(c => c.SavedAt).ToList();
+    }
+
+    /// <summary>
+    /// 真正值得逐把去问服务端的那部分历史凭证：排除已作废，再排除正在冷却期的。
+    /// <para>
+    /// 判据只有「这把能不能现在就试」——是否和 live 相同由调用方自己判断，
+    /// 因为不同调用点对「要不要包含 live 这把」要求不一样。
+    /// </para>
+    /// </summary>
+    public static List<CredCandidate> ProbeableHistory(string box)
+    {
+        try
+        {
+            return CredentialHistory(box)
+                .Where(c => !c.Revoked && HistoryCooldown.Allowed(box, c.KeyHash))
+                .ToList();
+        }
+        catch { return new List<CredCandidate>(); }
     }
 
     /// <summary>把某份凭证（金库或历史快照目录）里的 key/psk/配套文件写进 live（不删除 live 的 host 等其它文件）。</summary>
@@ -597,6 +617,7 @@ public static class Ilink
     public static void ClearVault(string box)
     {
         ProtocolRenew.DropSnapshot(box, "clear-login");
+        HistoryCooldown.ClearAll(box);
         foreach (var p in new[] { BoxPaths.CredentialDir(box), System.IO.Path.Combine(BoxPaths.WmpfVault(box), "ilink") })
             try { if (Directory.Exists(p)) Directory.Delete(p, true); } catch { }
     }

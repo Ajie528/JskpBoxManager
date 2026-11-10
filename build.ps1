@@ -35,3 +35,19 @@ $shaFile = Join-Path $root 'dist\JskpBoxManager.exe.sha256'
 "{0}  {1:N1} MB" -f $exe.FullName, ($exe.Length / 1MB)
 "{0}" -f $zip
 "sha256 {0}" -f $sha
+
+# 打包完直接部署到现役安装目录（只换程序，不动 profiles/logs 等运行数据）。
+# 默认部署；不想动本机安装就设 JSKP_SKIP_DEPLOY=1（CI 上本来就没这个目录，会自动跳过）。
+# 想换目标目录：deploy.ps1 -Target <路径>
+$deployTarget = 'D:\a_game_scrpit\JskpBoxManager-exe'
+if ($env:JSKP_SKIP_DEPLOY -eq '1') {
+    "跳过部署（JSKP_SKIP_DEPLOY=1）"
+}
+elseif (-not (Test-Path $deployTarget)) {
+    "跳过部署：目标目录不存在（$deployTarget）"
+}
+else {
+    ""
+    & (Join-Path $root 'deploy.ps1') -SkipBuild
+    if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { throw "deploy.ps1 失败（$LASTEXITCODE）" }
+}

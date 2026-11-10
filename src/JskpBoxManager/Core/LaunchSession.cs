@@ -445,11 +445,16 @@ public sealed class LaunchSession
         try
         {
             var live = Ilink.Live(_box);
-            var list = Ilink.CredentialHistory(_box)
+            var all = Ilink.CredentialHistory(_box);
+            var list = all
                 .Where(c => !c.Revoked)
+                .Where(c => HistoryCooldown.Allowed(_box, c.KeyHash))
                 .Where(c => !live.Valid || c.KeyHash != live.KeyHash)
                 .ToList();
-            if (list.Count > 0) L($"history candidates available: {list.Count} ({string.Join(",", list.Take(5).Select(c => c.KeyShort))})");
+            int cooling = all.Count(c => !c.Revoked && !HistoryCooldown.Allowed(_box, c.KeyHash));
+            if (list.Count > 0) L($"history candidates available: {list.Count} ({string.Join(",", list.Take(5).Select(c => c.KeyShort))})"
+                + (cooling > 0 ? $" | {cooling} 把在冷却期" : ""));
+            else if (cooling > 0) L($"history candidates all cooling down: {cooling} 把被拒过，先不重试");
             return list.Count > 0;
         }
         catch (Exception ex)
@@ -483,6 +488,7 @@ public sealed class LaunchSession
         var live = Ilink.Live(_box);
         var tryList = Ilink.CredentialHistory(_box)
             .Where(c => !c.Revoked)
+            .Where(c => HistoryCooldown.Allowed(_box, c.KeyHash))
             .Where(c => !live.Valid || c.KeyHash != live.KeyHash)
             .ToList();
         if (tryList.Count == 0) return false;
@@ -503,6 +509,7 @@ public sealed class LaunchSession
                 if (pr.Ok)
                 {
                     L($"history recover OK (protocol) with key {c.KeyHash} -> {pr.NewKeyHash}");
+                    HistoryCooldown.Clear(_box, c.KeyHash);
                     Phase(BoxPhase.Stopped, "已用历史凭证恢复（协议续期），点「启动游戏」即可进入");
                     return true;
                 }
@@ -524,6 +531,7 @@ public sealed class LaunchSession
                 if (rec.TryOne(c))
                 {
                     L($"history recover OK (cold start) with key {c.KeyHash}");
+                    HistoryCooldown.Clear(_box, c.KeyHash);
                     try { Ilink.Save(_box, "history-recover"); } catch { }
                     Phase(BoxPhase.InGame, "已用历史凭证免扫恢复");
                     return true;

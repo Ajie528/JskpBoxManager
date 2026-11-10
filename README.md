@@ -33,6 +33,63 @@
 | `paths.json` | 手动指定的软件路径（没手动指定就没有） |
 | `logs\sslkeys-qbN.log` | 取 Token 时导出的 TLS 密钥（**能解密你的加密流量，不要外发**） |
 
+完整的目录清单见下面「程序目录结构」一节。
+
+## 程序目录结构
+
+安装目录里**程序和运行数据是混在一起的**（这样整个目录拷到别的电脑就能用）。
+升级时请只替换 `JskpBoxManager.exe`，或者用仓库里的 `deploy.ps1`，**不要整目录覆盖**，否则会删掉登录凭证。
+
+### 程序文件（可以放心替换 / 重装）
+
+| 名称 | 说明 |
+| --- | --- |
+| `JskpBoxManager.exe` | 主程序，单文件自带运行时 |
+| `CHANGELOG.md` / `README.md` | 更新记录和本说明 |
+| `tools\lean-refresh\` | Frida 观测脚本，`hook` 命令用 |
+
+### 配置（程序会读，可以手动改；删了会回到默认值）
+
+| 名称 | 说明 |
+| --- | --- |
+| `keepalive.json` | 静默保活：开关、计划时刻、协议续期、轮换额度 |
+| `notify.json` | 过期提醒：推送通道、预警阈值、主动探测间隔 |
+| `box-notes.json` | 每个沙箱的账号备注（桌面快捷方式的名字取自这里） |
+| `protocol.json` | 协议服务的端口和令牌（**令牌等同登录权，不要外发**） |
+| `paths.json` | 手动指定的 Sandboxie / QQ 浏览器路径（没手动指定就没有这个文件） |
+| `update.json` | 自动更新的检查时间和「跳过此版本」 |
+| `migrated.json` | 已从旧版导入过的标记（删了下次启动会重新提示导入） |
+
+### 运行数据（**不要删，删了就丢登录**）
+
+| 名称 | 说明 |
+| --- | --- |
+| `profiles\qbN\wmpf\` | 登录金库 + 游戏包缓存。`wmpf\ilink\` 里是微信免扫凭证，`wmpf\Applet\` 里是游戏包（每号约 6～7 GB，删了下次要重新下载） |
+| `profiles\qbN\credential\` | 历史凭证快照（最多 30 份）、作废登记、冷却名单。**免扫失效时靠它逐个试回来** |
+| `profiles\qbN\browser\` | QQ 浏览器的登录态（cookie 等） |
+| `profiles\qbN\refresh-need-scan.txt` | 待扫码标记；存在时启动会直接摆二维码 |
+| `logs\ilink-events.jsonl` | 凭证事件（换 key / 被作废 / 扫码 / 保活结果），排查免扫问题的核心依据 |
+| `logs\qbN.log` | 每个沙箱的详细运行日志 |
+| `logs\qbN.rotate-log` | 每次换 key 的记账，用于「每天最多换 N 次」的风控额度 |
+| `logs\qbN.renew-attempt` | 续期「结果未知」标记；正常情况会自动清掉 |
+| `logs\sslkeys-qbN.log` | 取 Token 时导出的 TLS 密钥（**能解密你的加密流量，不要外发**） |
+
+### 可以随时删除（都会自动重建或重新生成）
+
+| 名称 | 说明 |
+| --- | --- |
+| `logs\` 里的旧日志 | 排查完就能删；程序按需新建 |
+| `logs\frida-ilink-*.jsonl/.txt` | `hook` 抓的观测日志，只是归档，程序不会回头读 |
+| `samples\` | 「采集数据样板」生成的排查截面（只有哈希，不含明文密钥） |
+| `update\` | 自动更新下载的临时文件，装完即可清空 |
+| `profiles\qbN\backups\` | **旧版遗留**，现版本不会再写这个目录，可直接删 |
+
+### 占用空间说明
+
+主要占用是 `profiles\qbN\wmpf\Applet\`（游戏包缓存），每个号约 6～7 GB，16 个号合计 60 GB 以上。
+它的作用是清空沙箱后**不必重新下载游戏**。如果实在要腾空间，这是唯一能大幅瘦身的地方，
+但代价是下次启动每个号都要重新下载一遍。
+
 ## 从旧版（PowerShell 版 QQ 多开管理）迁移
 
 1. 先关掉旧版的「QQ多开管理」窗口，并确认没有沙箱正在运行。
@@ -149,11 +206,16 @@ JskpBoxManager.exe unpack qb1       定位并解包游戏 wxapkg（logs\wxapkg-q
 JskpBoxManager.exe capture qb1      CDP 抓 wx.request / wx.login（本游戏抓不到，留作排查）
 JskpBoxManager.exe getcode qb1      CDP 取 wx.login code（本游戏取不到，仅兼容）
 JskpBoxManager.exe server           本机协议 HTTP 服务（提供 /token）
+JskpBoxManager.exe samples          采集一份免扫状态截面到 samples\（排查用）
+JskpBoxManager.exe autoauth-dump qb1   抓一次 AutoAuth 原始响应（会真实换 key，可加 --no-commit）
+JskpBoxManager.exe shortcuts        按当前沙箱重建桌面快捷方式（qbN-角色名）
 JskpBoxManager.exe version          输出版本号
 JskpBoxManager.exe update           检查并更新到最新版本（不打开界面）
 ```
 
 抓业务登录接口的步骤见 [docs/抓登录接口与解包.md](docs/抓登录接口与解包.md)。
+免扫失效的排查工具与已归档样本见 [samples/README.md](samples/README.md)，
+「服务端到底回不回传有效期」的实测结论见 [docs/AutoAuth响应字段实测.md](docs/AutoAuth响应字段实测.md)。
 
 ## 开发与发版
 

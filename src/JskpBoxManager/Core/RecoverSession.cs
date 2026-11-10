@@ -19,13 +19,16 @@ public sealed class RecoverSession
         Out($"开始用历史凭证恢复 {_box} 的免扫登录…");
 
         var cands = Ilink.CredentialHistory(_box);
-        var tryList = cands.Where(c => !c.Revoked).ToList();
+        var tryList = cands.Where(c => !c.Revoked && HistoryCooldown.Allowed(_box, c.KeyHash)).ToList();
         if (tryList.Count == 0)
         {
-            Out("没有可用的历史凭证（都已作废或没有备份），只能重新扫码。");
+            var cooling = cands.Count(c => !c.Revoked && !HistoryCooldown.Allowed(_box, c.KeyHash));
+            Out(cooling > 0
+                ? $"还剩 {cooling} 把历史凭证在被拒冷却期里（默认 {HistoryCooldown.DefaultHours:0} 小时），暂不重试；这次只能重新扫码。"
+                : "没有可用的历史凭证（都已作废或没有备份），只能重新扫码。");
             return 1;
         }
-        Out($"共 {tryList.Count} 把可试（跳过 {cands.Count - tryList.Count} 把已作废）。每把约 1~2 分钟。");
+        Out($"共 {tryList.Count} 把可试（跳过 {cands.Count - tryList.Count} 把已作废/冷却中）。每把约 1~2 分钟。");
 
         BoxRuntime.RegisterLauncher(_box, "recover");
         try
@@ -43,6 +46,7 @@ public sealed class RecoverSession
                 if (pr.Ok)
                 {
                     Out($"✓ 成功：key {c.KeyShort} 协议续期通过，已换新 key {pr.NewKeyHash}。");
+                    HistoryCooldown.Clear(_box, c.KeyHash);
                     L($"recover OK (protocol) with key {c.KeyHash} -> {pr.NewKeyHash}");
                     Out("提示：这个号已恢复免扫，直接点「启动游戏」即可进入；不需要再扫码。");
                     return 0;
@@ -58,6 +62,7 @@ public sealed class RecoverSession
                 {
                     Out($"✓ 成功：key {c.KeyShort} 能免扫，已进入游戏并存回金库。");
                     L($"recover OK with key {c.KeyHash}");
+                    HistoryCooldown.Clear(_box, c.KeyHash);
                     NeedScan.Clear(_box);
                     NeedScan.ClearQrStreak(_box);
                     BoxStatusFile.Write(_box, BoxPhase.InGame, "已用历史凭证免扫恢复");
@@ -102,6 +107,14 @@ public sealed class RecoverSession
 
         // 纯网络探测：不停箱、不写文件、不开浏览器
         var r = ProtocolRenew.ProbeFile(acct.FullName, _box);
+
+        // 被拒的历史 key 进冷却，不再每轮重试。
+        // 这里**不能**登记成永久作废：实测 -13 会自己恢复——qb4 的 c21a5cc3
+        // 在 11-07 15:27 探测时是 -13，11-09 10:38 再用它却被服务端接受了。
+        // 但也不能什么都不记：qb4 在 11-10 的 04:15 与 08:42 把同样 16 把全试了两遍，
+        // 多打出去的 32 次 AutoAuth 本身就是风控要看的异常特征。
+        if (!r.Ok && r.Rejected) HistoryCooldown.Mark(_box, c.KeyHash, r.Code);
+
         if (!r.Ok) return r;
 
         // 服务端已认可并换新：现在才停箱落盘
@@ -118,10 +131,25 @@ public sealed class RecoverSession
         }
         SyncCandidateToVault(c);
 
-        if (!ProtocolRenew.CommitToFile(r, out var err))
+        // 关键：新 key 必须写进 **live + 金库**，不能只写历史快照。
+        // 服务端在探测成功那一刻已经轮换过了，本地若还留着被轮换掉的旧 key，
+        // 重新启动时运行时会再发一次 AutoAuth，同一号上就出现两条有效分支，
+        // 之后一起被判 -13（qb4 11-09 10:38 的 a4d97938 / 3d0a2ead 就是这样来的）。
+        if (!ProtocolRenew.CommitToBox(_box, r, out var err))
         {
-            L("recover: commit new key failed: " + err);
-            return new ProtocolRenew.Result(false, "拿到新 key 但写入失败：" + err, "", long.MaxValue);
+            L("recover: commit new key to box failed: " + err + " -> fall back to snapshot write");
+            if (!ProtocolRenew.CommitToFile(r, out var err2))
+            {
+                L("recover: commit new key failed: " + err2);
+                return new ProtocolRenew.Result(false, "拿到新 key 但写入失败：" + err2, "", long.MaxValue);
+            }
+        }
+        else
+        {
+            // live/金库写成功后再把历史快照也更新一份，避免下次从这份快照恢复时
+            // 又拿出一把早被轮换掉的 key。
+            if (!ProtocolRenew.CommitToFile(r, out var snapErr))
+                L("recover: update snapshot failed (not fatal): " + snapErr);
         }
 
         CredentialProbe.RecordRotationPublic(_box, r.NewKeyHash, "recover-probe");

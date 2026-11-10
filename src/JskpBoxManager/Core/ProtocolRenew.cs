@@ -178,7 +178,15 @@ public static class ProtocolRenew
 
         var oldHash = Ilink.ShortSha256(Encoding.UTF8.GetBytes(
             Convert.ToBase64String(cred.AutoKey) + "|" + Convert.ToBase64String(cred.EncKey)));
-        var (ok, code, newKey, newEnc, newSrv, why) = Exchange(cred, uin, host, port);
+        // 环境变量/标记文件开了留档，就把这次交换的完整过程一起抓下来
+        var cap = AutoAuthDump.Enabled ? new AutoAuthCapture { Box = boxForLog, Via = "probe" } : null;
+        var (ok, code, newKey, newEnc, newSrv, why) = Exchange(cred, uin, host, port, cap);
+        if (cap != null)
+        {
+            cap.Code = ok ? 0 : code;
+            cap.Why = why;
+            try { AutoAuthDump.Write(boxForLog, cap); } catch { }
+        }
         if (!ok) return new Result(false, why, "", code);
         var hash = Ilink.ShortSha256(Encoding.UTF8.GetBytes(
             Convert.ToBase64String(newKey) + "|" + Convert.ToBase64String(newEnc)));
@@ -201,6 +209,33 @@ public static class ProtocolRenew
         {
             var cred = ReadCredentialFile(r.SourceFile);
             WriteCredential(cred, r.PendingKey, r.PendingEnc, r.PendingServerId);
+            return true;
+        }
+        catch (Exception ex) { error = ex.Message; return false; }
+    }
+
+    /// <summary>
+    /// 把探测拿到的新凭证写进这个沙箱的 <b>live + 金库</b>（不是只写历史快照）。
+    ///
+    /// <para>
+    /// 这一步不能省。AutoAuth 是轮换语义：探测成功那一刻，服务端已经把 key 换成新的了。
+    /// 如果只把新 key 写进历史快照，live 和金库里留的还是刚被轮换掉的那把，
+    /// 接下来「用恢复出来的旧 key 重新启动」就会让运行时自己再发一次 AutoAuth，
+    /// 于是同一个号上同时存在两条有效的 key 分支（服务端那把 a4d97938 + 运行时新滚的 3d0a2ead）。
+    /// qb4 在 2026-11-09 10:38 就是这个状态，第二天凌晨两条分支一起被判 -13。
+    /// </para>
+    /// </summary>
+    public static bool CommitToBox(string box, Result r, out string error)
+    {
+        error = "";
+        if (r?.PendingKey == null || r.PendingKey.Length == 0) { error = "没有待写入的新凭证"; return false; }
+        try
+        {
+            // ReadCredential 取 live 与金库中较新那份；调用方刚把候选同步过，两份一致。
+            var cred = ReadCredential(box);
+            WriteCredential(cred, r.PendingKey, r.PendingEnc, r.PendingServerId);
+            Log.Box(box, $"protocol renew: new key {r.NewKeyHash} written to live + vault "
+                + $"(was {r.SourceFile}) so the relaunch uses the key the server just issued");
             return true;
         }
         catch (Exception ex) { error = ex.Message; return false; }
@@ -247,7 +282,76 @@ public static class ProtocolRenew
         catch { return null; }
     }
 
-    public static bool AttemptPending(string box) => LastAttemptAt(box) != null;
+    /// <summary>
+    /// 有没有「上次续期结果未知」的标记。<b>会自动清掉已经过期的标记</b>，见 <see cref="IsAttemptStale"/>。
+    /// </summary>
+    public static bool AttemptPending(string box)
+    {
+        if (!File.Exists(AttemptFile(box))) return false;
+        if (IsAttemptStale(box)) return false;   // 里面已经删掉文件
+        return true;
+    }
+
+    /// <summary>
+    /// 标记是否已经过期。判定按「这个疑问还成不成立」来，命中任一条即清掉：
+    /// <list type="number">
+    /// <item>live 已经不是发送前那把 key —— 那次请求已被后续动作（扫码 / 历史凭证恢复 / 运行时换新 / 导入）取代。</item>
+    /// <item>发送前那把 key 已被登记作废 —— 已经没有「可能换成了新钥匙却没写回」的东西可确认。</item>
+    /// <item>标记超过 <see cref="MaxAttemptHours"/> 小时 —— 这么久的「结果未知」早已无从核对，
+    ///       再留着它的唯一效果就是让启动预检和主动探测永久跳过这个号。</item>
+    /// </list>
+    /// <para>
+    /// 为什么必须有这套清理：标记本来是防「先发送、没写回，重放会二次消耗」的。但它只在
+    /// live 仍是那把 key 时才有意义。旧版把它当永久开关，于是 qb4 / qb16 一旦出现过一次超时，
+    /// 之后所有自动确认都被跳过，日志里一路 `previous renew result unknown -> skip`。
+    /// </para>
+    /// </summary>
+    static bool IsAttemptStale(string box)
+    {
+        try
+        {
+            var f = AttemptFile(box);
+            if (!File.Exists(f)) return false;
+            var o = JsonFile.ReadObject(f);
+            var oldSha = JsonFile.Str(o, "oldKeySha");
+            var atText = JsonFile.Str(o, "at");
+
+            void Drop(string why)
+            {
+                try { File.Delete(f); } catch { }
+                Log.Box(box, "protocol renew: attempt marker dropped (" + why + ")");
+            }
+
+            if (oldSha.Length > 0)
+            {
+                var live = Ilink.Live(box);
+                if (live.Valid && live.KeyHash != oldSha)
+                {
+                    Drop($"live key {live.KeyHash} is not the one that was sent ({oldSha}), request superseded");
+                    return true;
+                }
+                if (Ilink.IsRevoked(box, oldSha))
+                {
+                    Drop($"key {oldSha} has been retired; nothing left to confirm");
+                    return true;
+                }
+            }
+
+            if (DateTime.TryParseExact(atText, "yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture,
+                    DateTimeStyles.AssumeLocal, out var at)
+                && (DateTime.Now - at).TotalHours >= MaxAttemptHours)
+            {
+                Drop($"marker is {(DateTime.Now - at).TotalHours:F1}h old (limit {MaxAttemptHours}h); "
+                    + "keeping it would disable preflight/probe forever");
+                return true;
+            }
+            return false;
+        }
+        catch { return false; }
+    }
+
+    /// <summary>「结果未知」标记最多认多久。超过就不再把它当阻塞条件（见 <see cref="IsAttemptStale"/>）。</summary>
+    public const double MaxAttemptHours = 24;
 
     // ---------------- 续期结果快照（防运行时写回旧 key） ----------------
 
@@ -325,9 +429,90 @@ public static class ProtocolRenew
         catch (Exception ex) { Log.Box(box, "protocol renew: snapshot save failed " + ex.Message); }
     }
 
-    /// <summary>当前这把凭证最后一次换新距今多少小时；live 和金库取较新的那个。没有有效凭证返回 null。</summary>
-    public static double? KeyAgeHours(string box)
+    // ---------------- 主动抓取 AutoAuth 响应 ----------------
+
+    /// <summary>
+    /// 抓一次 AutoAuth 的完整响应并 dump，用于回答「服务端到底有没有回传有效期」。
+    ///
+    /// <para>
+    /// 与 <see cref="Renew"/> 的区别：这里**只关心拿到响应**，成功时也会把新 key 写回
+    /// （因为服务端已经轮换，不写回就丢钥），但会明确告诉调用方这件事发生了。
+    /// 拒绝（-13/-14）时同样写 dump —— 那正是最想看的样本。
+    /// </para>
+    ///
+    /// <para>沙箱必须已停：运行中的运行时会把旧 key 写回文件，导致新 key 丢失。</para>
+    /// </summary>
+    /// <param name="from">用哪份凭证：live/vault 优先，或指定某个 tdi_account.txt 路径。</param>
+    public static (AutoAuthCapture Capture, string Report) CaptureOnce(string box, string from = "",
+        bool commitOnSuccess = true, string host = DefaultHost, int port = DefaultPort)
     {
+        var cred = from.Length > 0 ? ReadCredentialFile(from) : ReadCredential(box);
+        var cap = new AutoAuthCapture { Box = box, Via = "capture" };
+        if (!ulong.TryParse(cred.Uin, out var uin))
+        {
+            cap.DecryptError = "Uin 不是数字：" + cred.Uin;
+            return (cap, "凭证里的 uin 不可用：" + cred.Uin);
+        }
+        if (cred.EncKey.Length != 24 || cred.AutoKey.Length == 0)
+        {
+            cap.DecryptError = "凭证不完整";
+            return (cap, $"凭证不完整：key={cred.AutoKey.Length}B enc={cred.EncKey.Length}B");
+        }
+
+        var (ok, code, newKey, newEnc, newSrv, why) = Exchange(cred, uin, host, port, cap);
+        cap.Code = ok ? 0 : code;
+        cap.Why = why;
+
+        string extra = "";
+        if (ok && commitOnSuccess)
+        {
+            // 服务端已经轮换了：不写回就是直接丢钥
+            try
+            {
+                // 必须 live + 金库一起写。
+                // WriteCredential 按 cred.Path 写，而 ReadCredential 取的是「live 与金库中较新那份」，
+                // live 比金库新时就只改了 live（qb1 实测：抓完 live=6409afb9、金库还是 21ac88de 的旧状态），
+                // 启动时 Ilink.Restore 会因「vault 更旧」而把它推回去，等于白抓一次。
+                var liveRoot = BoxPaths.WmpfLive(box);
+                var vaultRoot = BoxPaths.WmpfVault(box);
+                var idx = cred.Path.IndexOf(@"\ilink\", StringComparison.OrdinalIgnoreCase);
+                if (idx > 0)
+                {
+                    var rel = cred.Path[(idx + 1)..];          // ilink\default\tdi\...
+                    foreach (var root in new[] { liveRoot, vaultRoot })
+                    {
+                        var target = Path.Combine(root, rel);
+                        if (!File.Exists(target)) continue;
+                        WriteCredential(ReadCredentialFile(target), newKey, newEnc, newSrv);
+                    }
+                }
+                else
+                {
+                    // --from 指向历史快照：直接写那份
+                    WriteCredential(cred, newKey, newEnc, newSrv);
+                }
+
+                extra = "已写回新凭证到 live + 金库";
+                // 记账：否则「每号每天最多换 N 次」这条风控判据会漏掉抓取产生的轮换
+                CredentialProbe.RecordRotationPublic(box, cap.NewKeySha, "autoauth-capture");
+                var lv = Ilink.Live(box);
+                if (!lv.Valid || lv.KeyHash != cap.NewKeySha)
+                    extra += $"（⚠ live 校验不符：{lv.KeyHash}，请手动核对）";
+            }
+            catch (Exception ex) { extra = "写回失败（这把 key 已丢，需要重新扫码）：" + ex.Message; }
+        }
+        else if (ok)
+        {
+            extra = "⚠ 未写回新凭证（--no-commit），这把旧 key 已被服务端轮换掉";
+        }
+
+        var report = AutoAuthDump.Write(box, cap);
+        Log.Box(box, $"autoauth capture ({cap.Via}): {AutoAuthDump.Summary(cap)} {extra}".TrimEnd());
+        return (cap, report);
+    }
+
+    /// <summary>当前这把凭证最后一次换新距今多少小时；live 和金库取较新的那个。没有有效凭证返回 null。</summary>
+    public static double? KeyAgeHours(string box)    {
         DateTime newest = DateTime.MinValue;
         try
         {
@@ -499,7 +684,14 @@ public static class ProtocolRenew
                     + $"请求体 {bodyDry.Length} 字节（未发送）");
             }
 
-            var (ok, code, newKey, newEnc, newSrv, why) = Exchange(cred, uin, host, port);
+            var capRenew = AutoAuthDump.Enabled ? new AutoAuthCapture { Box = box, Via = "renew" } : null;
+            var (ok, code, newKey, newEnc, newSrv, why) = Exchange(cred, uin, host, port, capRenew);
+            if (capRenew != null)
+            {
+                capRenew.Code = ok ? 0 : code;
+                capRenew.Why = why;
+                try { AutoAuthDump.Write(box, capRenew); } catch { }
+            }
             if (!ok) return Fail(box, why, code);
 
             // ---- 3. 写回 ----
@@ -526,8 +718,9 @@ public static class ProtocolRenew
     /// 真正发一次 AutoAuth 并解析结果。不写任何文件——把「网络交换」和「落盘」分开，
     /// 才能做到「弹扫码框时先不停箱判断历史 key 还能不能用」。
     /// </summary>
+    /// <param name="capture">非空时把这次交换的完整过程（请求/密文/逐层字段）填进去，供 <see cref="AutoAuthDump"/> 输出。</param>
     static (bool Ok, long Code, byte[] NewKey, byte[] NewEnc, byte[] NewSrv, string Why)
-        Exchange(Credential cred, ulong uin, string host, int port)
+        Exchange(Credential cred, ulong uin, string host, int port, AutoAuthCapture capture = null)
     {
         var plain = MmtlsProtocol.BuildAutoAuthPlain(cred.DeviceId, cred.AutoKey);
         var (hybrid, temp) = MmtlsProtocol.HybridEncrypt(plain, cred.EncKey);
@@ -536,31 +729,88 @@ public static class ProtocolRenew
         var body = MmtlsProtocol.Concat(
             MmtlsProtocol.SessionWpkgHead(uin, cred.ServerId, appId), hybrid);
 
+        if (capture != null)
+        {
+            capture.Host = host;
+            capture.Port = port;
+            capture.Uin = uin.ToString();
+            capture.OldKeySha = Ilink.ShortSha256(Encoding.UTF8.GetBytes(
+                Convert.ToBase64String(cred.AutoKey) + "|" + Convert.ToBase64String(cred.EncKey)));
+            capture.OldEncLen = cred.EncKey.Length + "B";
+            capture.PlainLen = plain.Length;
+            capture.HybridLen = hybrid.Length;
+            capture.BodyLen = body.Length;
+            capture.RequestHex = Convert.ToHexString(body);
+        }
+
         using var conn = new MmtlsClient(host, port);
         conn.Handshake();
         conn.SendApp(MmtlsProtocol.CmdAutoAuth, body);
         var (cmd, _, resp) = conn.RecvApp();
+
+        if (capture != null)
+        {
+            capture.RespCmdId = (int)cmd;
+            capture.RespBodyLen = resp.Length;
+            capture.RespBodyHex = Convert.ToHexString(resp);
+        }
+
         if (cmd != MmtlsProtocol.CmdAutoAuth)
             return (false, long.MaxValue, null, null, null, $"响应 cmdid 是 {cmd}，不是 {MmtlsProtocol.CmdAutoAuth}");
 
         var hybridResp = StripWpkgHead(resp);
+        if (capture != null)
+        {
+            capture.WpkgHeadLen = resp.Length - hybridResp.Length;
+            capture.CipherLen = hybridResp.Length;
+            capture.CipherHex = Convert.ToHexString(hybridResp);
+        }
+
         byte[] decoded;
         try { decoded = MmtlsProtocol.HybridDecrypt(hybridResp, temp); }
-        catch (Exception ex) { return (false, long.MaxValue, null, null, null, "响应解密失败：" + ex.Message); }
+        catch (Exception ex)
+        {
+            if (capture != null) capture.DecryptError = ex.Message;
+            return (false, long.MaxValue, null, null, null, "响应解密失败：" + ex.Message);
+        }
+
+        if (capture != null)
+        {
+            capture.DecodedLen = decoded.Length;
+            capture.DecodedHex = Convert.ToHexString(decoded);
+            capture.Top = MmtlsProtocol.PbParse(decoded);
+        }
 
         var f = MmtlsProtocol.PbParse(decoded);
         if (!f.TryGetValue(1, out var baseF) || baseF.Bytes.Length == 0)
             return (false, long.MaxValue, null, null, null, "响应缺 base 结果块");
         var bf = MmtlsProtocol.PbParse(baseF.Bytes);
         long code = bf.TryGetValue(1, out var codeF) ? MmtlsProtocol.AsSigned(codeF.Num) : long.MaxValue;
+
+        if (capture != null)
+        {
+            capture.Base = bf;
+            capture.Code = code;
+            if (f.TryGetValue(2, out var u0) && u0.Bytes.Length > 0)
+            {
+                capture.Unified = MmtlsProtocol.PbParse(u0.Bytes);
+                if (capture.Unified.TryGetValue(2, out var s0) && s0.Bytes.Length > 0)
+                    capture.Session = MmtlsProtocol.PbParse(s0.Bytes);
+            }
+        }
+
         if (code != 0)
-            return (false, code, null, null, null, code switch
+        {
+            var why = code switch
             {
                 -2 => "服务端拒绝（-2）：这把凭证已不可用或设备信息不匹配",
                 -13 => "凭证已被服务端作废（-13）：多半是同一微信号在别处扫码顶掉，需要重新扫码",
                 -14 => "服务端拒绝（-14）：会话/票据已失效",
                 _ => $"业务层返回 {code}",
-            });
+            };
+            if (capture != null) capture.Why = why;
+            return (false, code, null, null, null, why);
+        }
 
         if (!f.TryGetValue(2, out var unified) || unified.Bytes.Length == 0)
             return (false, 0, null, null, null, "响应缺 unified 块，拿不到新凭证");
@@ -572,64 +822,38 @@ public static class ProtocolRenew
         byte[] newKey = sect.TryGetValue(3, out var k) ? k.Bytes : Array.Empty<byte>();
         byte[] newEnc = sect.TryGetValue(4, out var e) ? e.Bytes : Array.Empty<byte>();
         byte[] newSrv = sect.TryGetValue(9, out var s) ? s.Bytes : Array.Empty<byte>();
+
+        if (capture != null)
+        {
+            capture.NewKeyLen = newKey.Length;
+            capture.NewEncLen = newEnc.Length;
+            capture.NewSrvLen = newSrv.Length;
+            if (newKey.Length > 0)
+                capture.NewKeySha = Ilink.ShortSha256(Encoding.UTF8.GetBytes(
+                    Convert.ToBase64String(newKey) + "|" + Convert.ToBase64String(newEnc)));
+        }
+
         if (newKey.Length == 0 || newEnc.Length != 24)
             return (false, 0, null, null, null, $"服务端返回的新凭证不完整（key={newKey.Length} enc={newEnc.Length}）");
 
         return (true, 0, newKey, newEnc, newSrv, "");
     }
 
-    /// <summary>
-    /// 把 AutoAuth 响应里的字段结构打到日志（JSKP_DUMP_AUTOAUTH=1 时启用）。
-    /// 目的：确认服务端是否回传「有效期 / 到期时间」之类的字段——
-    /// 有就能算出免扫的真实上限，没有就说明寿命只能靠实测统计。
-    /// </summary>
-    static void DumpUnknownFields(string box, Dictionary<int, (ulong Num, byte[] Bytes)> uf,
-        Dictionary<int, (ulong Num, byte[] Bytes)> sect)
-    {
-        var sb = new StringBuilder();
-        sb.AppendLine("protocol renew: AutoAuth response fields (dump)");
-        sb.AppendLine("  unified{session{...}}:");
-        foreach (var kv in sect.OrderBy(x => x.Key))
-        {
-            var (num, bytes) = kv.Value;
-            if (bytes.Length > 0)
-            {
-                var hex = Convert.ToHexString(bytes[..Math.Min(bytes.Length, 32)]);
-                sb.AppendLine($"    f{kv.Key} bytes[{bytes.Length}] {hex}" + (bytes.Length > 32 ? "…" : ""));
-            }
-            else
-            {
-                // varint 可能是秒/毫秒时间戳或天数，两种都打出来方便判读
-                sb.AppendLine($"    f{kv.Key} varint={num}  signed={MmtlsProtocol.AsSigned(num)}"
-                    + (num > 1_600_000_000 && num < 2_000_000_000 ? "  (像 unix 秒)" : "")
-                    + (num > 1_600_000_000_000 && num < 2_000_000_000_000 ? "  (像 unix 毫秒)" : ""));
-            }
-        }
-        sb.AppendLine("  unified 其它字段:");
-        foreach (var kv in uf.OrderBy(x => x.Key))
-        {
-            if (kv.Key == 2) continue;
-            var (num, bytes) = kv.Value;
-            sb.AppendLine(bytes.Length > 0
-                ? $"    f{kv.Key} bytes[{bytes.Length}] {Convert.ToHexString(bytes[..Math.Min(bytes.Length, 32)])}"
-                : $"    f{kv.Key} varint={num}");
-        }
-        var text = sb.ToString();
-        Log.Box(box, text.Replace("\r\n", " | ").Replace("\n", " | ").Trim());
-        try
-        {
-            Directory.CreateDirectory(AppPaths.Logs);
-            File.AppendAllText(Path.Combine(AppPaths.Logs, box + ".autoauth-fields.txt"),
-                $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}\n{text}\n", new UTF8Encoding(false));
-        }
-        catch { }
-    }
-
     static Result Fail(string box, string why, long code)
     {
         Log.Box(box, $"protocol renew failed: {why} (code={code})");
-        // attempted 保留：下次操作会提示「上次结果未知」，不盲目重放
-        var tail = code is -2 or -13 or -14
+
+        // 服务端明确拒绝（-2/-13/-14）时结果是确定的，必须清掉 attempted 标记。
+        // 留着它的后果是永久的：`AttemptPending` 会一直为真，于是启动预检
+        // （PreflightCheckLiveKey）与主动探测（CredentialProbe.Probe）都永远跳过这个号，
+        // 「上次续期结果未知」这句话会跟到用户手动删文件为止。
+        // qb4 实测：11-09 08:06 的标记一路留到 11-10，两次启动的预检都是
+        // `previous renew result unknown -> skip`，这个号等于失去了自动确认能力。
+        bool definitive = code is -2 or -13 or -14;
+        if (definitive) ClearAttempt(box);
+
+        // 只有「结果未知」（超时 / 断网 / 解析失败）才保留标记：那种情况不能盲目重放。
+        var tail = definitive
             ? "（服务端已明确拒绝，这把凭证需要重新扫码）"
             : "（上一次请求结果未知，标记已保留，请先确认该号是否仍能免扫）";
         return new Result(false, $"协议续期失败：{why}{tail}", "", code);

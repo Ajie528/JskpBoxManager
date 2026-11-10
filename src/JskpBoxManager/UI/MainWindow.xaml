@@ -25,6 +25,8 @@
                     <Button Content="导入旧版数据" Style="{StaticResource LinkBtn}" Foreground="#93C5FD" Click="Import_Click"/>
                     <Button Content="路径设置" Style="{StaticResource LinkBtn}" Foreground="#93C5FD" Click="Paths_Click"/>
                     <Button Content="导出诊断包" Style="{StaticResource LinkBtn}" Foreground="#93C5FD" Click="Diag_Click"/>
+                    <Button Content="采集数据样板" Style="{StaticResource LinkBtn}" Foreground="#93C5FD" Click="Samples_Click"
+                            ToolTip="把所有号的免扫链龄、换新次数、密钥年龄、最后返回码导成一个横向截面（只有哈希），用来对比是哪个号出了问题"/>
                     <Button Content="版本与更新记录" Style="{StaticResource LinkBtn}" Foreground="#93C5FD" Click="About_Click" Margin="0"/>
                 </StackPanel>
             </DockPanel>

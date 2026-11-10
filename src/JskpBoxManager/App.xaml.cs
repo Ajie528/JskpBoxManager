@@ -112,7 +112,8 @@ public partial class App : Application
     static bool NeedsCliConsole(string cmd) => cmd.ToLowerInvariant() is
         "version" or "--version" or "update" or "server" or "getcode" or "wxcode"
         or "capture" or "keylog" or "token" or "unpack" or "observe" or "hook" or "trim" or "status" or "role"
-        or "recover" or "cred-save" or "cred-load" or "help" or "/?" or "-h" or "--help" or "notify";
+        or "recover" or "cred-save" or "cred-load" or "help" or "/?" or "-h" or "--help" or "notify"
+        or "samples" or "autoauth-dump" or "shortcuts";
 
     static int RunCli(string[] args)
     {
@@ -128,6 +129,9 @@ public partial class App : Application
                 Console("  .\\JskpBoxManager.exe getcode qb1");
                 Console("  .\\JskpBoxManager.exe server");
                 Console("  .\\JskpBoxManager.exe launch|refresh|stop|clear|status qbN");
+                Console("  .\\JskpBoxManager.exe samples");
+                Console("  .\\JskpBoxManager.exe autoauth-dump qbN   抓一次 AutoAuth 原始响应（会换 key）");
+                Console("  .\\JskpBoxManager.exe shortcuts            重建桌面快捷方式（qbN）");
                 Console("PowerShell 必须加 .\\ 前缀；看输出请在本窗口运行，不要双击 exe。");
                 return 0;
             }
@@ -138,7 +142,16 @@ public partial class App : Application
             }
             if (cmd == "update") return RunUpdate();
             if (cmd == "server") return RunServer(args);
-            if (cmd.Equals("notify", StringComparison.OrdinalIgnoreCase))
+            if (cmd.Equals("samples", StringComparison.OrdinalIgnoreCase))
+            {
+                ApplyAppDir(args);
+                return RunSamples();
+            }
+            if (cmd.Equals("shortcuts", StringComparison.OrdinalIgnoreCase))
+            {
+                ApplyAppDir(args);
+                return RunShortcuts();
+            }            if (cmd.Equals("notify", StringComparison.OrdinalIgnoreCase))
             {
                 ApplyAppDir(args);
                 return RunNotify(args);
@@ -186,6 +199,30 @@ public partial class App : Application
                     var pr = ProtocolRenew.Renew(box, dry);
                     Console(pr.Message);
                     return pr.Ok ? 0 : 1;
+                }
+                case "autoauth-dump":
+                {
+                    // 抓一次 AutoAuth 原始响应。会真实轮换密钥，默认成功后写回。
+                    bool noCommit = args.Contains("--no-commit");
+                    string from = "";
+                    for (int i = 2; i < args.Length - 1; i++)
+                        if (args[i].Equals("--from", StringComparison.OrdinalIgnoreCase)) from = args[i + 1];
+
+                    if (Sandboxie.Pids(box).Count > 0)
+                    {
+                        Console("沙箱里还有进程在跑。运行中的微信运行时会把旧 key 写回文件，");
+                        Console("导致这次换到的新 key 丢失。请先停箱再抓：");
+                        Console($"  .\\JskpBoxManager.exe stop {box}");
+                        return 3;
+                    }
+                    Console($"正在向 {ProtocolRenew.DefaultHost}:{ProtocolRenew.DefaultPort} 发一次 AutoAuth…");
+                    var (cap, report) = ProtocolRenew.CaptureOnce(box, from, !noCommit);
+                    Console("");
+                    Console(AutoAuthDump.Summary(cap));
+                    Console("");
+                    Console("完整报告：" + report);
+                    Console("追加记录：" + AutoAuthDump.FieldsFile(box));
+                    return cap.Ok ? 0 : (cap.Code == long.MaxValue ? 1 : 4);
                 }
                 case "scanbase":
                 {
@@ -368,9 +405,69 @@ public partial class App : Application
     ///   --check（默认）扫描所有沙箱，把超过阈值没续期的推给用户；
     ///   --test       发一条测试消息，验证通道是否配好。
     /// </summary>
-    static int RunNotify(string[] args)
+    /// <summary>
+    /// 命令行：JskpBoxManager.exe samples [--appdir 目录]
+    /// 采一次「免扫状态截面」到 &lt;程序目录&gt;\samples\yyyyMMdd-HHmmss\，并打印自动体检的结论。
+    /// 只读，不改任何运行数据；产物只有哈希与数值。
+    /// </summary>
+    static int RunSamples()
     {
-        var cfg = NotifyConfig.Load();
+        var boxes = Sandboxie.QueryBoxes();
+        if (boxes.Count == 0)
+        {
+            Console("没有找到沙箱（Sandboxie 未安装 / 未创建）。");
+            return 1;
+        }
+        var keep = Keepalive.Load();
+        var notes = Notes.Load();
+        var last = BoxSummary.LastRefreshEvents();
+        var chains = AuthChain.Load();
+        var list = boxes.Select(b => BoxSummary.Build(b, notes, keep, last, chains)).ToList();
+        BoxSummary.MarkLongestChain(list);
+
+        var cap = Samples.Take(list);
+        Console($"已采集 {cap.BoxCount} 个沙箱 -> {cap.Dir}");
+        Console("摘要：" + Path.Combine(cap.Dir, "摘要.md"));
+        if (cap.Findings.Count > 0)
+        {
+            Console("");
+            Console("体检发现：");
+            foreach (var f in cap.Findings) Console("  · " + f.Replace("**", ""));
+        }
+        return 0;
+    }
+
+    /// <summary>
+    /// 命令行：JskpBoxManager.exe shortcuts [--appdir 目录]
+    /// 按当前 16 个沙箱重建桌面快捷方式（qbN.lnk，程序自带图标）。
+    /// 顺带清掉老命名（jskp-*.lnk / 向僵尸开炮-QQ沙箱N.lnk）里指向本程序的那些。
+    /// </summary>
+    static int RunShortcuts()
+    {
+        var boxes = Sandboxie.QueryBoxes();
+        if (boxes.Count == 0)
+        {
+            Console("没有找到沙箱（Sandboxie 未安装 / 未创建）。");
+            return 1;
+        }
+        var notes = Notes.Load();
+        int made = 0;
+        foreach (var b in boxes)
+        {
+            try
+            {
+                var p = BoxSetup.CreateShortcut(b, notes.GetValueOrDefault(b, ""));
+                if (p != null) { made++; Console($"  {b,-6} -> {Path.GetFileName(p)}"); }
+            }
+            catch (Exception ex) { Console($"  {b,-6} 失败：{ex.Message}"); }
+        }
+        Console("");
+        Console($"已重建 {made} 个快捷方式（命名 qbN，图标用本程序）。");
+        return 0;
+    }
+
+    static int RunNotify(string[] args)
+    {        var cfg = NotifyConfig.Load();
         if (args.Contains("--test"))
         {
             if (!cfg.Ready)

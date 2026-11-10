@@ -407,6 +407,7 @@ public sealed class RefreshSession
             // v1.5.37：先把「被服务端明确拒绝的那一把」登记作废，再去试历史。
             // 不登记的话，下一轮保活/恢复会把这把死 key 再发一遍，纯属多打一次上游。
             Ilink.RegisterRevokedKey(_box, frozenKey, "protocol-renew-" + r.Code);
+            HistoryCooldown.Mark(_box, frozenKey, r.Code);
             L($"protocol renew rejected ({r.Code}) -> retired this key, trying historical credentials");
             BoxStatusFile.Write(_box, BoxPhase.Starting, "当前凭证已失效，正在用协议逐个确认历史凭证…");
             if (TryHistoryRecoverByProtocol())
@@ -467,10 +468,14 @@ public sealed class RefreshSession
         try
         {
             var live = Ilink.Live(_box);
-            list = Ilink.CredentialHistory(_box)
-                .Where(c => !c.Revoked)
+            var all = Ilink.CredentialHistory(_box);
+            // 冷却期内的不再重试（见 HistoryCooldown：qb4 曾经一轮轮把同样十几把反复发出去）
+            list = all
+                .Where(c => !c.Revoked && HistoryCooldown.Allowed(_box, c.KeyHash))
                 .Where(c => !live.Valid || c.KeyHash != live.KeyHash)
                 .ToList();
+            int cooling = all.Count(c => !c.Revoked && !HistoryCooldown.Allowed(_box, c.KeyHash));
+            if (cooling > 0) L($"history probe: {cooling} 把仍在被拒冷却期，本轮跳过");
         }
         catch (Exception ex)
         {
@@ -479,7 +484,7 @@ public sealed class RefreshSession
         }
         if (list.Count == 0)
         {
-            L("history probe: 没有可试的历史凭证");
+            L("history probe: 没有可试的历史凭证（都在作废/冷却中）");
             return false;
         }
 
@@ -497,6 +502,7 @@ public sealed class RefreshSession
                 if (pr.Ok)
                 {
                     L($"history probe OK with key {c.KeyHash} -> new {pr.NewKeyHash}");
+                    HistoryCooldown.Clear(_box, c.KeyHash);
                     // ProbeHistoryKey 内部已完成停箱 + 写 live + 推金库
                     return true;
                 }

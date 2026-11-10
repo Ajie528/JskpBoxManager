@@ -131,7 +131,7 @@ public static class BoxSetup
         return sectionGone;
     }
 
-    /// <summary>删掉指向该沙箱的桌面快捷方式（jskp-*.lnk，target 为本程序且参数含 launch qbN；兼容旧版 .cmd 快捷方式）。</summary>
+    /// <summary>删掉指向该沙箱的桌面快捷方式（qbN.lnk / qbN-角色名.lnk / 老的 jskp-*.lnk，靠 launch 参数判断）。</summary>
     static void RemoveShortcuts(string box)
     {
         var shellType = Type.GetTypeFromProgID("WScript.Shell");
@@ -144,7 +144,8 @@ public static class BoxSetup
                 var name = Path.GetFileName(f);
                 bool legacyName = name == $"向僵尸开炮-QQ沙箱{Sandboxie.BoxNumber(box)}.lnk";
                 bool match = legacyName;
-                if (!match && name.StartsWith("jskp-", StringComparison.OrdinalIgnoreCase))
+                if (!match && (name.StartsWith("jskp-", StringComparison.OrdinalIgnoreCase)
+                               || Regex.IsMatch(name, @"^qb\d+(-.*)?\.lnk$", RegexOptions.IgnoreCase)))
                 {
                     try
                     {
@@ -173,12 +174,16 @@ public static class BoxSetup
 
     /// <summary>
     /// 快捷方式直接指向本程序 exe + 参数，不经过 PowerShell（旧版 .lnk 里带 powershell -ExecutionPolicy Bypass 会被火绒当木马删）。
-    /// 同一沙箱的旧快捷方式（包括旧版指向 shortcuts\qbN.cmd 的）会被替换。
+    /// 同一沙箱的旧快捷方式（包括旧版指向 shortcuts\qbN.cmd 的、以及曾用 jskp- 前缀命名的）会被替换。
+    ///
+    /// 命名统一为 <c>qbN-角色名</c>（如 <c>qb1-清沫丶.lnk</c>），没有角色名时就叫 <c>qbN</c>。
+    /// 箱号在前、角色名在后：桌面按名称排序时同箱的几个会挨在一起，也方便一眼对上界面的列表。
     /// </summary>
     public static string CreateShortcut(string box, string note)
     {
         note = SafeFileName(note);
-        var path = Path.Combine(Desktop, note.Length > 0 ? $"jskp-{note}.lnk" : $"jskp-{box}.lnk");
+        var stem = note.Length > 0 ? $"{box}-{note}" : box;
+        var path = Path.Combine(Desktop, stem + ".lnk");
         var shellType = Type.GetTypeFromProgID("WScript.Shell");
         if (shellType == null) return null;
         dynamic shell = Activator.CreateInstance(shellType);
@@ -190,7 +195,10 @@ public static class BoxSetup
                 var name = Path.GetFileName(f);
                 bool legacyName = name == $"向僵尸开炮-QQ沙箱{Sandboxie.BoxNumber(box)}.lnk";
                 bool sameBox = false;
-                if (name.StartsWith("jskp-", StringComparison.OrdinalIgnoreCase))
+                // 老命名（jskp-xxx.lnk）、纯箱号（qbN.lnk）、以及带角色名的（qbN-xxx.lnk）
+                // 都可能指向同一个箱，统一靠 launch 参数判断，避免改备注后留下残影。
+                if (name.StartsWith("jskp-", StringComparison.OrdinalIgnoreCase)
+                    || Regex.IsMatch(name, @"^qb\d+(-.*)?\.lnk$", RegexOptions.IgnoreCase))
                 {
                     try
                     {
@@ -198,7 +206,8 @@ public static class BoxSetup
                         string target = l.TargetPath ?? "";
                         string args = l.Arguments ?? "";
                         sameBox = target.EndsWith(@"\" + box + ".cmd", StringComparison.OrdinalIgnoreCase)
-                                  || (target.EndsWith("JskpBoxManager.exe", StringComparison.OrdinalIgnoreCase) && Regex.IsMatch(args, @"\blaunch\s+" + box + @"\b"));
+                                  || (target.EndsWith("JskpBoxManager.exe", StringComparison.OrdinalIgnoreCase)
+                                      && Regex.IsMatch(args, @"\blaunch\s+" + box + @"\b"));
                     }
                     catch { }
                 }
@@ -210,7 +219,8 @@ public static class BoxSetup
             lnk.WorkingDirectory = AppPaths.AppDir;
             lnk.WindowStyle = 7;
             lnk.Description = note.Length > 0 ? $"向僵尸开炮 {note}（{box}）" : $"向僵尸开炮 {box}";
-            lnk.IconLocation = File.Exists(EnvDetect.QqExe) ? EnvDetect.QqExe + ",0" : AppInfo.ExePath + ",0";
+            // 用本程序自己的图标，不再借 QQ 浏览器的
+            lnk.IconLocation = AppInfo.ExePath + ",0";
             lnk.Save();
             return path;
         }

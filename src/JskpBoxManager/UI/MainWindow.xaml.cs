@@ -986,6 +986,18 @@ public partial class MainWindow : Window
         Process.Start("explorer.exe", $"/select,\"{zip}\"");
     }
 
+    /// <summary>采集一份「免扫状态截面」，方便横向对比哪个号先出问题。</summary>
+    async void Samples_Click(object sender, RoutedEventArgs e)
+    {
+        var list = _rows.Where(r => r.Summary != null).Select(r => r.Summary).ToList();
+        if (list.Count == 0) { SetStatus("还没有沙箱数据，等列表加载完再试"); return; }
+        BoxSummary.MarkLongestChain(list);
+        var cap = await RunBusy("正在采集数据样板…", () => Samples.Take(list));
+        SetStatus($"数据样板已保存到 samples\\{Path.GetFileName(cap.Dir)}"
+            + (cap.Findings.Count > 0 ? $"（体检发现 {cap.Findings.Count} 条，见摘要）" : ""));
+        Process.Start("explorer.exe", $"/select,\"{Path.Combine(cap.Dir, "摘要.md")}\"");
+    }
+
     void About_Click(object sender, RoutedEventArgs e) => new AboutWindow { Owner = this }.ShowDialog();
 
     // ---------- 自动更新 ----------

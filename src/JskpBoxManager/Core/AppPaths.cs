@@ -30,6 +30,8 @@ public static class AppPaths
 
     public static string Profiles => Path.Combine(AppDir, "profiles");
     public static string Logs => Path.Combine(AppDir, "logs");
+    /// <summary>分析用的数据样板（免扫失效排查）。只放哈希与数值，不含明文密钥。</summary>
+    public static string Samples => Path.Combine(AppDir, "samples");
     public static string PathsJson => Path.Combine(AppDir, "paths.json");
     public static string KeepaliveJson => Path.Combine(AppDir, "keepalive.json");
     public static string ProtocolJson => Path.Combine(AppDir, "protocol.json");

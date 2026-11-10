@@ -1,0 +1,31 @@
+﻿时间      2026-11-10 10:13:44   via=capture   box=qb4
+旧 key    3d0a2eadd88b1682   encKey长度=24B
+请求      明文 204B → hybrid 435B → body 569B
+
+响应      cmdid=3198  body=261B  wpkg头=65B  密文=196B
+
+解密      21B
+结果      code=-13（凭证已被服务端作废（-13）：多半是同一微信号在别处扫码顶掉，需要重新扫码）
+
+─ protobuf 结构（逐层展开）─
+顶层:
+  f1 = bytes[13] 08F3FFFFFFFFFFFFFFFF011200
+  f2 = 嵌套[4] {
+    f4 = varint 2   ← 很小的值，更像枚举/标志位，不是时间
+    f5 = varint 0
+  }
+
+base 结果块（field 1，code 在这里）:
+  f1 = varint 18446744073709551603
+  f2 = varint 0
+
+unified（field 2）:
+  f4 = varint 2   ← 很小的值，更像枚举/标志位，不是时间
+  f5 = varint 0
+
+─ 自动判读 ─
+  base 额外字段：f2（f2=varint 0）。实测成功样本里 f2 恒为 0，暂无含义。
+  树里**没有任何 varint 落在合理时间窗内**。
+  这是 -13（作废）样本：base 里没有任何文本说明，服务端不告诉我们为什么判死（见 docs\AutoAuth响应字段实测.md）。
+
+

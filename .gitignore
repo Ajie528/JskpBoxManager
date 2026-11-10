@@ -18,3 +18,8 @@ migrated.json
 roles/
 update/
 update.json
+
+# 数据样板：只留 README，采出来的截面（含 uin）不进版本库
+samples/*/
+# 例外：-13 拒绝响应的首次实测留档（已去掉 uin 和完整报文）
+!samples/autoauth-样本-20261110/

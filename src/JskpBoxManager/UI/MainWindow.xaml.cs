@@ -1014,7 +1014,7 @@ public partial class MainWindow : Window
             var info = await Updater.CheckAutoAsync();
             if (info != null) ShowNewVersion(info);
         }
-        catch (Exception ex) { Log.App("update check failed: " + ex.Message); }
+            catch (Exception ex) { Log.App("检查更新失败：" + ex.Message); }
     }
 
     public void ShowNewVersion(UpdateInfo info)

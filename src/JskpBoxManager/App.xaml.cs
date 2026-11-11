@@ -60,11 +60,11 @@ public partial class App : Application
         int wait = Array.IndexOf(args, "--wait-pid");
         if (wait >= 0 && wait + 1 < args.Length && int.TryParse(args[wait + 1], out var oldPid))
         {
-            Log.App($"restart after update: waiting old pid {oldPid}");
+            Log.App($"更新后重启：等待旧进程 {oldPid} 退出");
             try
             {
                 using var p = System.Diagnostics.Process.GetProcessById(oldPid);
-                if (!p.WaitForExit(30000)) Log.App($"old pid {oldPid} still running after 30s");
+                if (!p.WaitForExit(30000)) Log.App($"旧进程 {oldPid} 30 秒后仍在运行");
             }
             catch { }
         }
@@ -73,12 +73,12 @@ public partial class App : Application
         bool first = AcquireGuiLock(afterUpdate ? 30 : 0);
         if (!first && !args.Contains("--snapshot"))
         {
-            Log.App("gui already running -> exit");
+            Log.App("管理界面已经在运行 → 本次启动退出");
             MessageBox.Show("管理界面已经打开了（看看任务栏）。", AppInfo.ProductName, MessageBoxButton.OK, MessageBoxImage.Information);
             Shutdown(0);
             return;
         }
-        Log.App($"gui start {AppInfo.VersionLabel} dir={AppPaths.AppDir}");
+        Log.App($"启动管理界面 {AppInfo.VersionLabel}  目录={AppPaths.AppDir}");
         ShutdownMode = ShutdownMode.OnMainWindowClose;
         var w = new MainWindow();
         MainWindow = w;

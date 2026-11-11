@@ -323,7 +323,7 @@ public sealed class BoxView
             try { Cdp.CloseQrTabs(Box); } catch { }
             if (game != IntPtr.Zero)
             {
-                if (Win32.RescueIfOffscreen(game)) Log.Box(Box, "rescued game window from off-screen");
+                if (Win32.RescueIfOffscreen(game)) Log.Box(Box, "已把跑到屏幕外的游戏窗救回");
                 Win32.EnsureGameTaskbarButton(game, "JskpGame." + Box);
             }
             if ((DateTime.Now - _lastRendererSweep).TotalMinutes >= 3)
@@ -337,7 +337,7 @@ public sealed class BoxView
                 TrimBrowserMemory();
             }
         }
-        if (hidden > 0) Log.Box(Box, $"hide windows={hidden}");
+        if (hidden > 0) Log.Box(Box, $"隐藏窗口数={hidden}");
         return hidden;
     }
 

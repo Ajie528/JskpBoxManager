@@ -51,7 +51,7 @@ public static class Samples
         File.WriteAllText(Path.Combine(dir, "摘要.md"), md, new UTF8Encoding(false));
         JsonFile.WriteObject(Path.Combine(dir, "摘要.json"), BuildJson(boxes));
 
-        Log.App($"samples: captured {boxes.Count} boxes -> {dir}");
+        Log.App($"数据样板：已采集 {boxes.Count} 个沙箱 → {dir}");
         return new Capture(dir, findings) { BoxCount = boxes.Count };
     }
 

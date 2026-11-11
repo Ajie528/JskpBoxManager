@@ -344,7 +344,7 @@ public static class Keepalive
     public static void RemoveTask(string box)
     {
         var (code, _) = ProcessUtil.Run(Schtasks, new[] { "/Delete", "/TN", TaskName(box), "/F" }, 20000);
-        if (code == 0) Log.Box(box, "keepalive task removed: " + TaskName(box));
+        if (code == 0) Log.Box(box, "保活计划任务已移除：" + TaskName(box));
     }
 
     /// <summary>读计划任务当前指向的程序（用于发现程序目录被挪走、或仍指向旧版 PowerShell）。</summary>
@@ -397,7 +397,7 @@ public static class Keepalive
             File.WriteAllText(tmp, xml, Encoding.Unicode);
             var (code, output) = ProcessUtil.Run(Schtasks, new[] { "/Create", "/TN", TaskName(box), "/XML", tmp, "/F" }, 30000);
             if (code != 0) throw new InvalidOperationException($"创建计划任务失败：{output.Trim()}");
-            Log.Box(box, $"keepalive task registered {p.Describe(box)}: {TaskName(box)}");
+            Log.Box(box, $"保活计划任务已注册 {p.Describe(box)}：{TaskName(box)}");
             return "registered";
         }
         finally { try { File.Delete(tmp); } catch { } }

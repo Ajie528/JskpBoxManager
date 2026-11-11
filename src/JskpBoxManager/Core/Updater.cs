@@ -160,7 +160,7 @@ public static class Updater
             try { File.Move(old, exe); } catch { }
             throw;
         }
-        Log.App($"update applied {AppInfo.Version} -> {exe}");
+            Log.App($"更新已应用：{AppInfo.Version} → {exe}");
         if (!restartGui) return;
         var psi = new ProcessStartInfo(exe) { UseShellExecute = false, WorkingDirectory = AppPaths.AppDir };
         psi.ArgumentList.Add("--wait-pid");

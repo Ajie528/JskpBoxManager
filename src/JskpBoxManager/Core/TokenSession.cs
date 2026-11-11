@@ -31,7 +31,7 @@ public sealed class TokenSession
 
     void Info(string m)
     {
-        Log.Box(_box, "token " + m);
+        Log.Box(_box, "取业务 Token：" + m);
         if (Quiet) return;
         try
         {

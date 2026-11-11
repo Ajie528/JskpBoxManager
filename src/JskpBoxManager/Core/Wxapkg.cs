@@ -90,14 +90,14 @@ public static class Wxapkg
                 {
                     total += n;
                     hits.AddRange(pkgHits);
-                    Log.Box(box, $"wxapkg unpacked {n} files from {pkg.Rel} -> {dest}");
+                    Log.Box(box, $"解包 wxapkg 完成，共 {n} 个文件：{pkg.Rel} → {dest}");
                 }
                 else lastErr = err;
             }
             catch (Exception ex)
             {
                 lastErr = ex.Message;
-                Log.Box(box, "wxapkg unpack failed: " + ex.Message + " @ " + pkg.Path);
+                Log.Box(box, "wxapkg 解包失败：" + ex.Message + " @ " + pkg.Path);
             }
         }
 

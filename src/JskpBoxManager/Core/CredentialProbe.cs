@@ -176,7 +176,7 @@ public static class CredentialProbe
                 if (idx < due.Count - 1 && !_stop)
                 {
                     int gap = Rng.Next(MinGapSeconds, MaxGapSeconds + 1);
-                    Log.App($"probe: waiting {gap}s before next account (staggered)");
+                    Log.App($"主动探测：下一个号等 {gap} 秒（错峰，避免同一时刻连发）");
                     for (int s = 0; s < gap && !_stop; s++) Thread.Sleep(1000);
                 }
             }
@@ -247,8 +247,8 @@ public static class CredentialProbe
         // live 坏了但金库还有一把：先把金库推回 live 再探，否则 Renew 会读到无效文件。
         if (!live.Valid && vault.Valid)
         {
-            Log.Box(box, $"probe: live invalid but vault has {vault.KeyHash} -> push vault to live first");
-            try { VaultSync.PushVaultToLive(box); } catch (Exception ex) { Log.Box(box, "probe: push vault failed " + ex.Message); }
+            Log.Box(box, $"主动探测：沙箱凭证无效，但金库有 {vault.KeyHash} → 先把金库推回沙箱");
+            try { VaultSync.PushVaultToLive(box); } catch (Exception ex) { Log.Box(box, "主动探测：推金库到沙箱失败 " + ex.Message); }
         }
 
         if (ProtocolRenew.AttemptPending(box))
@@ -264,7 +264,7 @@ public static class CredentialProbe
         var keyAge = ProtocolRenew.KeyAgeHours(box);
         if (keyAge is double age && age < minAge)
         {
-            Log.Box(box, $"probe: key is only {age:F1}h old (min {minAge}h) -> skip rotating just to verify");
+            Log.Box(box, $"主动探测：密钥才 {age:F1} 小时（门槛 {minAge} 小时）→ 不值得为探测滚一次");
             return new ProbeResult(box, false, $"密钥才 {age:F1} 小时，不值得为探测滚一次", 0, true);
         }
 
@@ -273,7 +273,7 @@ public static class CredentialProbe
         int today = RotationsToday(box);
         if (today >= quota)
         {
-            Log.Box(box, $"probe: already rotated {today} times today (limit {quota}) -> skip");
+            Log.Box(box, $"主动探测：今天已换 {today} 次（上限 {quota})）→ 跳过");
             return new ProbeResult(box, false, $"今天已换过 {today} 次 key，跳过（防触发风控）", 0, true);
         }
 
@@ -291,14 +291,14 @@ public static class CredentialProbe
 
         if (r.Ok)
         {
-            Log.Box(box, $"probe: 服务器确认凭证有效并已换新 key={r.NewKeyHash}");
+            Log.Box(box, $"主动探测：服务器确认凭证有效并已换新 key={r.NewKeyHash}");
             try { VaultSync.PushVaultToLive(box); } catch { }
             return new ProbeResult(box, true, r.Message, 0, false);
         }
 
         if (r.Rejected)
         {
-            Log.Box(box, $"probe: 服务器判定凭证已失效（{r.Code}）-> 标需要扫码");
+            Log.Box(box, $"主动探测：服务器判定凭证已失效（{r.Code}）→ 标记需要扫码");
             // v1.5.37：登记这把已死，避免历史探测反复重试同一把
             try
             {
@@ -316,7 +316,7 @@ public static class CredentialProbe
         }
 
         // 网络等临时错误：不标 need-scan，下一轮再试
-        Log.Box(box, "probe: 探测失败（非拒绝）-> " + r.Message);
+        Log.Box(box, "主动探测：探测失败（非拒绝）→ " + r.Message);
         return new ProbeResult(box, false, r.Message, r.Code, false);
     }
 

@@ -1,4 +1,4 @@
-﻿using System.Text.Json.Nodes;
+using System.Text.Json.Nodes;
 
 namespace JskpBoxManager.Core;
 
@@ -26,8 +26,8 @@ public sealed class RefreshSession
     public int Run()
     {
         var cfg = Keepalive.Load();
-        if (!cfg.EnabledFor(_box)) { L("refresh skipped (keepalive disabled in config)"); return 0; }
-        if (!EnvDetect.SbieOk || !EnvDetect.QqOk) { L("refresh skipped (Sandboxie or QQBrowser not found)"); return 1; }
+        if (!cfg.EnabledFor(_box)) { L("保活已跳过（配置里关掉了保活）"); return 0; }
+        if (!EnvDetect.SbieOk || !EnvDetect.QqOk) { L("保活已跳过（找不到 Sandboxie 或 QQ 浏览器）"); return 1; }
 
         // ★ 第一优先：上次换钥后没落盘。这一步必须排在 DecideWake 之前。
         //   理由：DecideWake 会因为「密钥太新（<5h）」直接返回 skip 而根本不进 Core，
@@ -35,15 +35,15 @@ public sealed class RefreshSession
         //   越新的 key 越会被这条规则挡住，等于崩溃后永远补不上（实测就这么发生了）。
         if (ProtocolRenew.HasPending(_box))
         {
-            L("refresh: pending rotated key detected -> commit before any other decision");
+            L("保活：发现未落盘的新 key → 优先补写，再做其它判断");
             if (ProtocolRenew.RecoverPending(_box))
             {
-                L("refresh: pending key committed (live/vault now match what the server issued)");
+                L("保活：新 key 已补写（沙箱与金库都等于服务端下发的那把）");
                 try { NeedScan.ClearIfRenewed(_box); } catch { }
             }
             else
             {
-                L("refresh: pending key not committed yet (box busy?) -> will retry");
+                L("保活：新 key 还没补写成功（沙箱在忙？）→ 稍后重试");
             }
         }
 
@@ -52,15 +52,15 @@ public sealed class RefreshSession
         var decision = Keepalive.DecideWake(_box, cfg.For(_box), DateTime.Now);
         if (!decision.Run)
         {
-            L("refresh skipped: " + decision.Reason);
+            L("保活已跳过：" + decision.Reason);
             return 0;
         }
-        L("refresh due: " + decision.Reason);
+        L("保活到期：" + decision.Reason);
 
         using var global = new Mutex(false, @"Local\JskpBoxManager.Keepalive");
         bool gotGlobal;
         try { gotGlobal = global.WaitOne(TimeSpan.FromMinutes(12)); } catch (AbandonedMutexException) { gotGlobal = true; }
-        if (!gotGlobal) { L("refresh skipped (another box is renewing too long)"); return 0; }
+        if (!gotGlobal) { L("保活已跳过（另一个沙箱续期太久，占着全局锁）"); return 0; }
         try
         {
             using var boxLock = LaunchSession.TryLock(_box, out bool gotBox);
@@ -72,10 +72,10 @@ public sealed class RefreshSession
                 // 现在改成给常驻进程留一张续期请求，由它在循环里做一次真实 AutoAuth。
                 if (RequestRenewFromWatchdog())
                 {
-                    L("refresh skipped (box is being watched) -> asked the watchdog to renew the key in place");
+                    L("保活已跳过（沙箱被看门进程占着）→ 已请它在原地续期");
                     return 0;
                 }
-                L("refresh skipped (box is being launched / watched)");
+                L("保活已跳过（沙箱正在启动/被看门）");
                 return 0;
             }
             try
@@ -86,7 +86,7 @@ public sealed class RefreshSession
                 try { Core(cfg); }
                 catch (Exception ex)
                 {
-                    L("refresh session EXCEPTION: " + ex);
+                    L("保活会话异常：" + ex);
                     try { BoxRuntime.StopForce(_box, false); } catch { }
                     try { VaultSync.PushVaultToLive(_box); } catch { }
                 }
@@ -119,12 +119,12 @@ public sealed class RefreshSession
             var phase = BoxStatusFile.Read(_box)?.Phase;
             if (phase == BoxPhase.InGame)
             {
-                L("refresh: game is running in a watched box -> its session is live, no renew needed");
+                L("保活：游戏在受看门的沙箱里运行 → 会话有效，无需续期");
                 return true;
             }
             File.WriteAllText(AppPaths.BoxRenewRequest(_box),
                 $"requested {DateTime.Now:o} pid={Environment.ProcessId}\r\n");
-            L($"refresh: renew request written to watchdog (keyAge={ProtocolRenew.KeyAgeText(_box)})");
+            L($"保活：已向看门进程写入续期请求（密钥年龄={ProtocolRenew.KeyAgeText(_box)})");
             return true;
         }
         catch { return false; }
@@ -134,7 +134,7 @@ public sealed class RefreshSession
     {
         var p = AppPaths.BoxRefreshPhase(_box);
         if (!File.Exists(p)) return;
-        L("refresh interrupted last time -> stop box and restore vault");
+        L("上次保活被中断 → 停箱并从金库还原");
         try { BoxRuntime.StopForce(_box, false); } catch { }
         BoxRuntime.RegisterLauncher(_box, "refresh");
         try { VaultSync.PushVaultToLive(_box); } catch { }
@@ -143,7 +143,7 @@ public sealed class RefreshSession
 
     void Core(KeepConfig cfg)
     {
-        L($"refresh session start ({AppInfo.VersionLabel})");
+        L($"保活会话开始（{AppInfo.VersionLabel})");
         var before = new BoxView(_box);
         if (before.HasGameWindow)
         {
@@ -152,7 +152,7 @@ public sealed class RefreshSession
             Ilink.Save(_box, "refresh-in-game");
             if (ProtocolRenew.KeyOverdue(_box))
             {
-                L($"refresh: game is running with key {ProtocolRenew.KeyAgeText(_box)} old "
+                L($"保活：游戏正在运行，密钥已用 {ProtocolRenew.KeyAgeText(_box)} old "
                   + $"(limit {ProtocolRenew.KeyMaxAgeHours}h) -> renew deferred until the game closes");
                 Ilink.WriteEvent(_box, "refresh", new JsonObject
                 {
@@ -162,7 +162,7 @@ public sealed class RefreshSession
                 });
                 return;
             }
-            L("refresh: game is running -> keep it, credential saved, skip cold start");
+            L("保活：游戏在跑 → 保留会话、已存凭证，跳过冷启动");
             Ilink.WriteEvent(_box, "refresh", new JsonObject
             {
                 ["result"] = "in-game", ["keySha"] = Ilink.Live(_box).KeyHash,
@@ -178,7 +178,7 @@ public sealed class RefreshSession
             Ilink.Save(_box, "refresh-resident");
             if (ProtocolRenew.KeyOverdue(_box))
             {
-                L($"refresh: resident runtime up with key {ProtocolRenew.KeyAgeText(_box)} old "
+                L($"保活：常驻运行时在跑，密钥已用 {ProtocolRenew.KeyAgeText(_box)} old "
                   + $"(limit {ProtocolRenew.KeyMaxAgeHours}h) -> resident loop will roll it");
                 RequestRenewFromWatchdog();
                 Ilink.WriteEvent(_box, "refresh", new JsonObject
@@ -189,7 +189,7 @@ public sealed class RefreshSession
                 });
                 return;
             }
-            L("refresh: resident runtime up -> keep it, credential saved, skip cold start");
+            L("保活：常驻运行时在跑 → 保留它、已存凭证，跳过冷启动");
             Ilink.WriteEvent(_box, "refresh", new JsonObject
             {
                 ["result"] = "resident-skip", ["keySha"] = Ilink.Live(_box).KeyHash,
@@ -208,21 +208,21 @@ public sealed class RefreshSession
             var vault0 = Ilink.VaultState(_box);
             if (!live0.Valid && vault0.Valid && !Ilink.IsRevoked(_box, vault0.KeyHash))
             {
-                L($"refresh: live invalid, vault has {vault0.KeyHash} at {vault0.WriteLocal} -> trying it first");
+                L($"保活：沙箱凭证无效，金库有 {vault0.KeyHash} at {vault0.WriteLocal} -> trying it first");
                 var res0 = Ilink.Restore(_box, "refresh-live-invalid");
-                L("refresh: vault restore result: " + res0);
+                L("保活：金库还原结果：" + res0);
                 try { NeedScan.ClearIfRenewed(_box); } catch { }
             }
         }
 
         if (NeedScan.Pending(_box))
         {
-            L("refresh skipped (need QR scan — no cold start until manual login)");
+            L("保活已跳过（需要扫码 —— 手动登录前不再冷启动）");
             return;
         }
         if (before.HasQqOrGame)
         {
-            L("refresh: leftover processes -> force stop");
+            L("保活：还有残留进程 → 强制停箱");
             BoxRuntime.StopForce(_box, false);
             BoxRuntime.RegisterLauncher(_box, "refresh");
             Thread.Sleep(3000);
@@ -233,7 +233,7 @@ public sealed class RefreshSession
         // ---- 协议续期优先：不用开浏览器，几秒完成，成功就完全跳过冷启动 ----
         // 密钥超过 20 小时硬上限时**强制**走协议续期，不看用户有没有勾选（勾选项只决定「平时是否优先用协议」）。
         bool overdue = ProtocolRenew.KeyOverdue(_box);
-        if (overdue) L($"refresh: key is {ProtocolRenew.KeyAgeText(_box)} old (limit {ProtocolRenew.KeyMaxAgeHours}h) -> protocol renew forced");
+        if (overdue) L($"保活：密钥已用 {ProtocolRenew.KeyAgeText(_box)} old (limit {ProtocolRenew.KeyMaxAgeHours}h) -> protocol renew forced");
         if (cfg.For(_box).ProtocolRenew || overdue)
         {
             switch (TryProtocolRenew(frozenKey))
@@ -250,7 +250,7 @@ public sealed class RefreshSession
         ColdResult r;
         string usedMode = "Full";
 
-        L("refresh mode=full");
+        L("保活模式：完整冷启动");
         r = TryCold(frozenKey, BoxRuntime.LaunchMode.Full, timeoutMin: 6, maxAttempts: 2);
 
         r ??= new ColdResult { LaunchUtc = DateTime.UtcNow };
@@ -259,7 +259,7 @@ public sealed class RefreshSession
         {
             softRetry = true;
             L(r.Suspected
-                ? "refresh: credential cleared + QR -> suspected, keep key; restore vault and retry Full once"
+                ? "保活：凭证被清空且出现二维码 -> suspected, keep key; restore vault and retry Full once"
                 : "refresh: credential cleared by runtime -> restore vault and retry Full once");
             BoxRuntime.StopForce(_box, false);
             BoxRuntime.RegisterLauncher(_box, "refresh");
@@ -278,9 +278,9 @@ public sealed class RefreshSession
                 var res = Ilink.Save(_box, "refresh");
                 ok = (res is "saved" or "unchanged") && Ilink.VaultState(_box).KeyHash == Ilink.Live(_box).KeyHash;
                 if (ok) try { VaultSync.SyncRuntimeFromLive(_box); } catch { }
-                else L($"refresh: ilink credential renewed but vault save failed ({res})");
+                else L($"保活：凭证已换新但存金库失败（{res})");
             }
-            else L("refresh: ilink credential not rewritten after game window");
+            else L("保活：进游戏后凭证没有被重写");
         }
         var outcome = ok ? "ok" : r.Suspected ? "suspected" : r.QrFail ? "qr" : r.SawQr ? "qr-seen" : r.SawGame ? "no-rewrite" : "no-game";
         Ilink.WriteEvent(_box, "refresh", new JsonObject
@@ -296,7 +296,7 @@ public sealed class RefreshSession
             NeedScan.ClearRetry(_box);   // v1.5.37：成功即解除退避，回到正常节奏
             BoxRuntime.StopForce(_box, false);
             BoxStatusFile.Write(_box, BoxPhase.Stopped, $"保活成功 {DateTime.Now:MM-dd HH:mm}");
-            L($"refresh session OK mode={usedMode} -> box closed");
+            L($"保活成功 模式={usedMode} -> box closed");
         }
         else
         {
@@ -305,7 +305,7 @@ public sealed class RefreshSession
             // 先停箱：冷启动失败后沙箱里可能还有进程，历史凭证要写 live 必须没有进程占着。
             if (HistoryProbePossible())
             {
-                L("refresh FAIL -> try historical credentials via protocol before giving up");
+                L("保活失败 → 放弃前先用协议试历史凭证");
                 BoxRuntime.StopForce(_box, false);
                 Thread.Sleep(1500);
                 if (TryHistoryRecoverByProtocol())
@@ -318,12 +318,12 @@ public sealed class RefreshSession
                         ["mode"] = usedMode + "+history", ["credCleared"] = r.CredCleared, ["softRetry"] = softRetry,
                     });
                     BoxStatusFile.Write(_box, BoxPhase.Stopped, "保活成功（历史凭证协议续期）");
-                    L("refresh session OK via historical credential");
+                    L("保活成功（通过历史凭证）");
                     NeedScan.ClearRetry(_box);
                     try { Notifier.CheckAndNotify(Sandboxie.QueryBoxes()); } catch { }
                     return;
                 }
-                L("refresh: all historical credentials rejected too");
+                L("保活：历史凭证也全被拒");
             }
 
             // v1.5.37：失败要登记退避，否则任务每小时醒来都会重跑一遍完整的停箱/冷启动，
@@ -336,23 +336,23 @@ public sealed class RefreshSession
             if (r.Suspected)
             {
                 NeedScan.Set(_box, "suspected-revoked");
-                L("refresh session FAIL -> QR again after vault retry, mark need-scan (key not burned)");
+                L("保活失败：金库重试后仍要扫码 → 标记需要扫码（未烧掉 key）");
             }
             else if (r.QrFail) NeedScan.RegisterQrFailure(_box);
             else if (!r.SawGame && r.SawQr)
             {
                 NeedScan.Set(_box, "refresh-qr-seen-no-game");
-                L("refresh session FAIL -> mark need-scan (QR seen, no game)");
+                L("保活失败：出现二维码但没进游戏 → 标记需要扫码");
             }
-            else L($"refresh session FAIL mode={usedMode} (will retry next schedule)");
+            else L($"保活失败 模式={usedMode} (will retry next schedule)");
             BoxRuntime.StopForce(_box, false);
             if (!r.CredCleared) try { VaultSync.PushVaultToLive(_box); } catch { }
             BoxStatusFile.Write(_box, NeedScan.Pending(_box) ? BoxPhase.Failed : BoxPhase.Stopped,
                 NeedScan.Pending(_box) ? "保活失败：需要重新扫码" : $"保活未成功（{outcome}），下次再试");
         }
-        L("refresh session end");
+        L("保活会话结束");
         // 保活跑完顺手扫一遍全局：有号超过阈值没续期就推微信（同一把 key 限流，不会刷屏）
-        try { Notifier.CheckAndNotify(Sandboxie.QueryBoxes()); } catch (Exception ex) { L("notify check failed: " + ex.Message); }
+        try { Notifier.CheckAndNotify(Sandboxie.QueryBoxes()); } catch (Exception ex) { L("过期提醒检查失败：" + ex.Message); }
     }
 
     /// <summary>
@@ -364,7 +364,7 @@ public sealed class RefreshSession
         // ★ 上次换钥后没落盘：先补写，否则接下来「续期」读到的旧 key 会和 service 端不一致
         if (ProtocolRenew.HasPending(_box))
         {
-            L("protocol renew: found pending rotated key from a previous run -> committing it first");
+            L("协议续期：发现上次残留的待写新 key → 优先补写");
             ProtocolRenew.RecoverPending(_box);
         }
 
@@ -373,10 +373,10 @@ public sealed class RefreshSession
             // 金库这把已经不可读（被清空/格式坏了）不代表整个号没救：
             // 历史快照里很可能还有能用的（qb10 / qb12 就是这样救回来的）。
             // 直接冷启动会白跑几分钟，这里先用协议逐把确认（0.1 秒/把）。
-            L("protocol renew: 金库没有有效凭证 -> 先用协议试历史凭证");
+            L("协议续期：金库没有有效凭证 → 先用协议试历史凭证");
             if (TryHistoryRecoverByProtocol())
             {
-                L("refresh OK via historical credential (vault was invalid)");
+                L("保活成功（金库无效，走历史凭证）");
                 Ilink.WriteEvent(_box, "refresh", new JsonObject
                 {
                     ["result"] = "ok", ["keySha"] = Ilink.Live(_box).KeyHash, ["frozenKey"] = frozenKey,
@@ -389,18 +389,18 @@ public sealed class RefreshSession
                 BoxStatusFile.Write(_box, BoxPhase.Stopped, "保活成功（历史凭证协议续期）");
                 return ProtocolRenewOutcome.Renewed;
             }
-            L("protocol renew: 历史凭证也不可用 -> 回退冷启动");
+            L("协议续期：历史凭证也不可用 → 回退冷启动");
             return ProtocolRenewOutcome.Fallback;
         }
 
         var (renewable, blocked) = ProtocolRenew.CheckRenewable(_box);
         if (!renewable)
         {
-            L("protocol renew skipped: " + blocked.Split('\n')[0]);
+            L("协议续期已跳过：" + blocked.Split('\n')[0]);
             return ProtocolRenewOutcome.Fallback;
         }
 
-        L("protocol renew: 开始（不开浏览器）");
+        L("协议续期：开始（不开浏览器）");
         var sw = System.Diagnostics.Stopwatch.StartNew();
         var r = ProtocolRenew.Renew(_box);
         sw.Stop();
@@ -409,7 +409,7 @@ public sealed class RefreshSession
         {
             CredentialProbe.RecordRotationPublic(_box, r.NewKeyHash, "refresh");
             try { VaultSync.PushVaultToLive(_box); } catch { }
-            L($"protocol renew OK in {sw.ElapsedMilliseconds}ms key={r.NewKeyHash}");
+            L($"协议续期成功 耗时 {sw.ElapsedMilliseconds}ms key={r.NewKeyHash}");
             Ilink.WriteEvent(_box, "refresh", new JsonObject
             {
                 ["result"] = "ok", ["keySha"] = r.NewKeyHash, ["frozenKey"] = frozenKey,
@@ -418,7 +418,7 @@ public sealed class RefreshSession
                 ["elapsedMs"] = sw.ElapsedMilliseconds,
             });
             BoxStatusFile.Write(_box, BoxPhase.Stopped, "保活成功（协议续期）");
-            L("refresh session OK via protocol renew");
+            L("保活成功（协议续期）");
             NeedScan.ClearRetry(_box);
             return ProtocolRenewOutcome.Renewed;
         }
@@ -433,11 +433,11 @@ public sealed class RefreshSession
             // 不登记的话，下一轮保活/恢复会把这把死 key 再发一遍，纯属多打一次上游。
             Ilink.RegisterRevokedKey(_box, frozenKey, "protocol-renew-" + r.Code);
             HistoryCooldown.Mark(_box, frozenKey, r.Code);
-            L($"protocol renew rejected ({r.Code}) -> retired this key, trying historical credentials");
+            L($"协议续期被拒（{r.Code})）→ 这把已退役，改试历史凭证");
             BoxStatusFile.Write(_box, BoxPhase.Starting, "当前凭证已失效，正在用协议逐个确认历史凭证…");
             if (TryHistoryRecoverByProtocol())
             {
-                L("refresh OK via historical credential (protocol)");
+                L("保活成功（历史凭证 + 协议续期）");
                 Ilink.WriteEvent(_box, "refresh", new JsonObject
                 {
                     ["result"] = "ok", ["keySha"] = Ilink.Live(_box).KeyHash, ["frozenKey"] = frozenKey,
@@ -451,7 +451,7 @@ public sealed class RefreshSession
                 return ProtocolRenewOutcome.Renewed;
             }
 
-            L($"all historical credentials rejected too -> 需要重新扫码");
+            L("历史凭证也全被服务端拒绝 → 需要重新扫码");
             Ilink.WriteEvent(_box, "refresh", new JsonObject
             {
                 ["result"] = "revoked", ["keySha"] = frozenKey, ["frozenKey"] = frozenKey,
@@ -462,7 +462,7 @@ public sealed class RefreshSession
             return ProtocolRenewOutcome.Revoked;
         }
 
-        L($"protocol renew failed ({r.Message}) -> 回退冷启动");
+        L($"协议续期失败（{r.Message})）→ 回退冷启动");
         return ProtocolRenewOutcome.Fallback;
     }
 
@@ -500,20 +500,20 @@ public sealed class RefreshSession
                 .Where(c => !live.Valid || c.KeyHash != live.KeyHash)
                 .ToList();
             int cooling = all.Count(c => !c.Revoked && !HistoryCooldown.Allowed(_box, c.KeyHash));
-            if (cooling > 0) L($"history probe: {cooling} 把仍在被拒冷却期，本轮跳过");
+            if (cooling > 0) L($"历史探测：{cooling} 把仍在被拒冷却期，本轮跳过");
         }
         catch (Exception ex)
         {
-            L("history probe: 读不到历史凭证列表 -> " + ex.Message);
+            L("历史探测：读不到历史凭证列表 -> " + ex.Message);
             return false;
         }
         if (list.Count == 0)
         {
-            L("history probe: 没有可试的历史凭证（都在作废/冷却中）");
+            L("历史探测：没有可试的历史凭证（都在作废/冷却中）");
             return false;
         }
 
-        L($"history probe: 共 {list.Count} 把可试（协议逐把确认，约 0.1 秒/把）");
+        L($"历史探测：共 {list.Count} 把可试（协议逐把确认，约 0.1 秒/把）");
         var rec = new RecoverSession(_box);
         int i = 0;
         foreach (var c in list)
@@ -526,7 +526,7 @@ public sealed class RefreshSession
                 var pr = rec.ProbeHistoryKey(c);
                 if (pr.Ok)
                 {
-                    L($"history probe OK with key {c.KeyHash} -> new {pr.NewKeyHash}");
+                    L($"历史探测命中 key {c.KeyHash} -> new {pr.NewKeyHash}");
                     HistoryCooldown.Clear(_box, c.KeyHash);
                     // ProbeHistoryKey 内部已完成停箱 + 写 live + 推金库
                     return true;
@@ -543,7 +543,7 @@ public sealed class RefreshSession
                 L($"[{i}/{list.Count}] key {c.KeyShort} error: {ex.Message}");
             }
         }
-        L("history probe: 全部历史凭证都被服务端拒绝");
+        L("历史探测：全部历史凭证都被服务端拒绝");
         return false;
     }
 
@@ -555,7 +555,7 @@ public sealed class RefreshSession
         {
             if (attempt > 1)
             {
-                L($"refresh cold retry {attempt}/{maxAttempts} mode={mode}");
+                L($"保活冷启动重试 {attempt}/{maxAttempts} mode={mode}");
                 BoxRuntime.StopForce(_box, false);
                 BoxRuntime.RegisterLauncher(_box, "refresh");
                 Thread.Sleep(4000);
@@ -580,13 +580,13 @@ public sealed class RefreshSession
                 if (Ilink.RenewedSince(_box, r.LaunchUtc) && Ilink.Live(_box).KeyHash != frozenKey)
                 {
                     r.Renewed = true;
-                    L($"refresh: ilink key renewed mode={mode} {Ilink.Live(_box)}");
+                    L($"保活：凭证已换新 模式={mode} {Ilink.Live(_box)}");
                     break;
                 }
                 if (!r.CredCleared && Ilink.RevokedSinceLaunch(_box, baseline))
                 {
                     r.CredCleared = true;
-                    L("refresh: credential cleared by runtime -> wait; only a QR page confirms the key was revoked");
+                    L("保活：运行时清空了凭证 → 继续等；只有出现扫码页才说明这把 key 被作废");
                 }
                 var v = new BoxView(_box);
                 if (r.CredCleared && v.HasStrictQr)
@@ -596,7 +596,7 @@ public sealed class RefreshSession
                     {
                         r.SawQr = true;
                         r.Suspected = true;
-                        L($"refresh: credential cleared + QR {suspectHoldSec}s -> suspected (key kept)");
+                        L($"保活：凭证被清空且出现二维码 {suspectHoldSec}s -> suspected (key kept)");
                         break;
                     }
                     continue;
@@ -604,7 +604,7 @@ public sealed class RefreshSession
                 clearedQrSince = null;
                 v.CloseRestorePage();
                 if ((DateTime.Now - lastTab).TotalSeconds >= 8) { Cdp.CloseExtraTabs(_box); lastTab = DateTime.Now; }
-                if (v.HasGameWindow) { r.SawGame = true; L("refresh: game window up -> check ilink credential"); break; }
+                if (v.HasGameWindow) { r.SawGame = true; L("保活：游戏窗已出现 → 检查凭证是否换新"); break; }
                 double wait = (DateTime.Now - started).TotalSeconds;
 
                 if (v.WeChatRuntimeUp)
@@ -612,7 +612,7 @@ public sealed class RefreshSession
                     sawWx = true; wxGone = 0;
                     if (!reloadDone && wait >= 35) { reloadDone = true; Cdp.ReloadGameCenter(_box); }
                     if (!nudged && wait >= 50) { nudged = true; BoxRuntime.StartBrowser(_box, "refresh-nudge", BoxRuntime.LaunchMode.Full); }
-                    if (wait >= 180) { L("refresh: runtime 180s without game window -> retry"); needRetry = true; break; }
+                    if (wait >= 180) { L("保活：运行时 180 秒没出游戏窗 → 重试"); needRetry = true; break; }
                     continue;
                 }
                 if (v.HasWeChat) { sawWx = true; wxGone = 0; } else if (sawWx) wxGone++;
@@ -620,7 +620,7 @@ public sealed class RefreshSession
                 if (v.HasMiniProgramFail(out var pt))
                 {
                     if (++mpFail <= 4) v.ClickMiniProgramRetry(pt);
-                    else if (mpFail >= 8) { L("refresh: mini-program fail -> cold retry"); needRetry = true; break; }
+                    else if (mpFail >= 8) { L("保活：小程序加载失败 → 冷启动重试"); needRetry = true; break; }
                     continue;
                 }
                 mpFail = 0;
@@ -628,24 +628,24 @@ public sealed class RefreshSession
                 if (v.HasStrictQr)
                 {
                     r.SawQr = true;
-                    if (wait >= 180) { L("refresh: QR still up after 180s"); r.QrFail = true; break; }
-                    if (!v.HasWeChat && wait >= 120) { L("refresh: strict QR 120s without WeChat"); r.QrFail = true; break; }
+                    if (wait >= 180) { L("保活：二维码挂了 180 秒还在"); r.QrFail = true; break; }
+                    if (!v.HasWeChat && wait >= 120) { L("保活：出现扫码页 120 秒但微信没起来"); r.QrFail = true; break; }
                     continue;
                 }
                 if (v.HasWmpfSetup)
                 {
-                    if (!v.HasWeChat && wait >= 150) { L("refresh: WMPF setup 150s without WeChat -> retry"); needRetry = true; break; }
+                    if (!v.HasWeChat && wait >= 150) { L("保活：WMPF 配置页 150 秒但微信没起来 → 重试"); needRetry = true; break; }
                     continue;
                 }
-                if (sawWx && wxGone >= 3 && wait < 120) { L("refresh: WeChatAppEx died (SBIE1231 likely) -> cold retry"); needRetry = true; break; }
+                if (sawWx && wxGone >= 3 && wait < 120) { L("保活：微信运行时挂了（大概率 SBIE1231）→ 冷启动重试"); needRetry = true; break; }
                 if (v.HasVisibleUi)
                 {
                     uiSince ??= DateTime.Now;
-                    if ((DateTime.Now - uiSince.Value).TotalSeconds >= 180 && !sawWx) { L("refresh: UI 180s without WeChat -> retry"); needRetry = true; break; }
+                    if ((DateTime.Now - uiSince.Value).TotalSeconds >= 180 && !sawWx) { L("保活：界面 180 秒但微信没起来 → 重试"); needRetry = true; break; }
                     continue;
                 }
                 if (v.HasQqOrGame) continue;
-                if (wait >= 90) { L("refresh: no process 90s -> cold retry"); needRetry = true; break; }
+                if (wait >= 90) { L("保活：90 秒没有任何进程 → 冷启动重试"); needRetry = true; break; }
             }
             if (r.SawGame || r.Renewed || r.Suspected || r.QrFail || !needRetry) break;
         }

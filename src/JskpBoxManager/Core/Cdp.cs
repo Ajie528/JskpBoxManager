@@ -331,7 +331,7 @@ public static class Cdp
                 var r = c.InstallWxCapture() ?? "";
                 // no-wx 也保留连接：轮询时会再次 Install；游戏中心/运行时晚一点才挂上 wx
                 clients.Add(c);
-                Log.Box(box, $"CDP capture install {r} tab={ShortTab(tab)}");
+                Log.Box(box, $"CDP 抓包注入 {r} 标签页={ShortTab(tab)}");
             }
         }
         return clients;
@@ -417,12 +417,12 @@ public static class Cdp
             ws.SendAsync(payload, WebSocketMessageType.Text, true, cts.Token).GetAwaiter().GetResult();
             var buf = new byte[4096];
             try { ws.ReceiveAsync(buf, cts.Token).GetAwaiter().GetResult(); } catch { }
-            Log.Box(box, "CDP Page.reload game-center (ignoreCache)");
+            Log.Box(box, "CDP 刷新游戏中心页（忽略缓存）");
             return true;
         }
         catch (Exception ex)
         {
-            Log.Box(box, "CDP Page.reload failed: " + ex.Message);
+            Log.Box(box, "CDP 刷新页面失败：" + ex.Message);
             return false;
         }
     }

@@ -54,7 +54,7 @@ public static class VaultSync
         var liveUuid = Path.Combine(live, "device_uuid_0");
         if (File.Exists(uuid) && !File.Exists(liveUuid))
             try { File.Copy(uuid, liveUuid, true); } catch { }
-        Log.Box(box, $"vault -> live pushed (credential {cred})");
+        Log.Box(box, $"金库 → 沙箱 已推送（凭证 {cred}）");
     }
 
     /// <summary>沙箱 → 金库（运行时状态）。沙箱凭证无效时整套都不写回。</summary>
@@ -177,7 +177,7 @@ public static class VaultSync
         var n = SyncGamePackage(BoxPaths.WmpfLive(box), BoxPaths.WmpfVault(box));
         if (n > 0)
         {
-            Log.Box(box, $"game package harvested sandbox -> vault items~{n}");
+            Log.Box(box, $"游戏包已从沙箱收进金库 约 {n} 项");
             try { File.WriteAllText(Path.Combine(BoxPaths.Vault(box), "game-package-ok.txt"), $"ok {DateTime.Now:yyyy-MM-dd HH:mm:ss} items~{n}"); } catch { }
         }
         return n;
@@ -195,7 +195,7 @@ public static class VaultSync
             bool liveEmpty = !Directory.Exists(Path.Combine(live, "Applet"));
             if (liveEmpty && Directory.Exists(BoxPaths.WmpfVault(box)))
             {
-                Log.Box(box, "sandbox runtime empty -> full restore from vault before launch");
+                Log.Box(box, "沙箱运行时为空 → 启动前从金库完整还原");
                 PushVaultToLive(box);
                 return;
             }
@@ -204,7 +204,7 @@ public static class VaultSync
         }
         catch (Exception ex)
         {
-            Log.Box(box, "pre-launch ilink check error: " + ex.Message);
+            Log.Box(box, "启动前凭证检查出错：" + ex.Message);
         }
     }
 }

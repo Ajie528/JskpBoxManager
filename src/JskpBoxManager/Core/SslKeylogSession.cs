@@ -22,7 +22,7 @@ public sealed class SslKeylogSession
 
     void Out(string m)
     {
-        Log.Box(_box, "keylog " + m);
+        Log.Box(_box, "导出 TLS 密钥：" + m);
         try
         {
             if (!_consoleReady) { Win32.EnsureCliConsole(); _consoleReady = true; }

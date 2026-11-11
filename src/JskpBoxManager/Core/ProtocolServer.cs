@@ -85,13 +85,13 @@ public sealed class ProtocolServer : IDisposable
             Running = true;
             _thread = new Thread(Loop) { IsBackground = true, Name = "jskp-protocol-server" };
             _thread.Start();
-            Log.App($"protocol server listening {_cfg.BaseUrl}");
+            Log.App($"协议服务已启动：{_cfg.BaseUrl}");
         }
         catch (Exception ex)
         {
             Running = false;
             LastError = ex.Message;
-            Log.App("protocol server start FAILED: " + ex.Message);
+            Log.App("协议服务启动失败：" + ex.Message);
         }
     }
 
@@ -101,7 +101,7 @@ public sealed class ProtocolServer : IDisposable
         try { if (_listener.IsListening) _listener.Stop(); } catch { }
         try { _listener.Close(); } catch { }
         Running = false;
-        Log.App("protocol server stopped");
+            Log.App("协议服务已停止");
     }
 
     public void Dispose() => Stop();
@@ -232,7 +232,7 @@ public sealed class ProtocolServer : IDisposable
             return;
         }
 
-        Log.App($"protocol getCode ref={reference} app_id={appId} ensure={ensure}");
+            Log.App($"协议 getCode  ref={reference}  app_id={appId}  ensure={ensure}");
         var result = WxLoginCode.Get(reference, appId, ensure, timeout);
         WriteJson(res, result.Ok ? 200 : 502, result.ToJson());
     }
@@ -267,7 +267,7 @@ public sealed class ProtocolServer : IDisposable
         var sec = FirstNonEmpty(JsonFile.Str(o, "seconds"), req.QueryString["seconds"]);
         if (sec.Length > 0) { extra.Add("--seconds"); extra.Add(sec); }
 
-        Log.App($"protocol /token ref={reference} box={box}");
+            Log.App($"协议 /token  ref={reference}  box={box}");
         var result = new TokenSession(box, extra) { Quiet = true }.Capture(out var error);
         if (result == null)
         {

@@ -169,7 +169,7 @@ public sealed class HookObserveSession
 
     void Out(string m)
     {
-        Log.Box(_box, "hook " + m);
+        Log.Box(_box, "Frida 观测：" + m);
         try
         {
             if (!_consoleReady)

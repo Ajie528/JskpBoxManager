@@ -113,7 +113,7 @@ public static class Migration
             ["boxes"] = boxes,
             ["app"] = AppInfo.Version,
         });
-        Log.App($"imported legacy data from {from} boxes={boxes} files={string.Join(",", copied)} taskErrors={taskErrors.Count}");
+            Log.App($"已从旧版导入数据：来源 {from}，{boxes} 个沙箱，文件 {string.Join(",", copied)}，计划任务错误 {taskErrors.Count} 个");
         var msg = $"已从 {from} 导入 {boxes} 个沙箱的登录金库。";
         if (copied.Count > 0) msg += $"\n同时导入了：{string.Join("、", copied)}。";
         if (taskErrors.Count > 0) msg += "\n\n部分计划任务没更新成功：\n" + string.Join("\n", taskErrors);

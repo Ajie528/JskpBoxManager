@@ -60,7 +60,7 @@ public static class NeedScan
         if (!Superseded(box, live)) return false;
         Clear(box);
         ClearQrStreak(box);
-        Log.Box(box, $"need-scan cleared: new credential at {live.WriteLocal}");
+        Log.Box(box, $"待扫码标记已清除：新凭证写入于 {live.WriteLocal}");
         return true;
     }
 
@@ -88,12 +88,12 @@ public static class NeedScan
         {
             Set(box, "qr-auth-confirmed");
             try { File.Delete(path); } catch { }
-            Log.Box(box, "refresh: QR twice -> mark need-scan");
+            Log.Box(box, "保活：连续两次出现二维码 → 标记需要扫码");
         }
         else
         {
             try { File.WriteAllText(path, n.ToString()); } catch { }
-            Log.Box(box, "refresh: QR once -> next keepalive will retry");
+            Log.Box(box, "保活：出现一次二维码 → 下次保活再试");
         }
     }
 
@@ -164,7 +164,7 @@ public static class NeedScan
             });
         }
         catch { }
-        Log.Box(box, $"refresh retry: failure #{n} -> next attempt in {minutes:0} min{(definitive ? " (definitive rejection)" : "")}");
+        Log.Box(box, $"保活退避：第 {n} 次失败 → {minutes:0} 分钟后重试{(definitive ? "（服务端明确拒绝）" : "")}");
     }
 
     /// <summary>成功后续期成功，清掉退避与失败计数。</summary>

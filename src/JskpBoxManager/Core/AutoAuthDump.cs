@@ -110,7 +110,7 @@ public static class AutoAuthDump
                 $"===== {c.At}  via={c.Via}  code={c.Code}{(c.Ok ? "  OK" : "")} =====\r\n{text}\r\n",
                 new UTF8Encoding(false));
         }
-        catch (Exception ex) { Log.Box(box, "autoauth dump: append failed " + ex.Message); }
+        catch (Exception ex) { Log.Box(box, "AutoAuth 抓取：追加写入失败 " + ex.Message); }
 
         try
         {
@@ -119,11 +119,11 @@ public static class AutoAuthDump
             single = Path.Combine(dir, $"{DateTime.Now:yyyyMMdd-HHmmss}-{box}.txt");
             File.WriteAllText(single, text, new UTF8Encoding(false));
         }
-        catch (Exception ex) { Log.Box(box, "autoauth dump: single file failed " + ex.Message); }
+        catch (Exception ex) { Log.Box(box, "AutoAuth 抓取：单份文件写入失败 " + ex.Message); }
 
-        Log.Box(box, $"autoauth dump written -> {single}");
+        Log.Box(box, $"AutoAuth 抓取已写入 → {single}");
         // 日志里给一行摘要，方便不打开文件也知道结果
-        Log.Box(box, $"autoauth dump: " + Summary(c));
+        Log.Box(box, $"AutoAuth 抓取：" + Summary(c));
         return single;
     }
 

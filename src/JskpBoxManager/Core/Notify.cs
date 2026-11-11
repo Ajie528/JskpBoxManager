@@ -1,4 +1,4 @@
-﻿using System.Text;
+using System.Text;
 using System.Text.Json.Nodes;
 
 namespace JskpBoxManager.Core;
@@ -232,7 +232,7 @@ public static class Notifier
             var err = Send(cfg, title, content);
             if (err != null)
             {
-                Log.App("notify failed: " + err);
+                Log.App("推送失败：" + err);
                 return new CheckResult(overdue.Count, 0, err);
             }
 
@@ -242,9 +242,9 @@ public static class Notifier
             SaveState(state);
             sent = overdue.Count;
 
-            Log.App($"notify: sent {sent} overdue alert(s) via {cfg.Channel}");
+            Log.App($"过期提醒：已通过 {cfg.Channel} 推送 {sent} 条");
             foreach (var x in overdue)
-                Log.Box(x.Box, $"notify: credential {x.Age:F1}h old -> alert sent via {cfg.Channel}");
+                Log.Box(x.Box, $"过期提醒：凭证已 {x.Age:F1} 小时未续期 → 已通过 {cfg.Channel} 推送");
             try
             {
                 Ilink.WriteEvent("app", "notify-overdue", new JsonObject

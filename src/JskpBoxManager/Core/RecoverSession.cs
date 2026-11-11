@@ -15,7 +15,7 @@ public sealed class RecoverSession
 
     public int Run()
     {
-        L("recover start");
+        L("免扫恢复：开始");
         Out($"开始用历史凭证恢复 {_box} 的免扫登录…");
 
         var cands = Ilink.CredentialHistory(_box);
@@ -47,7 +47,7 @@ public sealed class RecoverSession
                 {
                     Out($"✓ 成功：key {c.KeyShort} 协议续期通过，已换新 key {pr.NewKeyHash}。");
                     HistoryCooldown.Clear(_box, c.KeyHash);
-                    L($"recover OK (protocol) with key {c.KeyHash} -> {pr.NewKeyHash}");
+                    L($"免扫恢复成功（协议续期）key {c.KeyHash} → {pr.NewKeyHash}");
                     Out("提示：这个号已恢复免扫，直接点「启动游戏」即可进入；不需要再扫码。");
                     return 0;
                 }
@@ -61,7 +61,7 @@ public sealed class RecoverSession
                 if (TryOne(c))
                 {
                     Out($"✓ 成功：key {c.KeyShort} 能免扫，已进入游戏并存回金库。");
-                    L($"recover OK with key {c.KeyHash}");
+                    L($"免扫恢复成功 key {c.KeyHash}");
                     HistoryCooldown.Clear(_box, c.KeyHash);
                     NeedScan.Clear(_box);
                     NeedScan.ClearQrStreak(_box);
@@ -73,7 +73,7 @@ public sealed class RecoverSession
             }
 
             Out("所有历史 key 都试过了，都要扫码——这次是真被顶 / 过期，只能重新扫码。");
-            L("recover: all candidates failed -> need scan");
+            L("免扫恢复：所有候选都失败 → 需要扫码");
             try { VaultSync.PushVaultToLive(_box); } catch { }
             NeedScan.Set(_box, "recover-all-failed");
             BoxRuntime.StopForce(_box, false);
@@ -83,7 +83,7 @@ public sealed class RecoverSession
         finally
         {
             BoxRuntime.UnregisterLauncher(_box);
-            L("recover end");
+            L("免扫恢复：结束");
         }
     }
 
@@ -118,7 +118,7 @@ public sealed class RecoverSession
         if (!r.Ok) return r;
 
         // 服务端已认可并换新：现在才停箱落盘
-        L($"recover: key {c.KeyShort} accepted by server -> stopping box to write new credential");
+        L($"免扫恢复：key {c.KeyShort} 被服务端接受 → 停箱写入新凭证");
         BoxRuntime.StopForce(_box, false);
         BoxRuntime.RegisterLauncher(_box, "recover-commit");
         Thread.Sleep(1500);
@@ -127,7 +127,7 @@ public sealed class RecoverSession
         if (!Ilink.RestoreCredentialSet(_box, c.Dir))
         {
             // 写不进 live 也没关系：至少把新 key 写进快照目录
-            L($"recover: cannot restore {c.KeyShort} to live, writing new key to snapshot only");
+            L($"免扫恢复：无法把 {c.KeyShort} 写进沙箱，只把新 key 写进快照");
         }
         SyncCandidateToVault(c);
 
@@ -137,10 +137,10 @@ public sealed class RecoverSession
         // 之后一起被判 -13（qb4 11-09 10:38 的 a4d97938 / 3d0a2ead 就是这样来的）。
         if (!ProtocolRenew.CommitToBox(_box, r, out var err))
         {
-            L("recover: commit new key to box failed: " + err + " -> fall back to snapshot write");
+            L("免扫恢复：新 key 写入沙箱与金库失败：" + err + " → 回退为只写快照");
             if (!ProtocolRenew.CommitToFile(r, out var err2))
             {
-                L("recover: commit new key failed: " + err2);
+                L("免扫恢复：新 key 写入失败：" + err2);
                 return new ProtocolRenew.Result(false, "拿到新 key 但写入失败：" + err2, "", long.MaxValue);
             }
         }
@@ -149,7 +149,7 @@ public sealed class RecoverSession
             // live/金库写成功后再把历史快照也更新一份，避免下次从这份快照恢复时
             // 又拿出一把早被轮换掉的 key。
             if (!ProtocolRenew.CommitToFile(r, out var snapErr))
-                L("recover: update snapshot failed (not fatal): " + snapErr);
+                L("免扫恢复：更新快照失败（不影响主流程）：" + snapErr);
         }
 
         CredentialProbe.RecordRotationPublic(_box, r.NewKeyHash, "recover-probe");
@@ -157,7 +157,7 @@ public sealed class RecoverSession
         try { Ilink.Save(_box, "recover-probe"); } catch { }
         NeedScan.Clear(_box);
         NeedScan.ClearQrStreak(_box);
-        L($"recover: protocol OK with key {c.KeyShort} -> new {r.NewKeyHash}");
+        L($"免扫恢复：协议续期成功 key {c.KeyShort} → {r.NewKeyHash}");
         BoxStatusFile.Write(_box, BoxPhase.Stopped, "已用历史凭证恢复（协议续期）");
         return r;
     }
@@ -205,7 +205,7 @@ public sealed class RecoverSession
         // 再确认一次：现在读到的确实是这把 key
         var live = Ilink.Live(_box);
         if (!live.Valid || live.KeyHash != c.KeyHash)
-            L($"recover: warning, live key {live.KeyHash} differs from candidate {c.KeyHash}");
+            L($"免扫恢复：注意，沙箱 key {live.KeyHash} 与候选 {c.KeyHash} 不一致");
 
         var r = ProtocolRenew.Renew(_box);
         if (r.Ok)
@@ -215,7 +215,7 @@ public sealed class RecoverSession
             try { Ilink.Save(_box, "recover-protocol"); } catch { }
             NeedScan.Clear(_box);
             NeedScan.ClearQrStreak(_box);
-            L($"recover: protocol renew OK with key {c.KeyShort} -> new {r.NewKeyHash}");
+            L($"免扫恢复：协议续期成功 key {c.KeyShort} → {r.NewKeyHash}");
             BoxStatusFile.Write(_box, BoxPhase.Stopped, "已用历史凭证恢复（协议续期）");
         }
         return r;
@@ -244,9 +244,9 @@ public sealed class RecoverSession
                 File.Copy(pskSrc, pskDst, true);
                 File.SetLastWriteTimeUtc(pskDst, File.GetLastWriteTimeUtc(pskSrc));
             }
-            L($"recover: candidate {c.KeyShort} synced to vault so protocol renew uses the right key");
+            L($"免扫恢复：候选 {c.KeyShort} 已同步到金库，确保协议续期用的是这把");
         }
-        catch (Exception ex) { L("recover: sync candidate to vault failed " + ex.Message); }
+        catch (Exception ex) { L("免扫恢复：候选同步到金库失败 " + ex.Message); }
     }
 
     /// <summary>写入这把 key 冷启一次，2 分钟内进游戏或换新密钥算成功；凭证被清空且扫码页持续约 20s 算这把被拒。</summary>

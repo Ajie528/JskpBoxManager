@@ -24,7 +24,7 @@ public sealed class CaptureSession
 
     void Out(string m)
     {
-        Log.Box(_box, "capture " + m);
+        Log.Box(_box, "抓包：" + m);
         try
         {
             if (!_consoleReady)

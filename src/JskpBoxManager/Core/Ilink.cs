@@ -283,7 +283,7 @@ public static class Ilink
         var live = Read(liveRoot);
         if (!live.Valid)
         {
-            Log.Box(box, $"ilink save skipped ({reason}): live credential invalid");
+            Log.Box(box, $"凭证保存已跳过（{reason}）：沙箱凭证无效");
             return "invalid-live";
         }
         if (IsRevoked(box, live.KeyHash)) return "revoked";
@@ -293,7 +293,7 @@ public static class Ilink
             return "unchanged";
         if (vault.Valid && !vaultRevoked && vault.KeyHash != live.KeyHash && vault.WriteUtc > live.WriteUtc.AddSeconds(2))
         {
-            Log.Box(box, $"ilink save refused ({reason}): vault newer than live | vault {vault} | live {live}");
+            Log.Box(box, $"凭证保存被拒（{reason}）：金库比沙箱新 | 金库 {vault} | 沙箱 {live}");
             return "vault-newer";
         }
         Directory.CreateDirectory(vaultRoot);
@@ -301,7 +301,7 @@ public static class Ilink
         var after = Read(vaultRoot);
         if (!after.Valid || after.KeyHash != live.KeyHash)
         {
-            Log.Box(box, $"ilink save FAILED ({reason}): vault copy does not match live");
+            Log.Box(box, $"凭证保存失败（{reason}）：金库副本与沙箱不一致");
             return "invalid-live";
         }
         if (!vault.Valid || vault.KeyHash != live.KeyHash)
@@ -363,7 +363,7 @@ public static class Ilink
         WriteManifest(box, after, reason);
         try { File.WriteAllText(BoxPaths.LoginOkFile(box), $"ok {DateTime.Now:yyyy-MM-dd HH:mm:ss} ilink"); } catch { }
         var changed = vault.Valid && vault.KeyHash == live.KeyHash ? "psk-only" : "key";
-        Log.Box(box, $"ilink credential saved ({reason}, {changed}) {after}");
+        Log.Box(box, $"凭证已保存（{reason}，{changed}）{after}");
         return "saved";
     }
 
@@ -382,7 +382,7 @@ public static class Ilink
         if (IsRevoked(box, vault.KeyHash))
         {
             if (live.Valid && live.KeyHash != vault.KeyHash) Save(box, reason + "-adopt-live");
-            Log.Box(box, $"ilink restore skipped ({reason}): vault key {vault.KeyHash} was revoked by server");
+            Log.Box(box, $"凭证还原已跳过（{reason}）：金库 key {vault.KeyHash} 已被服务端作废");
             return "revoked";
         }
         if (live.Valid && live.KeyHash == vault.KeyHash)
@@ -390,20 +390,20 @@ public static class Ilink
             if (string.IsNullOrEmpty(live.PskHash) && !string.IsNullOrEmpty(vault.PskHash))
             {
                 CopyTree(vaultRoot, liveRoot);
-                Log.Box(box, $"ilink restore ({reason}): live psk missing, copied from vault");
+                Log.Box(box, $"凭证还原（{reason}）：沙箱缺 psk，已从金库复制");
             }
             return "same";
         }
         if (live.Valid && live.WriteUtc >= vault.WriteUtc.AddSeconds(-2))
         {
-            Log.Box(box, $"ilink restore skipped ({reason}): live is newer | live {live} | vault {vault}");
+            Log.Box(box, $"凭证还原已跳过（{reason}）：沙箱更新 | 沙箱 {live} | 金库 {vault}");
             Save(box, reason + "-live-newer");
             return "live-newer";
         }
         if (live.Valid) SaveHistorySnapshot(box, liveRoot, "replaced-live");
         Directory.CreateDirectory(liveRoot);
         CopyTree(vaultRoot, liveRoot);
-        Log.Box(box, $"ilink credential restored ({reason}) vault {vault} -> live (was {live})");
+        Log.Box(box, $"凭证已还原（{reason}）金库 {vault} → 沙箱（原为 {live}）");
         return "restored";
     }
 
@@ -512,7 +512,7 @@ public static class Ilink
         rels.Add(@"ilink\default\psk.key");
         rels.AddRange(CompanionRels);
         int n = CopyFileSet(srcDir, liveRoot, rels);
-        Log.Box(box, $"restore credential set from {System.IO.Path.GetFileName(srcDir)} (key {st.KeyHash}) -> live files={n}");
+        Log.Box(box, $"整套凭证已还原：来自 {System.IO.Path.GetFileName(srcDir)}（key {st.KeyHash}）→ 沙箱 文件数={n}");
         return n > 0;
     }
 
@@ -557,7 +557,7 @@ public static class Ilink
             ["chainDays"] = chain == null ? null : Math.Round(chain.Days, 2),
             ["chainRenewals"] = chain?.Renewals, ["chainStartKnown"] = chain?.StartKnown,
         });
-        Log.Box(box, $"ilink key revoked by server (kicked by another device or expired) key={b.KeyHash} age={age}h -> this key is retired; older snapshots stay eligible for history probe");
+        Log.Box(box, $"服务端判定 key 作废（被别处顶掉或已过期）key={b.KeyHash} 已用={age}h → 这把退役；更早的快照仍可参与历史探测");
     }
 
     /// <summary>
@@ -577,7 +577,7 @@ public static class Ilink
             Directory.CreateDirectory(BoxPaths.CredentialDir(box));
             var at = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
             File.AppendAllText(BoxPaths.RevokedFile(box), $"{keyHash} {at} {reason}\r\n");
-            Log.Box(box, $"ilink key {keyHash[..Math.Min(8, keyHash.Length)]} retired ({reason})");
+            Log.Box(box, $"key {keyHash[..Math.Min(8, keyHash.Length)]} 已退役（{reason}）");
         }
         catch { }
     }
@@ -606,7 +606,7 @@ public static class Ilink
         {
             if (RenewedSince(box, sinceUtc))
             {
-                Log.Box(box, $"ilink credential rewritten by runtime {Live(box)}");
+                Log.Box(box, $"运行时已重写凭证 {Live(box)}");
                 return true;
             }
             Thread.Sleep(3000);

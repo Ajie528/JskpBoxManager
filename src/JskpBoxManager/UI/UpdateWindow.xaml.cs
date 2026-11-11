@@ -47,7 +47,7 @@ public partial class UpdateWindow : Window
         }
         catch (Exception ex)
         {
-            Log.App("update failed: " + ex);
+            Log.App("更新失败：" + ex);
             TxtProgress.Text = "更新失败：" + ex.Message + "\n可以点「在网页上查看」手动下载 zip，解压后覆盖程序目录里的 JskpBoxManager.exe。";
             Reset();
         }

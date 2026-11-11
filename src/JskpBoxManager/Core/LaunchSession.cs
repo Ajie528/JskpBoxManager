@@ -29,20 +29,20 @@ public sealed class LaunchSession
 
     public int Run()
     {
-        L($"launch start ({AppInfo.ProductName} {AppInfo.VersionLabel})");
+        L($"启动开始（{AppInfo.ProductName} {AppInfo.VersionLabel})");
         using var mutex = TryLock(_box, out bool got);
         if (!got)
         {
             // 已有一个启动/看门进程：把已有界面拉到前台；常驻态则复开 GameUrl 让看门进程接上游戏窗
             var v = new BoxView(_box);
-            if (v.HasGameWindow) { v.ShowGameWindow(); L("already running -> show game window"); }
-            else if (v.HasStrictQr) { v.ShowQrWindow(); L("already running -> show QR window"); }
+            if (v.HasGameWindow) { v.ShowGameWindow(); L("已在运行 → 显示游戏窗"); }
+            else if (v.HasStrictQr) { v.ShowQrWindow(); L("已在运行 → 显示扫码窗"); }
             else if (v.WeChatRuntimeUp && Keepalive.Load().For(_box).ResidentKeepalive)
             {
                 try { BoxRuntime.StartBrowser(_box, "resume-resident-dup"); } catch { }
-                L("already running (resident) -> reopen GameUrl");
+                L("已在运行（常驻）→ 重开游戏页");
             }
-            else L("already running (launcher busy) -> skip duplicate launch");
+            else L("已在运行（启动进程占着锁）→ 跳过重复启动");
             return 0;
         }
         BoxRuntime.RegisterLauncher(_box, "launch");
@@ -55,19 +55,19 @@ public sealed class LaunchSession
             //   而金库这时还是**服务端已作废的旧 key**，一旦先跑就会把待写的新 key 盖掉。
             if (ProtocolRenew.HasPending(_box))
             {
-                L("launch: pending rotated key detected -> committing it before anything else");
+                L("启动：发现未落盘的新 key → 优先补写，再做其它事");
                 if (ProtocolRenew.RecoverPending(_box))
                 {
-                    L("launch: pending key committed, live/vault now match the server");
+                    L("启动：新 key 已补写，沙箱与金库都等于服务端下发的那把");
                     try { NeedScan.ClearIfRenewed(_box); } catch { }
                 }
-                else L("launch: pending key not committed now (box busy?) -> preflight will retry");
+                else L("启动：新 key 暂时没补写成功（沙箱在忙？）→ 预检时会再试");
             }
 
             RunLocked();        }
         catch (Exception ex)
         {
-            L("launch EXCEPTION: " + ex);
+            L("启动异常：" + ex);
             Phase(BoxPhase.Failed, "启动出错：" + ex.Message);
         }
         finally
@@ -97,24 +97,24 @@ public sealed class LaunchSession
             if (!vault.Valid) return;                     // 金库也没有，只能扫
             if (Ilink.IsRevoked(_box, vault.KeyHash))     // 金库这把已登记作废
             {
-                L("vault credential is registered revoked -> skip auto restore");
+                L("金库凭证已登记作废 → 跳过自动还原");
                 return;
             }
             if (new BoxView(_box).HasQqOrGame)
             {
-                L("live credential invalid but box is running -> skip vault restore (wait for QR)");
+                L("沙箱凭证无效但沙箱在运行 → 跳过金库还原（等扫码）");
                 return;
             }
 
-            L($"live credential invalid, vault has {vault.KeyHash} at {vault.WriteLocal} -> trying it first");
+            L($"沙箱凭证无效，金库有 {vault.KeyHash} at {vault.WriteLocal} → 先试它");
             var res = Ilink.Restore(_box, "launch-live-invalid");
-            L("vault restore result: " + res);
+            L("金库还原结果：" + res);
             if (res is not ("restored" or "same")) return;
 
             // 推回去之后再清一次标记：新的写入时间已经晚于 need-scan 文件
             try { NeedScan.ClearIfRenewed(_box); } catch { }
         }
-        catch (Exception ex) { L("vault restore attempt failed: " + ex.Message); }
+        catch (Exception ex) { L("金库还原尝试失败：" + ex.Message); }
     }
 
     /// <summary>
@@ -136,11 +136,11 @@ public sealed class LaunchSession
             //   那种情况下服务端已经是新 key 了，而本地还是旧的——直接启动必然失败。
             if (ProtocolRenew.HasPending(_box))
             {
-                L("preflight: found pending rotated key from a previous run -> committing it first");
+                L("启动预检：发现上次残留的待写新 key → 优先补写");
                 if (ProtocolRenew.RecoverPending(_box))
-                    L("preflight: pending key committed, live/vault now match the server");
+                    L("启动预检：新 key 已补写，沙箱与金库都等于服务端下发的那把");
                 else
-                    L("preflight: pending key could not be committed now (box busy?) -> will retry after stop");
+                    L("启动预检：暂时没法补写新 key（沙箱在忙？）→ 停箱后再试");
             }
 
             var cfg = NotifyConfig.Load();
@@ -150,48 +150,48 @@ public sealed class LaunchSession
             var live = Ilink.Live(_box);
             if (!live.Valid)
             {
-                L("preflight: live credential invalid -> skip (vault/history path will handle it)");
+                L("启动预检：沙箱凭证无效 → 跳过（交给金库/历史凭证流程）");
                 return;
             }
             if (ProtocolRenew.AttemptPending(_box))
             {
-                L("preflight: previous renew result unknown -> skip");
+                L("启动预检：上次续期结果未知 → 跳过");
                 return;
             }
             // 预检会真实换一把 key，别把每天的额度用在频繁启动上
             int today = CredentialProbe.RotationsToday(_box);
             if (today >= CredentialProbe.MaxRotationsPerDay)
             {
-                L($"preflight: already rotated {today} times today -> skip preflight, launch as-is");
+                L($"启动预检：今天已换 {today} 次 → 跳过预检，按原样启动");
                 return;
             }
 
-            L($"preflight: asking server whether live key {live.KeyHash} still works");
+            L($"启动预检：问服务端这把 key 还能不能用 {live.KeyHash}");
             var r = ProtocolRenew.Renew(_box);
             if (r.Ok)
             {
                 CredentialProbe.RecordRotationPublic(_box, r.NewKeyHash, "preflight");
                 try { VaultSync.PushVaultToLive(_box); } catch { }
-                L($"preflight: key OK and refreshed -> {r.NewKeyHash} (will launch with this)");
+                L($"启动预检：key 有效并已换新 → {r.NewKeyHash}（将用它启动）");
                 return;
             }
             if (r.Rejected)
             {
-                L($"preflight: key {live.KeyHash} rejected ({r.Code}) -> search history via protocol probe");
+                L($"启动预检：key {live.KeyHash} 被拒（{r.Code}）→ 用协议逐个探测历史凭证");
                 Phase(BoxPhase.Starting, "凭证已失效，正在用协议找可用的历史凭证…");
                 if (TryHistoryRecover())
                 {
-                    L("preflight: found a working historical key -> launching with it");
+                    L("启动预检：找到可用的历史 key → 用它启动");
                     NeedScan.Clear(_box);
                     NeedScan.ClearQrStreak(_box);
                     return;
                 }
-                L("preflight: no historical key works -> launching anyway (will land on QR)");
+                L("启动预检：历史 key 都不可用 → 照常启动（会停在扫码页）");
                 return;
             }
-            L($"preflight: probe failed ({r.Message}) -> launch anyway");
+            L($"启动预检：探测失败（{r.Message}）→ 照常启动");
         }
-        catch (Exception ex) { L("preflight error: " + ex.Message); }
+        catch (Exception ex) { L("启动预检出错：" + ex.Message); }
     }
 
     void RunLocked()
@@ -210,13 +210,13 @@ public sealed class LaunchSession
 
         if (NeedScan.Pending(_box))
         {
-            L("need-scan pending -> ignore saved login, wait for WeChat QR");
+            L("待扫码标记存在 → 忽略已保存的登录，等微信二维码");
             // 之前已经把所有历史凭证试完并全部被拒：这次不必再花几分钟重试，
             // 直接把扫码框摆给用户。真的换了新 key 时上面 ClearIfRenewed 会清掉标记。
             if (NeedScan.Reason(_box).Contains("history-all-failed", StringComparison.OrdinalIgnoreCase))
             {
                 _historyExhausted = true;
-                L("history already exhausted last time -> skip retrying, go straight to QR");
+                L("上次历史凭证已试完 → 不再重试，直接摆扫码框");
             }
         }
 
@@ -224,14 +224,14 @@ public sealed class LaunchSession
         bool attach = false;
         if (existing.HasGameWindow)
         {
-            L("game already running -> show + watch");
+            L("游戏已在运行 → 显示并看门");
             existing.ShowGameWindow();
             Watch();
             return;
         }
         if (existing.HasStrictQr)
         {
-            L("QR page already up -> show and watch");
+            L("扫码页已出现 → 显示并看门");
             existing.ShowQrWindow();
             Watch();
             return;
@@ -240,12 +240,12 @@ public sealed class LaunchSession
         {
             if (Keepalive.Load().For(_box).ResidentKeepalive)
             {
-                L("WeChat runtime only (resident) -> reopen GameUrl + watch");
+                L("只有微信运行时（常驻）→ 重开游戏页并看门");
                 try { BoxRuntime.StartBrowser(_box, "resume-resident"); } catch { }
                 Watch();
                 return;
             }
-            L("WeChat runtime only (no game window) -> force stop and relaunch");
+            L("只有微信运行时（没有游戏窗）→ 强制停箱后重开");
             BoxRuntime.StopForce(_box, false);
             BoxRuntime.RegisterLauncher(_box, "launch");
             Thread.Sleep(3000);
@@ -254,12 +254,12 @@ public sealed class LaunchSession
         {
             if (existing.HasVisibleUi || Cdp.Alive(_box))
             {
-                L("browser already up -> wait for game, do not relaunch");
+                L("浏览器已启动 → 等游戏，不重复启动");
                 attach = true;
             }
             else
             {
-                L("leftover processes -> force stop");
+                L("还有残留进程 → 强制停箱");
                 BoxRuntime.StopForce(_box, false);
                 BoxRuntime.RegisterLauncher(_box, "launch");
                 Thread.Sleep(3000);
@@ -287,7 +287,7 @@ public sealed class LaunchSession
             LaunchBaseline baseline = null;
             if (attach && attempt == 1)
             {
-                L("attach existing QQBrowser (skip second launch)");
+                L("接上已有的 QQ 浏览器（不重复启动）");
             }
             else
             {
@@ -295,7 +295,7 @@ public sealed class LaunchSession
                 forceFullWarmup = false;
                 BoxRuntime.ClearCrashRestore(_box);
                 baseline = Ilink.Baseline(_box);
-                L($"launch QQBrowser attempt={attempt} credential {Ilink.Live(_box)}");
+                L($"启动 QQ 浏览器 第 {attempt} credential {Ilink.Live(_box)}");
                 BoxRuntime.StartBrowser(_box, "launch");
             }
             var result = WaitForGame(baseline);
@@ -307,11 +307,11 @@ public sealed class LaunchSession
             if (result.CredCleared && !didHistoryRecover && HistoryCanHelp())
             {
                 didHistoryRecover = true;
-                L("credential cleared by runtime -> try historical credentials via protocol probe");
+                L("运行时清空了凭证 → 用协议逐个探测历史凭证");
                 Phase(BoxPhase.Starting, "凭证失效了，正在用协议逐个确认历史凭证…");
                 if (TryHistoryRecover())
                 {
-                    L("history recover succeeded -> relaunching game with new credential");
+                    L("历史凭证恢复成功 → 用新凭证重新进游戏");
                     NeedScan.Clear(_box);
                     NeedScan.ClearQrStreak(_box);
                     if (attempt < maxAttempts)
@@ -319,16 +319,16 @@ public sealed class LaunchSession
                         BoxRuntime.EnsureWxRuntimeInBox(_box);
                         BoxRuntime.ClearCrashRestore(_box);
                         baseline = Ilink.Baseline(_box);
-                        L($"relaunch with recovered credential {Ilink.Live(_box)}");
+                        L($"用恢复出来的凭证重开 {Ilink.Live(_box)}");
                         BoxRuntime.StartBrowser(_box, "recovered");
                         var again = WaitForGame(baseline);
                         waitingQrAtEnd = again.WaitingQr;
                         if (again.Opened) { opened = true; break; }
-                        L("relaunch after recovery did not open game -> continue");
+                        L("恢复后重开没进游戏 → 继续");
                     }
                     else { opened = true; break; }
                 }
-                L("history recover failed -> continue cold retry path");
+                L("历史凭证恢复失败 → 走冷启动重试流程");
             }
 
             // 扫码框出现且还有历史凭证可试时：先别急着判「必须扫码」。
@@ -337,11 +337,11 @@ public sealed class LaunchSession
             if (!didHistoryRecover && result.WaitingQr && result.SawQr && HistoryCanHelp())
             {
                 didHistoryRecover = true;
-                L("QR up -> try historical credentials via protocol renew (0.5s each)");
+                L("出现二维码 → 用协议逐把试历史凭证（每把约 0.5 秒）");
                 Phase(BoxPhase.Starting, "扫码框出现了，正在用历史凭证逐个试…");
                 if (TryHistoryRecover())
                 {
-                    L("history recover succeeded -> credential swapped, relaunching game");
+                    L("历史凭证恢复成功 → 已换凭证，重新进游戏");
                     NeedScan.Clear(_box);
                     NeedScan.ClearQrStreak(_box);
                     // 协议续期只是把 key 换好了，游戏还没起来：重开一次浏览器让新 key 生效
@@ -351,7 +351,7 @@ public sealed class LaunchSession
                         BoxRuntime.Warmup(_box, false);
                         BoxRuntime.ClearCrashRestore(_box);
                         baseline = Ilink.Baseline(_box);
-                        L($"relaunch with recovered credential {Ilink.Live(_box)}");
+                        L($"用恢复出来的凭证重开 {Ilink.Live(_box)}");
                         BoxRuntime.StartBrowser(_box, "history-recovered");
                         var again = WaitForGame(baseline);
                         waitingQrAtEnd = again.WaitingQr;
@@ -360,23 +360,23 @@ public sealed class LaunchSession
                             opened = true;
                             break;
                         }
-                        L("relaunch after history recovery did not open game -> continue");
+                        L("历史凭证恢复后重开没进游戏 → 继续");
                     }
                     else
                     {
                         // 已经用完次数：凭证是好的，只是这次没等到游戏窗，交给用户点一次启动即可
-                        L("history recover OK but no attempts left -> credential ready, user can launch again");
+                        L("历史凭证恢复成功但启动次数已用完 → 凭证已就绪，可再点启动");
                         opened = true;
                         break;
                     }
                 }
-                L("history recover failed -> all keys rejected, now present the QR page for manual scan");
+                L("历史凭证恢复失败 → 全部被拒，摆出扫码页等人工扫");
                 _historyExhausted = true;
                 // 记下「历史已试完」：下次启动直接用 need-scan 判定，不必再花两分钟重试一遍。
                 // 一旦真的换了新 key（扫码/导入/探测成功），NeedScan.ClearIfRenewed 会自动清掉。
                 NeedScan.Set(_box, "history-all-failed");
                 // 关键：TryHistoryRecover 内部每把都会停箱，试完这里沙箱是空的。
-                // 必须重新拉起浏览器把扫码框摆到用户面前，否则会直接「launch ended without game」，
+                // 必须重新拉起浏览器把扫码框摆到用户面前，否则会直接「启动结束但没进游戏」，
                 // 用户看到的就是「弹扫码框后直接停箱、没机会扫」。
                 try
                 {
@@ -384,7 +384,7 @@ public sealed class LaunchSession
                     BoxRuntime.Warmup(_box, false);
                     BoxRuntime.ClearCrashRestore(_box);
                     baseline = Ilink.Baseline(_box);
-                    L("relaunch for manual QR scan");
+                    L("重开以显示手动扫码页");
                     BoxRuntime.StartBrowser(_box, "qr-wait");
                     var qrResult = WaitForGame(baseline);
                     waitingQrAtEnd = qrResult.WaitingQr;
@@ -394,12 +394,12 @@ public sealed class LaunchSession
                         break;
                     }
                 }
-                catch (Exception ex) { L("relaunch for QR failed: " + ex.Message); }
+                catch (Exception ex) { L("为显示扫码页而重开失败：" + ex.Message); }
             }
 
             if (result.NeedColdRetry && attempt < maxAttempts)
             {
-                L($"cold start failed -> retry {attempt}/{maxAttempts}");
+                L($"冷启动失败 → 重试 {attempt}/{maxAttempts}");
                 Phase(BoxPhase.Starting, $"启动没成功，正在重试（{attempt}/{maxAttempts}）…");
                 BoxRuntime.StopForce(_box, false);
                 BoxRuntime.RegisterLauncher(_box, "launch");
@@ -408,15 +408,15 @@ public sealed class LaunchSession
                 BoxRuntime.EnsureWxRuntimeInBox(_box);
                 if (result.Suspected)
                 {
-                    L("suspected revoke (cleared + QR, no server reject seen) -> restore vault and retry once");
+                    L("疑似被顶（凭证被清 + 出现二维码，但没看到服务端拒绝）→ 还原金库后重试一次");
                     VaultSync.PushVaultToLive(_box);
                     didVaultRestore = true;
                 }
                 else if (result.CredCleared)
-                    L("credential was cleared by runtime without QR -> keep runtime state (no vault restore) and retry");
+                    L("运行时清空了凭证但没出现二维码 → 保留运行时状态（不还原金库）后重试");
                 else if (!didVaultRestore)
                 {
-                    L("live launch failed -> full restore from vault then retry");
+                    L("直接启动失败 → 从金库完整还原后重试");
                     VaultSync.PushVaultToLive(_box);
                     didVaultRestore = true;
                 }
@@ -425,7 +425,7 @@ public sealed class LaunchSession
             }
             if (result.NeedColdRetry)
             {
-                L("cold retries exhausted -> leave browser visible (may need scan)");
+                L("冷启动重试次数用完 → 浏览器留在前台（可能需要扫码）");
                 if (result.SawQr) NeedScan.Set(_box, "launch-no-game");
                 try { new BoxView(_box).ShowQrWindow(); } catch { }
             }
@@ -434,7 +434,7 @@ public sealed class LaunchSession
 
         if (opened)
         {
-            L("game window up -> settle, hide browser, save credential");
+            L("游戏窗已出现 → 稍等稳定、隐藏浏览器、保存凭证");
             Phase(BoxPhase.InGame, "游戏中");
             try { Cdp.CloseExtraTabs(_box); } catch { }
             for (int i = 0; i < 3; i++)
@@ -449,12 +449,12 @@ public sealed class LaunchSession
         }
         else if (new BoxView(_box).HasQqOrGame)
         {
-            L("QQ still running -> watch until scan/game or user closes");
+            L("QQ 还在运行 → 看门直到扫码/进游戏或用户关闭");
             Watch();
         }
         else
         {
-            L("launch ended without game");
+            L("启动结束但没进游戏");
             Phase(waitingQrAtEnd ? BoxPhase.Failed : BoxPhase.Stopped, waitingQrAtEnd ? "等待扫码时浏览器被关闭" : "没能进入游戏，请查看日志");
         }
     }
@@ -477,14 +477,14 @@ public sealed class LaunchSession
                 .Where(c => !live.Valid || c.KeyHash != live.KeyHash)
                 .ToList();
             int cooling = all.Count(c => !c.Revoked && !HistoryCooldown.Allowed(_box, c.KeyHash));
-            if (list.Count > 0) L($"history candidates available: {list.Count} ({string.Join(",", list.Take(5).Select(c => c.KeyShort))})"
+            if (list.Count > 0) L($"可试的历史凭证：{list.Count} ({string.Join(",", list.Take(5).Select(c => c.KeyShort))})"
                 + (cooling > 0 ? $" | {cooling} 把在冷却期" : ""));
-            else if (cooling > 0) L($"history candidates all cooling down: {cooling} 把被拒过，先不重试");
+            else if (cooling > 0) L($"历史凭证全在冷却期：{cooling} 把被拒过，先不重试");
             return list.Count > 0;
         }
         catch (Exception ex)
         {
-            L("HistoryCanHelp error: " + ex.Message);
+            L("判断历史凭证可用性出错：" + ex.Message);
             return false;
         }
     }
@@ -533,7 +533,7 @@ public sealed class LaunchSession
                 var pr = rec.ProbeHistoryKey(c);
                 if (pr.Ok)
                 {
-                    L($"history recover OK (protocol) with key {c.KeyHash} -> {pr.NewKeyHash}");
+                    L($"历史凭证恢复成功（协议）key {c.KeyHash} -> {pr.NewKeyHash}");
                     HistoryCooldown.Clear(_box, c.KeyHash);
                     Phase(BoxPhase.Stopped, "已用历史凭证恢复（协议续期），点「启动游戏」即可进入");
                     return true;
@@ -547,7 +547,7 @@ public sealed class LaunchSession
             }
             catch (Exception ex)
             {
-                L($"history key {c.KeyShort} protocol error: {ex.Message}");
+                L($"历史 key {c.KeyShort} 协议出错：{ex.Message}");
             }
 
             // 协议说不通（网络等）时才冷启动验证这一把
@@ -555,7 +555,7 @@ public sealed class LaunchSession
             {
                 if (rec.TryOne(c))
                 {
-                    L($"history recover OK (cold start) with key {c.KeyHash}");
+                    L($"历史凭证恢复成功（冷启动）key {c.KeyHash}");
                     HistoryCooldown.Clear(_box, c.KeyHash);
                     try { Ilink.Save(_box, "history-recover"); } catch { }
                     Phase(BoxPhase.InGame, "已用历史凭证免扫恢复");
@@ -564,7 +564,7 @@ public sealed class LaunchSession
             }
             catch (Exception ex)
             {
-                L($"history key {c.KeyShort} error: {ex.Message}");
+                L($"历史 key {c.KeyShort} 出错：{ex.Message}");
             }
             L($"[{i}/{tryList.Count}] key {c.KeyShort} still needs QR");
         }
@@ -619,7 +619,7 @@ public sealed class LaunchSession
                 if (!revoked && !credCleared && baseline != null && Ilink.RevokedSinceLaunch(_box, baseline))
                 {
                     credCleared = true;
-                    L("credential cleared by runtime after launch -> hand over to protocol probe early");
+                    L("启动后运行时清空了凭证 → 提前交给协议探测");
                     // 凭证被清空说明这把 key 服务端不认了：继续等游戏窗毫无意义
                     // （qb4 11-08 15:34 就是这样白等了 106 秒）。
                     // 立刻返回，交给外层用协议续期确认「是这把废了」还是「换一把就行」。
@@ -644,11 +644,11 @@ public sealed class LaunchSession
                         Phase(BoxPhase.WaitingScan, "登录已失效，请用微信扫码");
                     }
                 }
-                if (v.CloseRestorePage()) L("closed 要恢复页面吗 dialog");
+                if (v.CloseRestorePage()) L("已关闭「要恢复页面吗」对话框");
                 if (!waitingQr && (DateTime.Now - lastTabClean).TotalSeconds >= 6)
                 {
                     int n = Cdp.CloseExtraTabs(_box);
-                    if (n > 0) L($"closed extra browser tabs via CDP count={n}");
+                    if (n > 0) L($"已通过 CDP 关闭多余标签页 数量={n}");
                     lastTabClean = DateTime.Now;
                 }
 
@@ -658,12 +658,12 @@ public sealed class LaunchSession
                     gameSince = null;
                     if (mpFailTicks <= 4 && DateTime.Now >= _mpRetryNotBefore && v.ClickMiniProgramRetry(pt))
                     {
-                        L("mini-program open failed -> click 再次尝试");
+                        L("小程序打开失败 → 点「再次尝试」");
                         _mpRetryNotBefore = DateTime.Now.AddSeconds(8);
                     }
                     else if (mpFailTicks >= 8)
                     {
-                        L("mini-program still failed -> cold relaunch");
+                        L("小程序仍然失败 → 冷启动重开");
                         return new(false, true, waitingQr, sawQr, credCleared && !revoked);
                     }
                     continue;
@@ -677,7 +677,7 @@ public sealed class LaunchSession
                     bool renewed = baseline != null && Ilink.RenewedSince(_box, baseline.LaunchUtc);
                     if (renewed || (DateTime.Now - gameSince.Value).TotalSeconds >= 8)
                     {
-                        L($"game window confirmed (credential renewed={renewed})");
+                        L($"游戏窗已确认（凭证已换新={renewed})");
                         return new(true, false, false, sawQr, credCleared && !revoked);
                     }
                     continue;
@@ -694,7 +694,7 @@ public sealed class LaunchSession
                         // 所以先给运行时十几秒自己的机会，仍挡着就主动关掉并重开 GameUrl。
                         if (qrOverlaySince == DateTime.MinValue)
                         {
-                            L("saved login: QR overlay ignored briefly, waiting for game window");
+                            L("免扫登录：扫码浮层先忽略一下，等游戏窗");
                             notedSavedQr = true;
                             qrOverlaySince = DateTime.Now;
                         }
@@ -703,11 +703,11 @@ public sealed class LaunchSession
                             if (qrOverlayRounds < qrOverlayMaxRounds)
                             {
                                 qrOverlayRounds++;
-                                L($"saved login: QR overlay still up {qrOverlayWaitSec}s -> close it and reopen GameUrl (round {qrOverlayRounds}/{qrOverlayMaxRounds})");
+                                L($"免扫登录：扫码浮层挂了 {qrOverlayWaitSec} 秒 → 关掉它并重开游戏页（第 {qrOverlayRounds}/{qrOverlayMaxRounds})");
                                 // 到这里才算「授权层挡住了免扫」：用户没扫码，程序主动关掉它。
                                 // 不必在这里重开 GameUrl——下面「扫码层消失」分支会做，避免重复拉起。
                                 ScanHint.MarkOverlay(_box);
-                                try { v.CloseQrPage(); } catch (Exception ex) { L("close QR page failed: " + ex.Message); }
+                                try { v.CloseQrPage(); } catch (Exception ex) { L("关闭扫码页失败：" + ex.Message); }
                                 qrOverlaySince = DateTime.Now;
                                 launchStarted = DateTime.Now;
                                 qrResumed = false;   // 关掉后由「扫码层消失」分支重开 GameUrl，允许每轮都重开
@@ -716,10 +716,10 @@ public sealed class LaunchSession
                             // 关掉两轮仍回来，才认为这次真的需要扫码
                             if (!revoked && Ilink.VaultCanHelp(_box))
                             {
-                                L("saved login: QR overlay came back after dismiss -> cold retry once");
+                                L("免扫登录：关掉后扫码浮层又回来了 → 冷启动重试一次");
                                 return new(false, true, false, sawQr, credCleared && !revoked);
                             }
-                            L("saved login stale: QR overlay kept coming back -> hand over to history recovery");
+                            L("免扫登录已失效：扫码浮层反复出现 → 交给历史凭证恢复");
                             savedLogin = false;
                             waitingQr = true;
                             qrResumed = false;
@@ -738,7 +738,7 @@ public sealed class LaunchSession
                     {
                         waitingQr = true;
                         qrResumed = false;
-                        L("strict QR auth page detected -> wait for WeChat scan | titles=" + v.TitlesSample());
+                        L("检测到强制扫码页 → 等微信扫码 | 窗口标题=" + v.TitlesSample());
                         v.ShowQrWindow();
                         NeedScan.Set(_box, revoked ? "key-revoked" : "strict-qr-auth-page");
                         ScanHint.MarkQrScan(_box);
@@ -748,7 +748,7 @@ public sealed class LaunchSession
                     }
                     else if (LogDue(60))
                     {
-                        L("still waiting for QR scan...");
+                        L("仍在等扫码...");
                         v.ShowQrWindow();
                     }
                     continue;
@@ -762,7 +762,7 @@ public sealed class LaunchSession
                         ? "QR page gone (scanned) -> reopen GameUrl and wait for game (no sandbox restart needed)"
                         : "QR overlay gone -> reopen GameUrl and wait for game");
                     Phase(BoxPhase.Starting, waitingQr ? "已扫码，正在进入游戏…" : "正在进入游戏…");
-                    try { BoxRuntime.StartBrowser(_box, "post-scan"); } catch (Exception ex) { L("post-scan reopen failed: " + ex.Message); }
+                    try { BoxRuntime.StartBrowser(_box, "post-scan"); } catch (Exception ex) { L("扫码后重开失败：" + ex.Message); }
                     qrResumed = true;
                     waitingQr = false;
                     gameUrlNudged = true;
@@ -780,14 +780,14 @@ public sealed class LaunchSession
                     {
                         if (!gameUrlNudged && wxWait >= 20 && !Cdp.HasGameCenterTab(_box))
                         {
-                            L("saved login: game center tab missing -> reopen GameUrl once");
+                            L("免扫登录：游戏中心标签页不见了 → 重开一次游戏页");
                             BoxRuntime.StartBrowser(_box, "nudge");
                             gameUrlNudged = true;
                             launchStarted = DateTime.Now;
                         }
                         else if (!pageReloadDone && wxWait >= 35)
                         {
-                            L("saved login: WeChat up 35s without game -> CDP reload game-center");
+                            L("免扫登录：微信起来了 35 秒没进游戏 → CDP 刷新游戏中心");
                             Cdp.ReloadGameCenter(_box);
                             pageReloadDone = true;
                             launchStarted = DateTime.Now;
@@ -796,26 +796,26 @@ public sealed class LaunchSession
                         {
                             if (Cdp.HasQrTab(_box) || notedSavedQr)
                             {
-                                L("saved login: QR still up with no game -> cold relaunch");
+                                L("免扫登录：二维码还在且没进游戏 → 冷启动重开");
                                 return new(false, true, false, sawQr, credCleared && !revoked);
                             }
-                            L("saved login: still no game after reload -> reopen GameUrl once");
+                            L("免扫登录：刷新后仍没进游戏 → 重开一次游戏页");
                             BoxRuntime.StartBrowser(_box, "nudge");
                             gameUrlNudged = true;
                             launchStarted = DateTime.Now;
                         }
                         else if (gameUrlNudged && wxWait >= 50)
                         {
-                            L("saved login: still no game after GameUrl nudge -> cold relaunch");
+                            L("免扫登录：重开游戏页后仍没进游戏 → 冷启动重开");
                             return new(false, true, false, sawQr, credCleared && !revoked);
                         }
-                        else if (LogDue(20)) L("saved login: WeChat up, waiting for game window...");
+                        else if (LogDue(20)) L("免扫登录：微信已起来，等游戏窗...");
                         continue;
                     }
                     if (!waitingQr && !gameUrlNudged && wxWait >= 90)
                     {
                         if (Cdp.HasQrTab(_box)) { waitingQr = true; continue; }
-                        L("WeChat up 90s without game -> reopen GameUrl once");
+                        L("微信起来 90 秒没进游戏 → 重开一次游戏页");
                         BoxRuntime.StartBrowser(_box, "nudge");
                         gameUrlNudged = true;
                         launchStarted = DateTime.Now;
@@ -823,7 +823,7 @@ public sealed class LaunchSession
                     }
                     if (!waitingQr && wxWait >= 120)
                     {
-                        L("WeChat runtime up without game after GameUrl nudge -> cold relaunch");
+                        L("重开游戏页后微信在跑但没进游戏 → 冷启动重开");
                         return new(false, true, false, sawQr, credCleared && !revoked);
                     }
                 }
@@ -834,7 +834,7 @@ public sealed class LaunchSession
                 // 浏览器还在但微信运行时刚起就死 = 典型 SBIE1231
                 if (sawApp && sawWx && wxGoneAfterSeen >= 3 && (DateTime.Now - launchStarted).TotalSeconds < 120)
                 {
-                    L("WeChatAppEx died after start (SBIE1231 likely) -> cold relaunch");
+                    L("微信运行时启动后就挂了（大概率 SBIE1231）→ 冷启动重开");
                     return new(false, true, waitingQr, sawQr, credCleared && !revoked);
                 }
 
@@ -842,16 +842,16 @@ public sealed class LaunchSession
                 {
                     if (waitingQr)
                     {
-                        L("box ended while waiting for QR");
+                        L("等扫码期间沙箱结束了");
                         return new(false, false, true, sawQr, credCleared && !revoked);
                     }
                     if (!sawApp)
                     {
                         double waitSec = (DateTime.Now - launchStarted).TotalSeconds;
-                        if (LogDue(15)) L($"waiting for QQBrowser process... {waitSec:F0}s");
+                        if (LogDue(15)) L($"等 QQ 浏览器进程... {waitSec:F0}s");
                         if (waitSec >= 45 && !gameUrlNudged)
                         {
-                            L("no QQBrowser process 45s after start -> re-issue Start.exe once");
+                            L("启动后 45 秒没有 QQ 浏览器进程 → 再拉一次 Start.exe");
                             BoxRuntime.StartBrowser(_box, "re-issue");
                             gameUrlNudged = true;
                             launchStarted = DateTime.Now;
@@ -859,14 +859,14 @@ public sealed class LaunchSession
                         }
                         else if (DateTime.Now > coldStartDeadline)
                         {
-                            L("cold start timeout (no process)");
+                            L("冷启动超时（没有进程）");
                             return new(false, true, false, sawQr, credCleared && !revoked);
                         }
                         continue;
                     }
                     if (++missingAfterSeen >= 4)
                     {
-                        L("box died before game (cold start)");
+                        L("还没进游戏沙箱就结束了（冷启动）");
                         return new(false, true, false, sawQr, credCleared && !revoked);
                     }
                     continue;
@@ -878,10 +878,10 @@ public sealed class LaunchSession
                 {
                     noUiSince = null;
                     double uiWait = (DateTime.Now - launchStarted).TotalSeconds;
-                    if (LogDue(30)) L("browser UI (not QR) -> wait for game...");
+                    if (LogDue(30)) L("浏览器界面（不是扫码页）→ 等游戏...");
                     if (!sawWx && !waitingQr && !pageReloadDone && uiWait >= 40)
                     {
-                        L("UI 40s without WeChat -> CDP reload game-center once");
+                        L("界面 40 秒没等到微信 → CDP 刷新一次游戏中心");
                         Cdp.ReloadGameCenter(_box);
                         pageReloadDone = true;
                         launchStarted = DateTime.Now;
@@ -889,7 +889,7 @@ public sealed class LaunchSession
                     }
                     if (!sawWx && !waitingQr && uiWait >= 90)
                     {
-                        L("UI 90s without WeChat runtime -> cold relaunch");
+                        L("界面 90 秒没等到微信运行时 → 冷启动重开");
                         return new(false, true, false, sawQr, credCleared && !revoked);
                     }
                     continue;
@@ -899,7 +899,7 @@ public sealed class LaunchSession
                 double noUi = (DateTime.Now - noUiSince.Value).TotalSeconds;
                 if (!gameUrlNudged && noUi >= 20)
                 {
-                    L("QQ process up but no window 20s -> show browser and reopen GameUrl");
+                    L("QQ 进程起来了但 20 秒没窗口 → 显示浏览器并重开游戏页");
                     v.ShowBrowser();
                     BoxRuntime.StartBrowser(_box, "no-window");
                     gameUrlNudged = true;
@@ -908,17 +908,17 @@ public sealed class LaunchSession
                 }
                 else if (noUi >= 90)
                 {
-                    L("QQ process up 90s without a window -> cold relaunch");
+                    L("QQ 进程 90 秒没窗口 → 冷启动重开");
                     return new(false, true, false, sawQr, credCleared && !revoked);
                 }
-                else if (LogDue(30)) L("QQ loading, waiting...");
+                else if (LogDue(30)) L("QQ 加载中，继续等...");
             }
             catch (Exception ex)
             {
-                L("launch wait error: " + ex.Message);
+                L("启动等待出错：" + ex.Message);
             }
         }
-        L("launch wait timeout (30 min)");
+        L("启动等待超时（30 分钟）");
         return new(false, false, waitingQr, sawQr, credCleared && !revoked);
     }
 
@@ -931,7 +931,7 @@ public sealed class LaunchSession
             var cfg = Keepalive.Load();
             if (cfg.EnabledFor(_box) && !Keepalive.TaskPointsHere(_box)) Keepalive.SyncTask(_box, cfg);
         }
-        catch (Exception ex) { L("keepalive task sync failed: " + ex.Message); }
+        catch (Exception ex) { L("保活计划任务同步失败：" + ex.Message); }
     }
 
     void Watch()
@@ -968,7 +968,7 @@ public sealed class LaunchSession
                     if (DateTime.Now - started > TimeSpan.FromMinutes(20) && !gaveUpLogged)
                     {
                         gaveUpLogged = true;
-                        L($"role read incomplete after 20 min (name={name} attack={attack}) -> retry every 5 min");
+                        L($"20 分钟还没读全角色信息（名字={name} attack={attack}) -> retry every 5 min");
                     }
                 if (DateTime.Now - lastTry < interval) continue;
                 lastTry = DateTime.Now;
@@ -976,13 +976,13 @@ public sealed class LaunchSession
                 name |= r.NameFound;
                 attack |= r.AttackFound;
             }
-            catch (Exception ex) { L("role read error: " + ex.Message); lastTry = DateTime.Now; }
+            catch (Exception ex) { L("读角色出错：" + ex.Message); lastTry = DateTime.Now; }
         }
     }
 
     void WatchLoop()
     {
-        L("watch start");
+        L("看门开始");
         bool hadGame = false, sawQr = false, qrResumed = false, wxNudged = false;
         int goneTicks = 0, uiGoneTicks = 0;
         var lastCred = DateTime.MinValue;
@@ -1027,7 +1027,7 @@ public sealed class LaunchSession
                 // 进游戏后的前两分钟仍可能卡在「暂无法打开小程序」
                 if ((DateTime.Now - gameStartedAt).TotalMinutes < 2 && DateTime.Now >= _mpRetryNotBefore && v.HasMiniProgramFail(out var pt))
                 {
-                    if (v.ClickMiniProgramRetry(pt)) L("watch: mini-program fail -> click 再次尝试");
+                    if (v.ClickMiniProgramRetry(pt)) L("看门：小程序失败 → 点「再次尝试」");
                     _mpRetryNotBefore = DateTime.Now.AddSeconds(10);
                 }
 
@@ -1068,7 +1068,7 @@ public sealed class LaunchSession
                     if ((DateTime.Now - lastOverdueWarn).TotalHours >= 1)
                     {
                         lastOverdueWarn = DateTime.Now;
-                        L($"watch: key is {ProtocolRenew.KeyAgeText(_box)} old (limit {ProtocolRenew.KeyMaxAgeHours}h) "
+                        L($"看门：密钥已用 {ProtocolRenew.KeyAgeText(_box)} old (limit {ProtocolRenew.KeyMaxAgeHours}h) "
                           + "-> will renew as soon as the game closes (not interrupting play)");
                     }
                 }
@@ -1079,7 +1079,7 @@ public sealed class LaunchSession
             if (hadGame)
             {
                 goneTicks++;
-                L($"game window missing tick={goneTicks}");
+                L($"游戏窗消失 第 {goneTicks}");
                 if (goneTicks == 1) try { Ilink.Save(_box, "game-closing"); } catch { }
                 if (goneTicks >= 3)
                 {
@@ -1088,7 +1088,7 @@ public sealed class LaunchSession
                     if (_renewPending || ProtocolRenew.KeyOverdue(_box) || TakeRenewRequest())
                     {
                         _renewPending = false;
-                        L($"watch: game closed with key {ProtocolRenew.KeyAgeText(_box)} old -> protocol renew before stopping");
+                        L($"看门：游戏已关闭，密钥已用 {ProtocolRenew.KeyAgeText(_box)} → 停箱前先做协议续期");
                         BoxRuntime.StopSoft(_box, true);
                         Thread.Sleep(1500);
                         BoxRuntime.StopForce(_box, false);
@@ -1121,11 +1121,11 @@ public sealed class LaunchSession
                         }
                         break;
                     }
-                    L("game closed -> stop box (save credential)");
+                    L("游戏已关闭 → 停箱（保存凭证）");
                     Phase(BoxPhase.Stopped, "游戏已关闭，正在保存…");
                     BoxRuntime.StopSoft(_box, true);
                     Phase(BoxPhase.Stopped, "游戏已关闭");
-                    L("box stopped");
+                    L("沙箱已停止");
                     break;
                 }
                 continue;
@@ -1143,7 +1143,7 @@ public sealed class LaunchSession
                 }
                 if ((DateTime.Now - lastLog).TotalSeconds >= 60)
                 {
-                    L("watch: waiting for QR scan...");
+                    L("看门：等扫码...");
                     lastLog = DateTime.Now;
                     v.ShowQrWindow();
                 }
@@ -1151,7 +1151,7 @@ public sealed class LaunchSession
             }
             if (sawQr && !qrResumed)
             {
-                L("watch: QR gone after scan -> reopen GameUrl");                Phase(BoxPhase.Starting, "已扫码，正在进入游戏…");
+                L("看门：扫码后二维码消失 → 重开游戏页");                Phase(BoxPhase.Starting, "已扫码，正在进入游戏…");
                 try { BoxRuntime.StartBrowser(_box, "post-scan"); } catch { }
                 qrResumed = true;
                 waitGameDeadline = DateTime.Now.AddMinutes(15);
@@ -1164,7 +1164,7 @@ public sealed class LaunchSession
                 wxNoGameSince ??= DateTime.Now;
                 if (!wxNudged && (DateTime.Now - wxNoGameSince.Value).TotalSeconds >= 90)
                 {
-                    L("watch: WeChat 90s without game title -> reopen GameUrl");
+                    L("看门：微信起来 90 秒没游戏窗 → 重开游戏页");
                     try { BoxRuntime.StartBrowser(_box, "watch-nudge"); } catch { }
                     wxNudged = true;
                     wxNoGameSince = DateTime.Now;
@@ -1176,14 +1176,14 @@ public sealed class LaunchSession
             if (v.HasVisibleUi) uiGoneTicks = 0;
             else if (++uiGoneTicks >= 4)
             {
-                L("browser closed without game -> stop box");
+                L("浏览器关了但没进游戏 → 停箱");
                 BoxRuntime.StopSoft(_box, false);
                 Phase(BoxPhase.Stopped, "浏览器已关闭");
                 break;
             }
             if (DateTime.Now > waitGameDeadline)
             {
-                L("watch timeout -> stop box");
+                L("看门超时 → 停箱");
                 BoxRuntime.StopSoft(_box, false);
                 Phase(BoxPhase.Failed, "等了 30 分钟没进游戏，已停止");
                 break;
@@ -1197,7 +1197,7 @@ public sealed class LaunchSession
     /// </summary>
     bool EnterResident()
     {
-        L("game closed -> enter resident (hide+trim, keep ilink runtime)");
+        L("游戏已关闭 → 进入常驻（藏窗+压内存，保留 ilink 运行时）");
         Phase(BoxPhase.Resident, "常驻保活中（轻量）");
         try { Ilink.Save(_box, "enter-resident"); } catch { }
         try
@@ -1237,7 +1237,7 @@ public sealed class LaunchSession
 
             if (!v.HasQqOrGame)
             {
-                L("resident: box empty -> end");
+                L("常驻：沙箱空了 → 结束");
                 try { Ilink.Save(_box, "resident-end"); } catch { }
                 Phase(BoxPhase.Stopped, "常驻已结束");
                 return false;
@@ -1245,7 +1245,7 @@ public sealed class LaunchSession
 
             if (v.HasGameWindow)
             {
-                L("resident: game window back -> resume watch");
+                L("常驻：游戏窗回来了 → 恢复看门");
                 Phase(BoxPhase.InGame, "游戏中");
                 v.ShowGameWindow();
                 return true;
@@ -1258,7 +1258,7 @@ public sealed class LaunchSession
                     sawQr = true;
                     NeedScan.Set(_box, "resident-qr");
                     Phase(BoxPhase.WaitingScan, "需要用微信扫码登录");
-                    L("resident: QR appeared");
+                    L("常驻：出现二维码");
                 }
                 if ((DateTime.Now - lastLog).TotalSeconds >= 60)
                 {
@@ -1270,7 +1270,7 @@ public sealed class LaunchSession
             if (sawQr)
             {
                 // 扫完码后复开游戏页，仍留在常驻循环等游戏窗
-                L("resident: QR gone after scan -> reopen GameUrl");
+                L("常驻：扫码后二维码消失 → 重开游戏页");
                 Phase(BoxPhase.Starting, "已扫码，正在进入游戏…");
                 try { BoxRuntime.StartBrowser(_box, "resident-post-scan"); } catch { }
                 sawQr = false;
@@ -1295,7 +1295,7 @@ public sealed class LaunchSession
             bool keyAging = keyAge != null && keyAge.Value >= ResidentKeyMaxAgeHours;
             if ((DateTime.Now - lastRenew).TotalHours >= ResidentRenewHours || keyAging || TakeRenewRequest())
             {
-                if (keyAging) L($"resident: key is {keyAge:F1}h old (limit {ResidentKeyMaxAgeHours}h) -> renew now");
+                if (keyAging) L($"常驻：密钥已用 {keyAge:F1}h old (limit {ResidentKeyMaxAgeHours}h) -> renew now");
                 lastRenew = DateTime.Now;
                 ResidentRenew(); // 出扫码页时不藏窗，主循环下一轮看到扫码页转入 need-scan
                 continue;
@@ -1307,21 +1307,21 @@ public sealed class LaunchSession
             {
                 ilinkDownTicks++;
                 if (ilinkDownTicks == 1)
-                    L("resident: WeChat main is up but ilink long-link process is gone -> reopen game to re-establish it");
+                    L("常驻：微信主进程在但 ilink 长连接进程没了 → 重开游戏重新拉起");
                 Phase(BoxPhase.Resident, "常驻长连接已断，正在重连…");
                 // 重开 GameUrl 会拉起 ILinkServiceHost 并触发一次 AutoAuth，同时顺手把密钥往前滚
                 if (ilinkDownTicks >= 2)
                 {
                     ilinkDownTicks = 0;
                     try { BoxRuntime.StartBrowser(_box, "resident-relink"); }
-                    catch (Exception ex) { L("resident relink: " + ex.Message); }
+                    catch (Exception ex) { L("常驻重连：" + ex.Message); }
                     lastRenew = DateTime.Now;
                 }
                 continue;
             }
             if (ilinkDownTicks > 0)
             {
-                L("resident: ilink long-link is back");
+                L("常驻：ilink 长连接已恢复");
                 ilinkDownTicks = 0;
             }
 
@@ -1332,16 +1332,16 @@ public sealed class LaunchSession
             }
 
             failStreak++;
-            L($"resident: WeChat runtime down -> recover (streak={failStreak})");
+            L($"常驻：微信运行时挂了 → 恢复（连续失败={failStreak})");
             Phase(BoxPhase.Resident, "常驻运行时恢复中…");
             try { BoxRuntime.StartBrowser(_box, "resident-recover", BoxRuntime.LaunchMode.RuntimeOnly); }
-            catch (Exception ex) { L("resident RuntimeOnly: " + ex.Message); }
+            catch (Exception ex) { L("常驻（仅运行时）出错：" + ex.Message); }
             Thread.Sleep(5000);
             v = new BoxView(_box);
             if (!v.WeChatRuntimeUp)
             {
                 try { BoxRuntime.StartBrowser(_box, "resident-recover-full", BoxRuntime.LaunchMode.Full); }
-                catch (Exception ex) { L("resident Full: " + ex.Message); }
+                catch (Exception ex) { L("常驻（完整）出错：" + ex.Message); }
                 Thread.Sleep(8000);
                 try { new BoxView(_box).TrimResident(); } catch { }
             }
@@ -1355,7 +1355,7 @@ public sealed class LaunchSession
             }
             if (failStreak >= 3)
             {
-                L("resident: recover failed repeatedly -> stop, next launch needs cold start");
+                L("常驻：反复恢复失败 → 停箱，下次启动需要冷启动");
                 try { Ilink.Save(_box, "resident-give-up"); } catch { }
                 BoxRuntime.StopSoft(_box, true);
                 Phase(BoxPhase.Stopped, "常驻运行时已挂，下次需冷启动");
@@ -1389,7 +1389,7 @@ public sealed class LaunchSession
         {
             if (!File.Exists(p)) return false;
             File.Delete(p);
-            L("resident: keepalive task asked for a renew -> doing it now");
+            L("常驻：保活任务请求续期 → 现在就做");
             return true;
         }
         catch { return false; }
@@ -1407,19 +1407,19 @@ public sealed class LaunchSession
         var (renewable, why) = ProtocolRenew.CheckRenewable(_box);
         if (!renewable)
         {
-            L("watch renew: still busy after stop -> skip: " + why.Split('\n')[0]);
+            L("看门续期：停箱后仍忙 → 跳过：" + why.Split('\n')[0]);
             return;
         }
         var r = ProtocolRenew.Renew(_box);
         if (r.Ok)
         {
-            L($"watch renew: ok, new key {r.NewKeyHash} (key age reset)");
+            L($"看门续期成功，新 key {r.NewKeyHash}（密钥年龄已重置）");
             try { VaultSync.PushVaultToLive(_box); } catch { }
             BoxStatusFile.Write(_box, BoxPhase.Stopped, "已停箱（密钥已续期）");
         }
         else
         {
-            L("watch renew: failed -> " + r.Message);
+            L("看门续期失败 → " + r.Message);
             // 被服务端明确拒绝：这把 key 真不能用了
             if (r.Code is -13 or -14)
             {
@@ -1435,11 +1435,11 @@ public sealed class LaunchSession
     /// </summary>
     ResidentRenewResult ResidentRenew()
     {
-        L("resident: periodic renew -> reopen game to roll AutoAuthKey");
+        L("常驻：周期性续期 → 重开游戏以滚动 AutoAuthKey");
         Phase(BoxPhase.Resident, "常驻续期中…");
         var frozen = Ilink.Live(_box).KeyHash;
         try { BoxRuntime.StartBrowser(_box, "resident-renew"); }
-        catch (Exception ex) { L("resident renew start: " + ex.Message); }
+        catch (Exception ex) { L("常驻续期启动失败：" + ex.Message); }
 
         var deadline = DateTime.Now.AddSeconds(120);
         var result = ResidentRenewResult.NotRolled;
@@ -1451,14 +1451,14 @@ public sealed class LaunchSession
             catch { continue; }
             if (v.HasStrictQr)
             {
-                L("resident renew: QR appeared -> key dead, need scan");
+                L("常驻续期：出现二维码 → key 已死，需要扫码");
                 return ResidentRenewResult.NeedScan; // 不藏窗，留着扫码页让主循环接手
             }
             var live = Ilink.Live(_box);
             if (live.Valid && live.KeyHash.Length > 0 && live.KeyHash != frozen)
             {
                 Ilink.Save(_box, "resident-renew");
-                L($"resident renew: key rolled {frozen} -> {live.KeyHash}");
+                L($"常驻续期：key 已滚动 {frozen} -> {live.KeyHash}");
                 result = ResidentRenewResult.Rolled;
                 break;
             }
@@ -1466,7 +1466,7 @@ public sealed class LaunchSession
         if (result != ResidentRenewResult.Rolled)
         {
             try { Ilink.Save(_box, "resident-renew-nokeyroll"); } catch { }
-            L("resident renew: key not rolled within window (will retry next cycle)");
+            L("常驻续期：窗口内没滚成（下个周期再试）");
         }
         try { new BoxView(_box).TrimResident(); } catch { } // 关游戏窗 + 藏壳 + 压 QQ 内存，回到轻量态
         Phase(BoxPhase.Resident, "常驻保活中（轻量）");
@@ -1476,7 +1476,7 @@ public sealed class LaunchSession
     /// <summary>游戏弹「版本已经更新，请重启」：确认 → 关微信运行时 → 重新打开游戏。</summary>
     void SoftRestartForUpdate(BoxView v)
     {
-        L("game update dialog lingered -> soft-restart once");
+        L("游戏更新弹窗一直不走 → 软重启一次");
         Phase(BoxPhase.Starting, "游戏更新了，正在自动重启游戏…");
         try { VaultSync.HarvestGamePackage(_box); } catch { }
         var upd = v.FindTitle(Titles.IsGameUpdateRestart, true);
@@ -1495,7 +1495,7 @@ public sealed class LaunchSession
         int killed = 0;
         foreach (var pid in Sandboxie.Pids(_box))
             if (ProcessUtil.NameOf(pid) is "WeChatAppEx" or "WeChatAppHost") { ProcessUtil.Kill(pid); killed++; }
-        L($"update restart: closed WeChat runtime procs={killed}");
+        L($"更新重启：已结束微信运行时进程 数量={killed}");
         Thread.Sleep(2000);
         BoxRuntime.StartBrowser(_box, "update-restart");
     }

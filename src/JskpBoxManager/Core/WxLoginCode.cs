@@ -63,7 +63,7 @@ public static class WxLoginCode
             try { return GetLocked(box, appId, ensureRunning, timeoutSec); }
             catch (Exception ex)
             {
-                Log.Box(box, "wx.login getCode EXCEPTION: " + ex.Message);
+                Log.Box(box, "wx.login 取 code 异常：" + ex.Message);
                 return Fail(box, appId, "", ex.Message);
             }
         }
@@ -85,7 +85,7 @@ public static class WxLoginCode
         {
             if (!ensureRunning)
                 return Fail(box, appId, uin, "游戏未在运行；请先启动，或传 ensure_running=true");
-            Log.Box(box, "wx.login: game not up -> ensure running");
+            Log.Box(box, "wx.login：游戏没起来 → 先确保它运行");
             if (!EnsureGameUp(box, Math.Min(timeoutSec, 90)))
                 return Fail(box, appId, uin, "未能拉起游戏窗口，无法注入 wx.login");
             view = new BoxView(box);
@@ -114,7 +114,7 @@ public static class WxLoginCode
                     var (ok, code, err) = Cdp.TryWxLogin(tab.Ws, 12);
                     if (ok && !string.IsNullOrEmpty(code))
                     {
-                        Log.Box(box, $"wx.login code ok via port={port} tab={Short(tab.Url)}/{Short(tab.Title)} len={code.Length}");
+                        Log.Box(box, $"wx.login 取 code 成功：端口={port} 标签页={Short(tab.Url)}/{Short(tab.Title)} 长度={code.Length}");
                         Ilink.WriteEvent(box, "wx-login-code", new JsonObject
                         {
                             ["appId"] = appId, ["uin"] = uin, ["via"] = $"cdp:{port}", ["codeLen"] = code.Length,
@@ -131,7 +131,7 @@ public static class WxLoginCode
             Thread.Sleep(1500);
         }
 
-        Log.Box(box, "wx.login getCode failed: " + lastErr);
+        Log.Box(box, "wx.login 取 code 失败：" + lastErr);
         return Fail(box, appId, uin, lastErr);
     }
 

@@ -23,7 +23,7 @@ public sealed class ObserveSession
 
     void Out(string m)
     {
-        Log.Box(_box, "observe " + m);
+        Log.Box(_box, "状态观测：" + m);
         try
         {
             if (!_consoleReady)

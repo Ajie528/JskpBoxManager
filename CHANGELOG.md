@@ -3,6 +3,34 @@
 版本号规则：`主版本.次版本.修订号`。只修 bug 加修订号；加功能加次版本号；数据格式或用法有不兼容变化加主版本号。
 每次发版在最上面新增一节，并同步修改 `Directory.Build.props` 里的 `<Version>`。
 
+## [1.5.43] - 2026-11-11
+
+### 日志全部改成中文
+
+`qbN.log`、`app.log` 是排查问题的第一手材料，之前混着大量英文（`refresh skipped: key is only
+3.9h old (< 5h) -> leave it alone`），读起来要来回翻译。现在**全部改中文**：
+
+```
+改造前：refresh skipped: key is only 3.9h old (< 5h) -> leave it alone
+改造后：保活已跳过：密钥才 3.9 小时（门槛 5 小时）→ 不动它
+```
+
+本次共改 **297 处**日志文案，覆盖：
+
+| 范围 | 处数 |
+|------|------|
+| `LaunchSession.cs`（启动/看门/常驻） | 147 |
+| `RefreshSession.cs`（保活） | 69 |
+| `ProtocolRenew.cs`（协议续期/落盘） | 44 |
+| `Ilink.cs` / `BoxRuntime.cs` 等其余文件 | 37 |
+| `app.log`（`Log.App`） | 19 |
+
+保留英文的部分（专有名词，翻成中文反而看不懂）：
+`QQ` / `CDP` / `Frida` / `wxapkg` / `wx.login` / `AutoAuth` / `ilink` / `key` / `live` / `vault`，
+以及所有路径、哈希、变量名。
+
+日志里的箭头统一成 `→`、括号统一成中文全角，方便搜索。
+
 ## [1.5.42] - 2026-11-11
 
 ### 补完「换到新 key 必须落盘」的最后三个缺口

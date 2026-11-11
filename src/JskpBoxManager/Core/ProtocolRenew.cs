@@ -163,7 +163,7 @@ public static class ProtocolRenew
                 Directory.CreateDirectory(Path.GetDirectoryName(vaultFile)!);
                 File.WriteAllText(vaultFile, text, new UTF8Encoding(false));
             }
-            catch (Exception ex) { Log.Box(Path.GetFileName(c.VaultRoot), "protocol renew: vault sync failed " + ex.Message); }
+            catch (Exception ex) { Log.Box(Path.GetFileName(c.VaultRoot), "协议续期：金库同步失败 " + ex.Message); }
         }
     }
 
@@ -214,8 +214,8 @@ public static class ProtocolRenew
         var saveBox = boxForLog.Length > 0 ? boxForLog : "_unknown";
         SavePending(saveBox, cred.Uin, newKey, newEnc, newSrv, hash, oldHash, "probe-file");
         if (boxForLog.Length == 0)
-            Log.App($"protocol renew: probe rotated a key but caller gave no box name ({path}) "
-                + $"-> saved to profiles\\{saveBox}\\credential\\pending-rotated.json, may need manual placement");
+            Log.App($"协议续期：探测换了新 key，但调用方没给箱号（{path}） "
+                + $"→ 已存到 profiles\\{saveBox}\\credential\\pending-rotated.json，可能需要手动放置");
 
         // 新 key 同时存在返回对象里，由调用方停箱后调用 CommitToFile / CommitToBox 落盘
         return new Result(true, $"这把可用（{oldHash} -> {hash}）", hash, 0)
@@ -274,12 +274,12 @@ public static class ProtocolRenew
                 ["prevKeySha"] = oldHash,
                 ["why"] = why,
             });
-            Log.Box(box, $"protocol renew: NEW KEY SAVED TO DISK immediately ({oldHash} -> {newHash}, {why})");
+            Log.Box(box, $"协议续期：新 key 已立即落盘（{oldHash} → {newHash}，来源 {why}）");
             return true;
         }
         catch (Exception ex)
         {
-            Log.Box(box, "protocol renew: **CRITICAL** cannot save new key to pending file: " + ex.Message
+            Log.Box(box, "协议续期：**严重** 无法把新 key 写入待写文件：" + ex.Message
                 + " — the old key is already revoked; falling back to a plain-text sidecar");
 
             // 兜底一：pending 文件写不了（目录权限/磁盘满/文件被锁），那就直接把新 key
@@ -296,12 +296,12 @@ public static class ProtocolRenew
                     + (newSrv is { Length: > 0 } ? $"kTdiKeyServerId={Convert.ToBase64String(newSrv)}\r\n" : "")
                     + $"prevKeySha={oldHash}\r\nwhy={why}\r\n",
                     new UTF8Encoding(false));
-                Log.Box(box, $"protocol renew: new key written to fallback sidecar {Path.GetFileName(sidecar)}");
+                Log.Box(box, $"协议续期：新 key 已写入兜底文件 {Path.GetFileName(sidecar)}");
                 return true;
             }
             catch (Exception ex2)
             {
-                Log.Box(box, "protocol renew: **CRITICAL** fallback sidecar also failed: " + ex2.Message);
+                Log.Box(box, "协议续期：**严重** 兜底文件也写入失败：" + ex2.Message);
                 return false;
             }
         }
@@ -369,13 +369,13 @@ public static class ProtocolRenew
             if (wrote == 0)
             {
                 error = "live/金库都写失败：" + string.Join("；", errs);
-                Log.Box(box, "protocol renew: commit pending failed everywhere: " + error);
+                Log.Box(box, "协议续期：待写凭证在 live 与金库都写入失败：" + error);
                 return false;
             }
 
             SaveRotatedSnapshot(box, ReadCredential(box), p.Value.Key, p.Value.Enc, p.Value.Srv, p.Value.KeySha, "");
             try { File.Delete(PendingFile(box)); } catch { }
-            Log.Box(box, $"protocol renew: pending key {p.Value.KeySha} committed to {wrote} file(s) "
+            Log.Box(box, $"协议续期：待写 key {p.Value.KeySha} 已写入 {wrote} 个文件 "
                 + $"(live + vault, saved {p.Value.At})"
                 + (errs.Count > 0 ? $" [partial: {string.Join("；", errs)}]" : ""));
             return true;
@@ -383,7 +383,7 @@ public static class ProtocolRenew
         catch (Exception ex)
         {
             error = ex.Message;
-            Log.Box(box, "protocol renew: commit pending failed (key still in pending file): " + ex.Message);
+            Log.Box(box, "协议续期：写入待写凭证失败（key 仍在待写文件里）：" + ex.Message);
             return false;
         }
     }
@@ -402,7 +402,7 @@ public static class ProtocolRenew
             if (File.Exists(PendingFile(box)))
             {
                 try { File.Delete(PendingFile(box)); } catch { }
-                Log.Box(box, "protocol renew: unreadable pending file dropped");
+                Log.Box(box, "协议续期：待写文件内容不可读，已丢弃");
             }
             return false;
         }
@@ -411,13 +411,13 @@ public static class ProtocolRenew
         var (busy, why) = BusyState(box);
         if (busy)
         {
-            Log.Box(box, $"protocol renew: pending key {p.Value.KeySha} found but box is busy ({why}) -> defer");
+            Log.Box(box, $"协议续期：待写 key {p.Value.KeySha} 存在但沙箱还在忙（{why}）→ 延后处理");
             return false;
         }
 
         if (!CommitPending(box, out var err))
         {
-            Log.Box(box, "protocol renew: recover pending failed: " + err);
+            Log.Box(box, "协议续期：恢复待写凭证失败：" + err);
             return false;
         }
         CredentialProbe.RecordRotationPublic(box, p.Value.KeySha, "recover-pending");
@@ -427,7 +427,7 @@ public static class ProtocolRenew
             ["reason"] = "pending-recovered",
             ["note"] = "上次换钥后未落盘，启动时补写",
         });
-        Log.Box(box, $"protocol renew: RECOVERED pending key {p.Value.KeySha} (saved at {p.Value.At})");
+        Log.Box(box, $"协议续期：已补写待写 key {p.Value.KeySha}（保存于 {p.Value.At})");
         return true;
     }
 
@@ -452,8 +452,8 @@ public static class ProtocolRenew
             var cred = ReadCredential(box);
             WriteCredential(cred, r.PendingKey, r.PendingEnc, r.PendingServerId);
             try { File.Delete(PendingFile(box)); } catch { }
-            Log.Box(box, $"protocol renew: new key {r.NewKeyHash} written to live + vault "
-                + $"(was {r.SourceFile}) so the relaunch uses the key the server just issued");
+            Log.Box(box, $"协议续期：新 key {r.NewKeyHash} 已写入沙箱与金库 "
+                + $"(was {r.SourceFile}），重启时会用服务端刚下发的那把");
             return true;
         }
         catch (Exception ex) { error = ex.Message; return false; }
@@ -537,7 +537,7 @@ public static class ProtocolRenew
             void Drop(string why)
             {
                 try { File.Delete(f); } catch { }
-                Log.Box(box, "protocol renew: attempt marker dropped (" + why + ")");
+                Log.Box(box, "协议续期：已清掉续期标记（" + why + ")");
             }
 
             if (oldSha.Length > 0)
@@ -644,7 +644,7 @@ public static class ProtocolRenew
                 ["keySha"] = newHash,
             });
         }
-        catch (Exception ex) { Log.Box(box, "protocol renew: snapshot save failed " + ex.Message); }
+        catch (Exception ex) { Log.Box(box, "协议续期：续期快照保存失败 " + ex.Message); }
     }
 
     // ---------------- 主动抓取 AutoAuth 响应 ----------------
@@ -728,7 +728,7 @@ public static class ProtocolRenew
                 else
                 {
                     extra += $"（⚠ live 校验不符：{lv.KeyHash}，新 key 留在 pending-rotated.json 待下次启动补写）";
-                    Log.Box(box, $"autoauth capture: live key {lv.KeyHash} != expected {cap.NewKeySha} -> keep pending");
+                    Log.Box(box, $"AutoAuth 抓取：沙箱 key {lv.KeyHash} ≠ 期望值 {cap.NewKeySha} → 保留待写文件");
                 }
             }
             catch (Exception ex)
@@ -744,7 +744,7 @@ public static class ProtocolRenew
         }
 
         var report = AutoAuthDump.Write(box, cap);
-        Log.Box(box, $"autoauth capture ({cap.Via}): {AutoAuthDump.Summary(cap)} {extra}".TrimEnd());
+        Log.Box(box, $"AutoAuth 抓取（{cap.Via}）：{AutoAuthDump.Summary(cap)} {extra}".TrimEnd());
         return (cap, report);
     }
 
@@ -809,7 +809,7 @@ public static class ProtocolRenew
         if (DateTime.TryParse(atText, out var at) && (DateTime.Now - at).TotalMinutes > SnapshotMaxMinutes)
         {
             try { File.Delete(RotatedFile(box)); } catch { }
-            Log.Box(box, $"protocol renew: snapshot expired ({(DateTime.Now - at).TotalMinutes:F0}min) -> dropped, no restore");
+            Log.Box(box, $"协议续期：续期快照已过期（{(DateTime.Now - at).TotalMinutes:F0} 分钟）→ 已丢弃，不再还原");
             return false;
         }
 
@@ -820,7 +820,7 @@ public static class ProtocolRenew
         {
             // 既不是新 key 也不是续期前的旧 key：运行时自己换了一把更新的，快照作废
             try { File.Delete(RotatedFile(box)); } catch { }
-            Log.Box(box, $"protocol renew: runtime rotated to {live.KeyHash} by itself -> drop stale snapshot");
+            Log.Box(box, $"协议续期：运行时自己换成了 {live.KeyHash} → 丢弃过期快照");
             return false;
         }
         var key = B64(JsonFile.Str(o, "autoKey"));
@@ -832,7 +832,7 @@ public static class ProtocolRenew
             WriteCredential(cred, key, enc, B64(JsonFile.Str(o, "serverId")));
             // 已经用掉了，删掉快照，避免同一次续期被反复"纠正"
             try { File.Delete(RotatedFile(box)); } catch { }
-            Log.Box(box, $"protocol renew: runtime wrote back old key {live.KeyHash} -> restored renewed key {hash} ({reason})");
+            Log.Box(box, $"协议续期：运行时把旧 key 写回了 {live.KeyHash} → 已还原续期后的新 key {hash} ({reason})");
             Ilink.WriteEvent(box, "key-restored", new JsonObject
             {
                 ["keySha"] = hash, ["clobberedBy"] = live.KeyHash, ["reason"] = reason,
@@ -841,7 +841,7 @@ public static class ProtocolRenew
         }
         catch (Exception ex)
         {
-            Log.Box(box, "protocol renew: restore renewed key failed " + ex.Message);
+            Log.Box(box, "协议续期：还原续期后的 key 失败 " + ex.Message);
             return false;
         }
     }
@@ -853,7 +853,7 @@ public static class ProtocolRenew
         {
             if (!File.Exists(RotatedFile(box))) return;
             File.Delete(RotatedFile(box));
-            Log.Box(box, "protocol renew: snapshot dropped (" + reason + ")");
+            Log.Box(box, "协议续期：已丢弃续期快照（" + reason + ")");
         }
         catch { }
     }
@@ -901,10 +901,10 @@ public static class ProtocolRenew
             }
             catch (Exception ex)
             {
-                Log.Box(box, "protocol renew: cannot write attempt marker, abort before send: " + ex.Message);
+                Log.Box(box, "协议续期：写不了续期标记，为避免丢钥在发送前放弃：" + ex.Message);
                 return new Result(false, "无法写续期标记，为避免丢密钥已放弃发送：" + ex.Message);
             }
-            Log.Box(box, $"protocol renew: attempt marker written (old key {oldKeyHash})");
+            Log.Box(box, $"协议续期：续期标记已写入（旧 key {oldKeyHash})");
         }
 
         // ---- 2. 发送 ----
@@ -961,13 +961,13 @@ public static class ProtocolRenew
                     cur.Path = tpl.FullName;
                     cur.VaultRoot = "";
                     WriteCredential(cur, newKey, newEnc, newSrv);
-                    Log.Box(box, $"protocol renew: also wrote new key into {(root == BoxPaths.WmpfLive(box) ? "live" : "vault")} "
-                        + $"(was {curHash})");
+                    Log.Box(box, $"协议续期：新 key 也写入了 {(root == BoxPaths.WmpfLive(box) ? "沙箱（live）" : "金库（vault）")} "
+                        + $"（原为 {curHash}）");
                 }
             }
             catch (Exception ex)
             {
-                Log.Box(box, "protocol renew: secondary credential sync failed (pending file kept): " + ex.Message);
+                Log.Box(box, "协议续期：另一份凭证同步失败（待写文件保留）：" + ex.Message);
             }
 
             // 只有确认「live 与金库都是新 key」才删 pending。
@@ -981,15 +981,15 @@ public static class ProtocolRenew
             }
             else
             {
-                Log.Box(box, $"protocol renew: after write live={liveNow.KeyHash} vault={vaultNow.KeyHash}, expected {hash} "
+                Log.Box(box, $"协议续期：写入后 沙箱={liveNow.KeyHash} 金库={vaultNow.KeyHash}，期望 {hash} "
                     + "-> keep pending file so the next start can repair it");
             }
 
             SaveRotatedSnapshot(box, cred, newKey, newEnc, newSrv, hash, oldKeyHash);
-            Log.Box(box, $"protocol renew ok: newKey={hash} enc=24 serverId={newSrv.Length}");
+            Log.Box(box, $"协议续期成功：新 key={hash} enc=24 serverId={newSrv.Length}");
             if (busyBefore) StartClobberWatch(box, 120);
             try { afterRotate?.Invoke(); }
-            catch (Exception ex) { Log.Box(box, "protocol renew: afterRotate failed " + ex.Message); }
+            catch (Exception ex) { Log.Box(box, "协议续期：afterRotate 回调失败 " + ex.Message); }
             return new Result(true, $"协议续期成功，新 key={hash}", hash, 0);
         }
         catch (Exception ex)
@@ -1125,7 +1125,7 @@ public static class ProtocolRenew
 
     static Result Fail(string box, string why, long code)
     {
-        Log.Box(box, $"protocol renew failed: {why} (code={code})");
+        Log.Box(box, $"协议续期失败：{why} (code={code})");
 
         // 服务端明确拒绝（-2/-13/-14）时结果是确定的，必须清掉 attempted 标记。
         // 留着它的后果是永久的：`AttemptPending` 会一直为真，于是启动预检

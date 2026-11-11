@@ -16,7 +16,7 @@ public static class BoxRuntime
         if (!Sandboxie.Query(box, "ReadFilePath").Contains(verDir, StringComparer.OrdinalIgnoreCase))
         {
             Sandboxie.Append(box, "ReadFilePath", verDir);
-            Log.Box(box, "ReadFilePath browser core -> " + verDir);
+            Log.Box(box, "浏览器内核只读路径 → " + verDir);
         }
         var m = Regex.Match(verDir, @"^([A-Za-z]):\\(.*)$");
         if (!m.Success) return;
@@ -25,11 +25,11 @@ public static class BoxRuntime
         if (Directory.GetFiles(overlay, "chrome_elf.dll_del_*").Length == 0) return;
         if (new BoxView(box).HasQqOrGame)
         {
-            Log.Box(box, "skip clearing hidden chrome_elf.dll (browser still running)");
+            Log.Box(box, "跳过清理被隐藏的 chrome_elf.dll（浏览器还在运行）");
             return;
         }
         try { Directory.Delete(overlay, true); } catch { }
-        Log.Box(box, "cleared sandbox copy of browser core (it had hidden chrome_elf.dll)");
+        Log.Box(box, "已清理沙箱内的浏览器内核副本（它藏了 chrome_elf.dll）");
     }
 
     /// <summary>保活/启动用的浏览器启动命令。Full=游戏中心；RuntimeOnly=只拉起微信运行时（常驻恢复用）。</summary>
@@ -60,7 +60,7 @@ public static class BoxRuntime
     {
         if (!Sandboxie.StartInBox(box, LaunchArgs(box, mode)))
         {
-            Log.Box(box, "QQBrowser start skipped: sandbox missing in Sandboxie");
+            Log.Box(box, "跳过启动 QQ 浏览器：Sandboxie 里没有这个沙箱");
             BoxStatusFile.Write(box, BoxPhase.Failed, "沙箱在 Sandboxie 里不存在（可能已被删除）");
             return false;
         }
@@ -92,7 +92,7 @@ public static class BoxRuntime
             SetJsonField(p, "exit_type", "Normal", true);
             SetJsonField(p, "restore_on_startup", "1", false);
         }
-        Log.Box(box, $"clear browser crash session files={removed}");
+        Log.Box(box, $"清理浏览器崩溃恢复会话 文件数={removed}");
     }
 
     static void SetJsonField(string path, string field, string value, bool asString)
@@ -127,7 +127,7 @@ public static class BoxRuntime
         if (!need) return;
         try { if (Directory.Exists(boxRt)) Directory.Delete(boxRt, true); } catch { }
         Robo.Run(hostRt, boxRt, "/E", "/COPY:DAT", "/R:1", "/W:1");
-        Log.Box(box, "copied WeChat runtime from host into sandbox");
+        Log.Box(box, "已把微信运行时从主机复制进沙箱");
     }
 
     /// <summary>开机后 SbieSvc 虽已运行，RPC 仍可能长时间超时（SBIE2203）。用 listpids 探测，连续两次够快才算就绪。禁止用 /reload 催服务。</summary>
@@ -142,7 +142,7 @@ public static class BoxRuntime
             else ok = 0;
             Thread.Sleep(2000);
         }
-        Log.Box(box, "Sbie RPC still slow after wait (SBIE2203 risk) -> continue anyway");
+        Log.Box(box, "等待后 Sbie RPC 仍然很慢（有 SBIE2203 风险）→ 继续执行");
         return false;
     }
 
@@ -175,7 +175,7 @@ public static class BoxRuntime
         Thread.Sleep(1000);
         if (!light) WaitBoxQuiet(box, 8);
         EnsureWxRuntimeInBox(box);
-        Log.Box(box, "warmup done");
+        Log.Box(box, "预热完成");
     }
 
     // ---------- 后台启动进程登记 ----------
@@ -299,9 +299,9 @@ public static class BoxRuntime
     public static void StopForce(string box, bool saveLogin)
     {
         if (!Sandboxie.IsBoxName(box)) return;
-        Log.Box(box, "force stop box start");
+        Log.Box(box, "强制停箱：开始");
         int k = StopLaunchers(box);
-        if (k > 0) Log.Box(box, $"killed launcher/watch processes={k}");
+        if (k > 0) Log.Box(box, $"已结束后台启动/看门进程 数量={k}");
         StopSoft(box, saveLogin);
         Thread.Sleep(1000);
         Sandboxie.Terminate(box);
@@ -315,7 +315,7 @@ public static class BoxRuntime
             left = Sandboxie.Pids(box);
         }
         BoxStatusFile.Write(box, BoxPhase.Stopped, "已停止");
-        Log.Box(box, $"force stop box end pids_left={left.Count}");
+        Log.Box(box, $"强制停箱：结束 剩余进程={left.Count}");
     }
 
     /// <summary>
@@ -324,7 +324,7 @@ public static class BoxRuntime
     /// </summary>
     public static void ClearLogin(string box)
     {
-        Log.Box(box, "clear login start");
+        Log.Box(box, "清除登录：开始");
         StopLaunchers(box);
         Sandboxie.Terminate(box);
         Thread.Sleep(2000);
@@ -341,7 +341,7 @@ public static class BoxRuntime
             }
             catch { }
         }
-        if (Ilink.Live(box).Valid) Log.Box(box, "clear login WARNING: live ilink credential still present (box busy?)");
+        if (Ilink.Live(box).Valid) Log.Box(box, "清除登录警告：沙箱里的 ilink 凭证还在（沙箱没停干净？）");
         var prof = BoxPaths.Vault(box);
         Directory.CreateDirectory(prof);
         Ilink.ClearVault(box);
@@ -360,7 +360,7 @@ public static class BoxRuntime
         try { File.Delete(AppPaths.BoxRefreshPhase(box)); } catch { }
         Keepalive.RemoveTask(box);
         BoxStatusFile.Write(box, BoxPhase.Stopped, "登录已清除，下次启动需要扫码");
-        Log.Box(box, "clear login done (vault + sandbox credential removed, game package kept)");
+        Log.Box(box, "清除登录完成（金库与沙箱凭证已删，游戏包保留）");
         // 登录清掉了，授权窗口的起点也随之失效；下次扫码会重新写基准
         ScanBaseline.Clear(box);
     }
@@ -377,7 +377,7 @@ public static class BoxRuntime
         int killed = game ? view.KillBrowserRenderers() : 0;
         Thread.Sleep(300);
         var (before, after) = new BoxView(box).TrimBrowserMemory();
-        Log.Box(box, $"release browser memory hidden={hidden} killed={killed} workingSet {before / 1048576}MB -> {after / 1048576}MB");
+        Log.Box(box, $"释放浏览器内存 隐藏窗口={hidden} killed={killed} workingSet {before / 1048576}MB -> {after / 1048576}MB");
         return $"隐藏了 {hidden} 个浏览器窗口，结束 {killed} 个页面进程，QQ 浏览器内存 {before / 1048576} MB → {after / 1048576} MB。";
     }
 
@@ -393,12 +393,12 @@ public static class BoxRuntime
         {
             try { Cdp.CloseExtraTabs(box); } catch { }
             var (b0, a0) = view.TrimBrowserMemory();
-            Log.Box(box, $"deep trim refused (resident keeps long link) -> QQ only {b0 / 1048576}MB -> {a0 / 1048576}MB");
+            Log.Box(box, $"拒绝深度压缩（常驻需要保住长连接）→ 只压 QQ 浏览器 {b0 / 1048576}MB -> {a0 / 1048576}MB");
             return $"常驻保活中，为保住 ilink 长连接只压了 QQ 浏览器：{b0 / 1048576} MB → {a0 / 1048576} MB。要压游戏请先停掉常驻。";
         }
         try { Cdp.CloseExtraTabs(box); } catch { }
         var (before, after) = view.TrimAllMemory();
-        Log.Box(box, $"deep trim memory (incl game) workingSet {before / 1048576}MB -> {after / 1048576}MB");
+        Log.Box(box, $"深度压缩内存（含游戏）工作集 {before / 1048576}MB -> {after / 1048576}MB");
         return $"工作集 {before / 1048576} MB → {after / 1048576} MB（含游戏，正玩会回升；提交不变）";
     }
 
@@ -409,7 +409,7 @@ public static class BoxRuntime
         if (view.Empty) return "沙箱没有在运行。";
         try { Cdp.CloseExtraTabs(box); } catch { }
         var (before, after) = view.TrimBrowserMemory();
-        Log.Box(box, $"auto trim memory (QQ only) workingSet {before / 1048576}MB -> {after / 1048576}MB");
+        Log.Box(box, $"自动压缩内存（仅 QQ 浏览器）工作集 {before / 1048576}MB -> {after / 1048576}MB");
         return $"QQ 浏览器工作集 {before / 1048576} MB → {after / 1048576} MB（不含游戏）";
     }    /// <summary>删掉 QQ 浏览器的纯缓存目录（HTTP 缓存 / 代码缓存 / GPU 缓存 / Service Worker）。不动登录凭证、cookies、游戏包。</summary>
     static int ClearBrowserCache(string box)
@@ -440,7 +440,7 @@ public static class BoxRuntime
         if (!vault.Valid)
             return (false, "金库里没有可用的免扫凭证，这次只能重新扫码。");
 
-        Log.Box(box, "scan-free relogin: terminate, clear local session/cache, clear need-scan+revoked, restore vault");
+        Log.Box(box, "免扫重试：停箱、清本地会话与缓存、清需扫码/作废标记、还原金库");
         StopLaunchers(box);
         Sandboxie.Terminate(box);
         Thread.Sleep(1500);
@@ -455,7 +455,7 @@ public static class BoxRuntime
         ScanHint.ClearQrScanMarks(box);
 
         var cred = Ilink.Restore(box, "scan-free-relogin");
-        Log.Box(box, $"scan-free relogin ready: cleared {cleared} cache dirs, vault key {vault.KeyHash} restore={cred}");
+        Log.Box(box, $"免扫重试就绪 已清缓存目录={cleared} 个，金库 key {vault.KeyHash} restore={cred}");
         return (true, $"已清本地会话与缓存、还原免扫凭证（key {vault.KeyHash}），正在重新免扫进入…");
     }
 
@@ -464,7 +464,7 @@ public static class BoxRuntime
     /// </summary>
     public static (bool Ok, string Message) TryHistoryKey(string box, string srcDir, string keyHash)
     {
-        Log.Box(box, $"try history key {keyHash}: terminate, clear cache, write key to live");
+        Log.Box(box, $"试历史 key {keyHash}：停箱、清缓存、写入沙箱");
         StopLaunchers(box);
         Sandboxie.Terminate(box);
         Thread.Sleep(1500);

@@ -131,7 +131,7 @@ public static class Roles
         if (current.Length > 0 && current != previousRoleName) return;
         Notes.Set(box, roleName);
         try { BoxSetup.CreateShortcut(box, roleName); } catch { }
-        Log.Box(box, $"role name -> note: {roleName}");
+        Log.Box(box, $"角色名已同步为备注：{roleName}");
     }
 
     public static void Clear(string box)

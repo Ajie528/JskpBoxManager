@@ -48,7 +48,7 @@ public static class HistoryCooldown
             Prune(o);
             JsonFile.WriteObject(Path_Of(box), o);
         }
-        catch (Exception ex) { Log.Box(box, "history cooldown: mark failed " + ex.Message); }
+        catch (Exception ex) { Log.Box(box, "历史凭证冷却：记录失败 " + ex.Message); }
     }
 
     /// <summary>这把 key 现在能不能试（不在冷却期就返回 true）。</summary>

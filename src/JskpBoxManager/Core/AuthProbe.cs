@@ -82,7 +82,7 @@ public sealed class AuthProbe
         };
         // 长连接观测默认随观测器一起挂
         if (invokeAutoAuth) args.Add("--invoke-autoauth");
-        Log.Box(box, "auth probe watcher: " + string.Join(" ", args));
+        Log.Box(box, "授权观测程序：" + string.Join(" ", args));
         var codes = new List<string>();
         for (int attempt = 1; attempt <= 3; attempt++)
         {
@@ -192,7 +192,7 @@ public sealed class AuthProbe
                 {
                     var found = Path.GetDirectoryName(py)!;
                     if (!string.Equals(found, Path.Combine(AppPaths.AppDir, "tools", "lean-refresh"), StringComparison.OrdinalIgnoreCase))
-                        Log.App($"tools: 用的是 {found}（不是程序目录下的那份）");
+                        Log.App($"观测脚本：用的是 {found}（不是程序目录下的那份）");
                     return found;
                 }
             }

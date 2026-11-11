@@ -93,7 +93,7 @@ public static class BoxSetup
     public static bool RemoveBox(string box)
     {
         if (!Sandboxie.IsBoxName(box)) throw new ArgumentException("沙箱名不合法：" + box);
-        Log.Box(box, "remove box start");
+        Log.Box(box, "删除沙箱：开始");
         try { BoxRuntime.StopForce(box, false); } catch { }
         try { Sandboxie.DeleteContentsSilent(box); } catch { }
         // delete_sandbox_silent 偶尔不认路（沙箱从没跑过、或 ini 里段已被清空），兜底删磁盘目录
@@ -102,14 +102,14 @@ public static class BoxSetup
             var root = BoxPaths.SandboxBoxRoot(box);
             if (Directory.Exists(root)) Directory.Delete(root, true);
         }
-        catch (Exception ex) { Log.Box(box, "remove box: delete sandbox dir failed " + ex.Message); }
+        catch (Exception ex) { Log.Box(box, "删除沙箱：删沙箱目录失败 " + ex.Message); }
         try { Keepalive.RemoveTask(box); } catch { }
         try { RemoveShortcuts(box); } catch { }
         // 删角色档案与备注（否则新沙箱复用了同一个 qbN 会继承上一个号的角色名）
         try { Roles.Clear(box); } catch { }
         try { Notes.Set(box, ""); } catch { }
         // 删金库（整个 profiles\qbN）
-        try { var prof = BoxPaths.Vault(box); if (Directory.Exists(prof)) Directory.Delete(prof, true); } catch (Exception ex) { Log.Box(box, "remove box: delete vault failed " + ex.Message); }
+        try { var prof = BoxPaths.Vault(box); if (Directory.Exists(prof)) Directory.Delete(prof, true); } catch (Exception ex) { Log.Box(box, "删除沙箱：删金库失败 " + ex.Message); }
         // 删运行时状态/日志旁文件
         try { File.Delete(AppPaths.BoxRefreshPhase(box)); } catch { }
         try { File.Delete(AppPaths.BoxLauncherPid(box)); } catch { }
@@ -123,10 +123,10 @@ public static class BoxSetup
         // 否则界面删了、重启又出现——旧版 delete 语法无效就是从这里静默漏掉的。
         bool sectionGone = false;
         try { sectionGone = Sandboxie.DeleteSection(box); }
-        catch (Exception ex) { Log.Box(box, "remove box: delete section failed " + ex.Message); }
+        catch (Exception ex) { Log.Box(box, "删除沙箱：删 Sandboxie 配置段失败 " + ex.Message); }
         Sandboxie.Reload();
         if (!sectionGone)
-            Log.Box(box, "remove box: section still present after delete (Sandboxie 未确认删除)");
+            Log.Box(box, "删除沙箱：删完配置段仍在（Sandboxie 未确认删除）");
         Log.Box(box, sectionGone ? "remove box done" : "remove box done (section left)");
         return sectionGone;
     }

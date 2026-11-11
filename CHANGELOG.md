@@ -3,6 +3,55 @@
 版本号规则：`主版本.次版本.修订号`。只修 bug 加修订号；加功能加次版本号；数据格式或用法有不兼容变化加主版本号。
 每次发版在最上面新增一节，并同步修改 `Directory.Build.props` 里的 `<Version>`。
 
+## [1.5.41] - 2026-11-11
+
+### 铁律：换到新 key 必须立刻落盘，否则号直接报废
+
+AutoAuth 是**轮换**语义 —— 服务端返回成功那一刻，旧 key 就已经作废了。
+所以「拿到新 key」到「写进本地」之间不能有任何空窗。审计全部换钥路径后，
+发现原实现有多处会丢钥：
+
+| 路径 | 原来的问题 |
+|------|-----------|
+| `ProbeFile`（历史凭证探测） | 新 key 只放在**返回值**里，要等调用方 StopForce + `Thread.Sleep(1500)` 才写盘。**空窗 ≥2 秒**，期间崩溃/断电/强杀就永久丢钥 |
+| `CaptureOnce --no-commit` | 新 key **直接丢弃**，而旧 key 已被服务端作废 → 号必废 |
+| `CaptureOnce` / `CommitPending` | 只写金库不写 live，或反之，留下两边不一致 |
+| 崩溃恢复 | 完全没有——pending 概念不存在，进程被杀后那次换钥白做 |
+
+### 新增：`pending-rotated.json` 即时落盘 + 自动补写
+
+任何换钥成功后**同步立即**写进 `profiles\qbN\credential\pending-rotated.json`（`SavePending`），
+不等待、不停箱、不做任何判断。这是新 key 的第一落点，把空窗压到几乎为零。
+
+之后再由 `CommitPending` 写进 live + 金库，成功才删除该文件。若中途崩溃，
+文件留着，下次启动/保活会自动补写（`RecoverPending`）：
+
+```
+2026-11-11 21:27:12  refresh: pending rotated key detected -> commit before any other decision
+2026-11-11 21:27:12  protocol renew: pending key 099e12172e300dd5 committed to 2 file(s) (live + vault)
+2026-11-11 21:27:12  protocol renew: RECOVERED pending key 099e12172e300dd5 (saved at 21:27:07)
+```
+
+**补写必须排在 `DecideWake` 与 `PrepareBeforeLaunch` 之前**——这是两个必须避开的陷阱：
+
+1. `DecideWake` 会因为「密钥太新（<5h）」直接 return，根本不进 Core。
+   而崩溃时 live 里是**已作废的旧 key**、新 key 只在 pending 里，越新的 key 越被这条规则挡住，
+   等于永远补不上（实测确实发生了）。
+2. `PrepareBeforeLaunch` 会把金库推回 live，而金库这时可能是旧 key，会**反向覆盖**待写的新 key。
+
+所以补写点设在 `RefreshSession.Run` 的最前面（早于 `DecideWake`）
+和 `LaunchSession.Run` 的最前面（早于 `PrepareBeforeLaunch`）。
+
+`--no-commit` 的语义也纠正了：它只阻止「写进 live」，**不会**阻止保存到磁盘。
+
+### 实测验证（qb3）
+
+```
+手工造现场：live=bf6826bd(已废)  vault=1db62524  pending=099e1217
+跑 refresh → committed to 2 file(s)
+结果：live=099e1217  vault=099e1217  pending 已清除
+```
+
 ## [1.5.40] - 2026-11-11
 
 ### 修复：保活一整天都在跳过自己（影响全部 13 个号）

@@ -50,6 +50,20 @@ public sealed class LaunchSession
         {
             // 上一次没被常驻进程取走的续期请求已经没意义了（这次是完整启动，会自己续）
             try { File.Delete(AppPaths.BoxRenewRequest(_box)); } catch { }
+
+            // ★ 必须在 PrepareBeforeLaunch / 预检之前：那些步骤会把金库推回 live，
+            //   而金库这时还是**服务端已作废的旧 key**，一旦先跑就会把待写的新 key 盖掉。
+            if (ProtocolRenew.HasPending(_box))
+            {
+                L("launch: pending rotated key detected -> committing it before anything else");
+                if (ProtocolRenew.RecoverPending(_box))
+                {
+                    L("launch: pending key committed, live/vault now match the server");
+                    try { NeedScan.ClearIfRenewed(_box); } catch { }
+                }
+                else L("launch: pending key not committed now (box busy?) -> preflight will retry");
+            }
+
             RunLocked();        }
         catch (Exception ex)
         {
@@ -118,6 +132,17 @@ public sealed class LaunchSession
     {
         try
         {
+            // ★ 最优先：上次换钥后没落盘的凭证先补写。
+            //   那种情况下服务端已经是新 key 了，而本地还是旧的——直接启动必然失败。
+            if (ProtocolRenew.HasPending(_box))
+            {
+                L("preflight: found pending rotated key from a previous run -> committing it first");
+                if (ProtocolRenew.RecoverPending(_box))
+                    L("preflight: pending key committed, live/vault now match the server");
+                else
+                    L("preflight: pending key could not be committed now (box busy?) -> will retry after stop");
+            }
+
             var cfg = NotifyConfig.Load();
             if (!cfg.ProbeEnabled) return;
             if (Sandboxie.Pids(_box).Count > 0) return;

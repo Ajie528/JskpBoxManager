@@ -29,6 +29,24 @@ public sealed class RefreshSession
         if (!cfg.EnabledFor(_box)) { L("refresh skipped (keepalive disabled in config)"); return 0; }
         if (!EnvDetect.SbieOk || !EnvDetect.QqOk) { L("refresh skipped (Sandboxie or QQBrowser not found)"); return 1; }
 
+        // ★ 第一优先：上次换钥后没落盘。这一步必须排在 DecideWake 之前。
+        //   理由：DecideWake 会因为「密钥太新（<5h）」直接返回 skip 而根本不进 Core，
+        //   但那时 live 里放的是**服务端已经作废的旧 key**、新 key 只在 pending 文件里——
+        //   越新的 key 越会被这条规则挡住，等于崩溃后永远补不上（实测就这么发生了）。
+        if (ProtocolRenew.HasPending(_box))
+        {
+            L("refresh: pending rotated key detected -> commit before any other decision");
+            if (ProtocolRenew.RecoverPending(_box))
+            {
+                L("refresh: pending key committed (live/vault now match what the server issued)");
+                try { NeedScan.ClearIfRenewed(_box); } catch { }
+            }
+            else
+            {
+                L("refresh: pending key not committed yet (box busy?) -> will retry");
+            }
+        }
+
         // v1.5.37：任务现在每小时醒一次，这里先判断「这次到底该不该动上游」。
         // 判断很便宜（只读几个小文件），不通过就直接退出，不抢锁、不停箱。
         var decision = Keepalive.DecideWake(_box, cfg.For(_box), DateTime.Now);
@@ -343,6 +361,13 @@ public sealed class RefreshSession
     /// </summary>
     ProtocolRenewOutcome TryProtocolRenew(string frozenKey)
     {
+        // ★ 上次换钥后没落盘：先补写，否则接下来「续期」读到的旧 key 会和 service 端不一致
+        if (ProtocolRenew.HasPending(_box))
+        {
+            L("protocol renew: found pending rotated key from a previous run -> committing it first");
+            ProtocolRenew.RecoverPending(_box);
+        }
+
         if (!ProtocolRenew.AttemptPending(_box) && !Ilink.VaultState(_box).Valid)
         {
             // 金库这把已经不可读（被清空/格式坏了）不代表整个号没救：

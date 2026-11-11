@@ -94,6 +94,7 @@
 | --- | --- |
 | `profiles\qbN\wmpf\` | 登录金库 + 游戏包缓存。`wmpf\ilink\` 里是微信免扫凭证，`wmpf\Applet\` 里是游戏包（每号约 6～7 GB，删了下次要重新下载） |
 | `profiles\qbN\credential\` | 历史凭证快照（最多 30 份）、作废登记、冷却名单。**免扫失效时靠它逐个试回来** |
+| `profiles\qbN\credential\pending-rotated.json` | **换到新 key 但还没写进 live/金库的临时落点**。正常情况下一瞬间就消失；如果一直在，说明上次换钥后进程被杀，下次启动会自动补写（见下方「换 key 必须立刻落盘」） |
 | `profiles\qbN\browser\` | QQ 浏览器的登录态（cookie 等） |
 | `profiles\qbN\refresh-need-scan.txt` | 待扫码标记；存在时启动会直接摆二维码 |
 | `logs\ilink-events.jsonl` | 凭证事件（换 key / 被作废 / 扫码 / 保活结果），排查免扫问题的核心依据 |
@@ -112,8 +113,37 @@
 | `update\` | 自动更新下载的临时文件，装完即可清空 |
 | `profiles\qbN\backups\` | **旧版遗留**，现版本不会再写这个目录，可直接删 |
 
-### 占用空间说明
+### 换 key 必须立刻落盘（改动代码时务必遵守）
 
+AutoAuth 是**轮换**语义：服务端返回成功的那一刻，旧 key 就已经作废了。
+所以「拿到新 key」到「写进本地」之间不能有空窗——中间崩了，旧 key 废了、新 key 也没了，这个号只能重新扫码。
+
+**规矩**：任何调用 `Exchange()` 拿到成功响应的代码，**下一步必须是 `SavePending()`**，
+然后才允许做停箱、写 live、推金库这些慢动作。
+
+```csharp
+var (ok, code, newKey, newEnc, newSrv, why) = Exchange(cred, uin, host, port, cap);
+if (!ok) return ...;
+
+// ★ 立刻落盘，不做任何等待
+SavePending(box, cred.Uin, newKey, newEnc, newSrv, hash, oldKeyHash, "why");
+
+// 之后才写 live + 金库（停箱、校验……）
+```
+
+`pending-rotated.json` 是「已换到、未写进 live」的标记。`CommitPending()` 写成功后删除它；
+进程被杀导致残留时，`RecoverPending()` 会在下次启动/保活时自动补写。
+
+补写点必须早于两处判断，否则永远补不上：
+
+| 陷阱 | 后果 |
+|------|------|
+| `DecideWake`（密钥 <5h 就跳过） | 崩溃时 live 是已废的旧 key、新 key 在 pending 里；越新的 key 越被这条规则挡住 |
+| `VaultSync.PrepareBeforeLaunch`（把金库推回 live） | 金库那时可能是旧 key，会反向覆盖待写的新 key |
+
+所以两个入口都把 `HasPending → RecoverPending` 放在了最前面。
+
+### 占用空间说明
 主要占用是 `profiles\qbN\wmpf\Applet\`（游戏包缓存），每个号约 6～7 GB，16 个号合计 60 GB 以上。
 它的作用是清空沙箱后**不必重新下载游戏**。如果实在要腾空间，这是唯一能大幅瘦身的地方，
 但代价是下次启动每个号都要重新下载一遍。

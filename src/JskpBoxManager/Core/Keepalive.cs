@@ -274,7 +274,52 @@ public static class Keepalive
                 return WakeDecision.No($"rotated {quota}x today -> hold until tomorrow");
             return WakeDecision.Yes($"daily {at:HH:mm} slot");
         }
+
+        // 6) 「今天已续过」不能让密钥就此放到老死。
+        //    `doneToday` 只看密钥写入时间，而用户手动开一次游戏时运行时会自己换一把 key——
+        //    这被当成了「今天的保活已完成」，于是整天都跳过。
+        //    qb4 在 2026-11-11 就是这样：10:14 登录换钥 → 一整天 `already renewed today`
+        //    → 密钥一路放到 9.4 小时无人过问 → 19:38 被判 -13。
+        //    更早的坑：11-11 凌晨 03:30 的计划时刻真正到来时，密钥才 3 小时（< 5h 门槛）被跳过；
+        //    等它老过 5 小时，`doneToday` 又已经是真了——那天的保活就这么整体丢失了。
+        //
+        //    所以：当天计划时刻已过、密钥也已老过 minAge、但**今天没有任何一次真正的 refresh**
+        //    （登录/探测/预检换的 key 不算），就补跑一次。用 rotate-log 里的 reason 判断，
+        //    因此补跑成功后当天不会再触发，最多一天一次，不会变成每 5 小时滚一次。
+        if (doneToday && keyAge is double stale && stale >= minAge && !RefreshServedToday(box))
+        {
+            if (CredentialProbe.RotationsToday(box) >= quota)
+                return WakeDecision.No($"rotated {quota}x today -> hold until tomorrow");
+            return WakeDecision.Yes($"daily {at:HH:mm} slot still owed (key {stale:F1}h old, no refresh run today)");
+        }
+
         return WakeDecision.No(doneToday ? "already renewed today" : $"daily slot {at:HH:mm} not reached");
+    }
+
+    /// <summary>
+    /// 今天有没有真正跑过一次「保活」（refresh）——只看 rotate-log 里的原因。
+    /// 「refresh」是协议续期路径记的，「runtime:refresh」是冷启动路径记的；
+    /// probe / preflight / runtime:game-ok 都不算，它们只是顺带换钥，不代表保活执行过。
+    /// </summary>
+    internal static bool RefreshServedToday(string box)
+    {
+        try
+        {
+            var p = Path.Combine(AppPaths.Logs, box + ".rotate-log");
+            if (!File.Exists(p)) return false;
+            var today = DateTime.Today.ToString("yyyy-MM-dd") + " ";
+            foreach (var line in File.ReadLines(p))
+            {
+                if (!line.StartsWith(today, StringComparison.Ordinal)) continue;
+                // 行格式：「yyyy-MM-dd HH:mm:ss <keySha> <why>」
+                var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length < 4) continue;
+                var why = parts[3].Trim();
+                if (why == "refresh" || why == "runtime:refresh") return true;
+            }
+            return false;
+        }
+        catch { return false; }
     }
 
     /// <summary>最近一次成功续期（以金库里最新那把密钥的写入时间为准）。</summary>

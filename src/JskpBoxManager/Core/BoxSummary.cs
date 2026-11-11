@@ -216,14 +216,18 @@ public sealed class BoxSummary
                 "qr" or "qr-seen" => "要扫码",
                 "no-game" => "没进游戏", "no-rewrite" => "未换新", _ => r,
             };
-            // 保活失败后又手动启动 / 扫码换新过：失败已经过时，标出来，免得和「最近免扫换新」看着矛盾
-            bool recovered = r is not ("ok" or "in-game") && s.Login == LoginLevel.Ok && s.LastRenewUtc > at.ToUniversalTime();
-            s.LastRefreshShort = $"{Clock(at)} {word}" + (recovered ? "·已恢复" : "");
+            // 保活记录过时了就标出来，免得和「最近免扫换新」看起来矛盾。
+            // 判据用「凭证比那次保活更新」而不是「现在登录正常」：qb4 这类号的凭证明明
+            // 在保活失败之后重新扫码拿到了，但如今是 NeedScan 状态，按旧判据就不会提示，
+            // 界面上一直显示昨天的失败，让人以为是「昨天登录的」。
+            bool renewedAfter = s.LastRenewUtc > at.ToUniversalTime().AddSeconds(5);
+            s.LastRefreshShort = $"{Clock(at)} {word}" + (r is not ("ok" or "in-game") && renewedAfter ? "·之后已换新" : "");
             s.LastRefresh = $"{at:MM-dd HH:mm} {word}";
             if (JsonFile.Int(ev, "authRet") is int ret && ret != 0)
                 s.LastRefresh += $"（服务器拒绝授权 ret={ret}" + (JsonFile.Str(ev, "authMsg") is { Length: > 0 } m ? $"：{m}）" : "）");
-            if (recovered)
-                s.LastRefresh += $"；之后 {s.LastRenewUtc.ToLocalTime():MM-dd HH:mm} 已重新登录，现在免扫正常";
+            if (renewedAfter)
+                s.LastRefresh += $"；之后 {s.LastRenewUtc.ToLocalTime():MM-dd HH:mm} 凭证已换新"
+                    + (s.Login == LoginLevel.Ok ? "，现在免扫正常" : "（但需要重新扫码）");
         }
 
         if (revokes.TryGetValue(box, out var rev)

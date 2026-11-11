@@ -3,6 +3,65 @@
 版本号规则：`主版本.次版本.修订号`。只修 bug 加修订号；加功能加次版本号；数据格式或用法有不兼容变化加主版本号。
 每次发版在最上面新增一节，并同步修改 `Directory.Build.props` 里的 `<Version>`。
 
+## [1.5.40] - 2026-11-11
+
+### 修复：保活一整天都在跳过自己（影响全部 13 个号）
+
+qb4 今天上午 10:14 扫码登录成功，晚上 19:38 就要求重新扫码，密钥只活了 9.4 小时。
+查日志发现**保活压根没干活**——每小时都醒，但每次都跳过：
+
+```
+10:17  refresh skipped: key is only 0.0h old (< 5h) -> leave it alone
+11:17  refresh skipped: key is only 1.0h old (< 5h) -> leave it alone
+...
+14:17  refresh skipped: key is only 4.0h old (< 5h) -> leave it alone
+15:17  refresh skipped: already renewed today      ← 刚过 5h 门槛，却改判「今天已续」
+16:17  refresh skipped: already renewed today
+...
+19:17  refresh skipped: already renewed today
+19:38  probe: 服务器判定凭证已失效（-13）
+```
+
+**根因**：`Keepalive.DecideWake` 的顺序里，第 4 步「密钥太新（< 5h）就跳过」排在第 5 步
+「按当天计划时刻判断」之前，而第 5 步用 `LastSuccessUtc()` 判断「今天是否已续过」，
+它只看**金库密钥的写入时间**。
+
+于是每天都会精确地错过窗口：
+
+1. 计划时刻（03:30）到来时密钥才 3 小时 → 被「太新」拦住；
+2. 等密钥熬过 5 小时（15:00 左右），`doneToday` 已经为真——因为凌晨的探测（`probe`）
+   或用户手动开游戏时运行时自己滚的 key（`runtime:game-ok`）写入时间就是今天；
+3. 结果是**一整天一次真正的保活都没跑**，密钥靠探测顺带滚几下撑着，一旦探测错过就撞墙。
+
+qb3 的轨迹更清楚，两次都踩在门槛边缘被切走：
+
+```
+06:05  key is only 4.8h old (< 5h)   → 再等一小时
+07:05  already renewed today          ← 4.8h 变 5.8h 的那一刻被改判
+13:05  key is only 4.9h old (< 5h)
+14:05  already renewed today
+```
+
+**这不是 qb4 独有。** 11-11 全天统计：16 个号里只有 qb11 / qb12 / qb14 真正跑过 `refresh`，
+其余 13 个全部靠探测顺带换 key。
+
+**修复**：新增 `Keepalive.RefreshServedToday(box)`，直接读 `rotate-log` 的 reason 判断
+「今天有没有真正执行过一次保活」——只有 `refresh` / `runtime:refresh` 算，
+`probe` / `preflight` / `runtime:game-ok` 都不算（它们只是顺带换钥，不代表保活跑过）。
+
+当天计划时刻已过、密钥已老过 `minAge`、但今天没有真正的 refresh 时，补跑一次。
+补跑成功会写入 `refresh` 记录，因此当天不会再触发——**最多一天补一次，
+不会退化成每 5 小时滚一次**（那反而会撞风控）。
+
+### 修复：界面「上次保活」显示过时信息
+
+qb4 的凭证在 10:14 就换新了，界面却一直显示「上次保活 = 11-10 04:15 被顶掉」，
+看起来像是昨天登录的。原因是标「已恢复」的条件是 `Login == Ok`，
+而 qb4 当时已经是 NeedScan 状态，于是不提示、只留下一天前的失败。
+
+改为按「凭证是否比那次保活更新」判断，并区分两种说法：
+凭证已换新且免扫正常 → 「现在免扫正常」；已换新但需扫码 → 「（但需要重新扫码）」。
+
 ## [1.5.39] - 2026-11-10
 
 ### 修复：`hook` 可能在跑「别的副本」的观测脚本

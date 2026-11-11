@@ -131,6 +131,17 @@ SavePending(box, cred.Uin, newKey, newEnc, newSrv, hash, oldKeyHash, "why");
 // 之后才写 live + 金库（停箱、校验……）
 ```
 
+三条硬性要求：
+
+1. **不能有条件。** 不许用「有没有箱号」「调用方要不要 commit」之类的条件把落盘包起来。
+   `--no-commit` 只阻止写 live，**不阻止保存到磁盘**。
+2. **写完后必须校验两份都成了新 key 才删 pending。** `WriteCredential` 内部对金库那份是
+   try/catch 吞掉的，可能出现「live 成、金库败」；此时删了 pending 就失去补救机会，
+   而下次 `VaultSync` 又会把金库的旧 key 推回 live。
+3. **`SavePending` 自身失败要兜底。** 目录权限/磁盘满/文件被锁时降级写成
+   `logs\qbN.rotated-<hash>.txt`（明文）。宁可日志暴露明文，也不能丢钥——
+   丢钥的代价是这个号必须重新扫码。
+
 `pending-rotated.json` 是「已换到、未写进 live」的标记。`CommitPending()` 写成功后删除它；
 进程被杀导致残留时，`RecoverPending()` 会在下次启动/保活时自动补写。
 

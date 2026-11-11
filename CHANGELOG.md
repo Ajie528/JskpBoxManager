@@ -3,6 +3,46 @@
 版本号规则：`主版本.次版本.修订号`。只修 bug 加修订号；加功能加次版本号；数据格式或用法有不兼容变化加主版本号。
 每次发版在最上面新增一节，并同步修改 `Directory.Build.props` 里的 `<Version>`。
 
+## [1.5.42] - 2026-11-11
+
+### 补完「换到新 key 必须落盘」的最后三个缺口
+
+v1.5.41 加了 `pending-rotated.json` 即时落盘，但逐条审计后发现仍有漏洞：
+
+| 缺口 | 后果 | 修法 |
+|------|------|------|
+| `ProbeFile` 的落盘被 `if (boxForLog.Length > 0)` 包着 | 调用方没传箱号时新 key **完全不落盘** | 去掉条件；没箱号时存到 `_unknown` 并记 app.log 提醒 |
+| `Renew` 成功后**无条件删 pending** | `WriteCredential` 内部对金库那份是 try/catch 吞掉的，可能「live 成、金库败」；删了 pending 就失去补救机会，下次 VaultSync 又把旧 key 推回 live | 写完读回校验 live **和** 金库都等于新 key 才删 |
+| `SavePending` 自身失败只记日志 | 目录权限/磁盘满/文件被锁时，新 key 直接丢 | 降级为纯文本兜底文件 `logs\qbN.rotated-<hash>.txt`；宁可日志暴露明文也不能丢钥 |
+
+### 顺带修掉一个真问题：`Renew` 不保证 live 也被写到
+
+实测发现 qb3 出现过 **金库已是新 key、沙箱 live 还是已作废的旧 key** 的状态：
+
+```
+live  key=099e12172e300dd5   ← 服务端已作废
+vault key=b1da8e9d07c14fd6   ← 新
+```
+
+原因：`WriteCredential` 只写 `cred.Path` 那一份，而 `ReadCredential` 取的是「live 与金库中较新那份」，
+于是可能只写了金库。启动时要么跑旧 key 直接失败，要么 `VaultSync` 反过来把旧 key 推回去。
+
+现在 `Renew` 写完主份后会**检查另一份并补写**：
+
+```
+2026-11-11 23:27:53  protocol renew: NEW KEY SAVED TO DISK immediately (b1da8e9d -> f4590aba, renew)
+2026-11-11 23:27:53  protocol renew: also wrote new key into live (was 099e12172e300dd5)
+2026-11-11 23:27:53  protocol renew ok: newKey=f4590aba4c248b4f
+```
+
+### 三条换钥路径逐条实测（qb3）
+
+| 路径 | 验证点 | 结果 |
+|------|--------|------|
+| `renew`（协议续期） | 立即落盘 + 补写 live + 双份校验后清 pending | ✓ `also wrote new key into live`，live=vault，pending 清 |
+| `capture --no-commit` | 不写 live **但必须落盘** | ✓ pending 含新 key，日志明确提示 |
+| `probe-file`（历史凭证） | 去掉箱号条件后仍落盘 | ✓ 三条路径均有 `NEW KEY SAVED TO DISK` |
+
 ## [1.5.41] - 2026-11-11
 
 ### 铁律：换到新 key 必须立刻落盘，否则号直接报废

@@ -209,8 +209,13 @@ public static class ProtocolRenew
 
         // ★ 立刻落盘，不做任何等待。服务端此刻已作废旧 key，
         //   新 key 只要还停留在内存里，任何意外都会让这个号报废。
-        if (boxForLog.Length > 0)
-            SavePending(boxForLog, cred.Uin, newKey, newEnc, newSrv, hash, oldHash, "probe-file");
+        //   这里**不能**用「有没有传箱号」当条件省略落盘：没传箱号也要存，
+        //   否则调用方一疏忽就丢钥。没有箱号时用一个独立文件名兜住。
+        var saveBox = boxForLog.Length > 0 ? boxForLog : "_unknown";
+        SavePending(saveBox, cred.Uin, newKey, newEnc, newSrv, hash, oldHash, "probe-file");
+        if (boxForLog.Length == 0)
+            Log.App($"protocol renew: probe rotated a key but caller gave no box name ({path}) "
+                + $"-> saved to profiles\\{saveBox}\\credential\\pending-rotated.json, may need manual placement");
 
         // 新 key 同时存在返回对象里，由调用方停箱后调用 CommitToFile / CommitToBox 落盘
         return new Result(true, $"这把可用（{oldHash} -> {hash}）", hash, 0)
@@ -275,8 +280,30 @@ public static class ProtocolRenew
         catch (Exception ex)
         {
             Log.Box(box, "protocol renew: **CRITICAL** cannot save new key to pending file: " + ex.Message
-                + " — the old key is already revoked by server, this key may be lost if we crash now");
-            return false;
+                + " — the old key is already revoked; falling back to a plain-text sidecar");
+
+            // 兜底一：pending 文件写不了（目录权限/磁盘满/文件被锁），那就直接把新 key
+            // 写成一个最朴素的文件放在 logs 下。宁可暴露明文也不能丢钥——
+            // 这个号一旦丢了 key 就只能重新扫码，代价远大于日志里有明文。
+            try
+            {
+                Directory.CreateDirectory(AppPaths.Logs);
+                var sidecar = Path.Combine(AppPaths.Logs, $"{box}.rotated-{newHash}.txt");
+                File.WriteAllText(sidecar,
+                    $"at={DateTime.Now:yyyy-MM-dd HH:mm:ss}\r\nuin={uin}\r\n"
+                    + $"kTdiKeyAutoauthKey={Convert.ToBase64String(newKey)}\r\n"
+                    + $"kTdiKeyAutoauthEncKey={Convert.ToBase64String(newEnc)}\r\n"
+                    + (newSrv is { Length: > 0 } ? $"kTdiKeyServerId={Convert.ToBase64String(newSrv)}\r\n" : "")
+                    + $"prevKeySha={oldHash}\r\nwhy={why}\r\n",
+                    new UTF8Encoding(false));
+                Log.Box(box, $"protocol renew: new key written to fallback sidecar {Path.GetFileName(sidecar)}");
+                return true;
+            }
+            catch (Exception ex2)
+            {
+                Log.Box(box, "protocol renew: **CRITICAL** fallback sidecar also failed: " + ex2.Message);
+                return false;
+            }
         }
     }
 
@@ -693,10 +720,16 @@ public static class ProtocolRenew
                 // 记账：否则「每号每天最多换 N 次」这条风控判据会漏掉抓取产生的轮换
                 CredentialProbe.RecordRotationPublic(box, cap.NewKeySha, "autoauth-capture");
                 var lv = Ilink.Live(box);
-                if (!lv.Valid || lv.KeyHash != cap.NewKeySha)
-                    extra += $"（⚠ live 校验不符：{lv.KeyHash}，请手动核对）";
-                else
+                if (lv.Valid && lv.KeyHash == cap.NewKeySha)
+                {
+                    // 校验通过才清 pending，否则留着让下次启动补写
                     try { File.Delete(Path.Combine(BoxPaths.CredentialDir(box), "pending-rotated.json")); } catch { }
+                }
+                else
+                {
+                    extra += $"（⚠ live 校验不符：{lv.KeyHash}，新 key 留在 pending-rotated.json 待下次启动补写）";
+                    Log.Box(box, $"autoauth capture: live key {lv.KeyHash} != expected {cap.NewKeySha} -> keep pending");
+                }
             }
             catch (Exception ex)
             {
@@ -904,10 +937,53 @@ public static class ProtocolRenew
             SavePending(box, cred.Uin, newKey, newEnc, newSrv, hash, oldKeyHash, "renew");
 
             try { WriteCredential(cred, newKey, newEnc, newSrv); }
-            catch (Exception ex) { return Fail(box, "写回凭证失败：" + ex.Message, 0); }
+            catch (Exception ex)
+            {
+                // 写盘失败但 pending 还在 → 下次启动自动补写，不算丢钥
+                return Fail(box, "写回凭证失败（新 key 已存 pending-rotated.json，下次启动自动补写）：" + ex.Message, 0);
+            }
             ClearAttempt(box);
-            // 已经写进 live+金库了，待写标记可以清掉
-            try { File.Delete(PendingFile(box)); } catch { }
+
+            // WriteCredential 只写了 cred.Path 那一份。ReadCredential 取的是「live 与金库中较新那份」，
+            // 所以可能只写了金库、沙箱 live 还留着被轮换掉的旧 key。必须把另一份也补上，
+            // 否则启动时要么跑旧 key 直接失败，要么 VaultSync 反过来把旧 key 推回去。
+            try
+            {
+                foreach (var root in new[] { BoxPaths.WmpfLive(box), BoxPaths.WmpfVault(box) })
+                {
+                    var tpl = Ilink.AccountFile(root);
+                    if (tpl == null) continue;
+                    var cur = ReadCredentialFile(tpl.FullName);
+                    if (cur.AutoKey.Length == 0) continue;
+                    var curHash = Ilink.ShortSha256(Encoding.UTF8.GetBytes(
+                        Convert.ToBase64String(cur.AutoKey) + "|" + Convert.ToBase64String(cur.EncKey)));
+                    if (curHash == hash) continue;         // 已经是新 key，不用动
+                    cur.Path = tpl.FullName;
+                    cur.VaultRoot = "";
+                    WriteCredential(cur, newKey, newEnc, newSrv);
+                    Log.Box(box, $"protocol renew: also wrote new key into {(root == BoxPaths.WmpfLive(box) ? "live" : "vault")} "
+                        + $"(was {curHash})");
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Box(box, "protocol renew: secondary credential sync failed (pending file kept): " + ex.Message);
+            }
+
+            // 只有确认「live 与金库都是新 key」才删 pending。
+            var liveNow = Ilink.Live(box);
+            var vaultNow = Ilink.VaultState(box);
+            bool liveOk = liveNow.Valid && liveNow.KeyHash == hash;
+            bool vaultOk = vaultNow.Valid && vaultNow.KeyHash == hash;
+            if (liveOk && vaultOk)
+            {
+                try { File.Delete(PendingFile(box)); } catch { }
+            }
+            else
+            {
+                Log.Box(box, $"protocol renew: after write live={liveNow.KeyHash} vault={vaultNow.KeyHash}, expected {hash} "
+                    + "-> keep pending file so the next start can repair it");
+            }
 
             SaveRotatedSnapshot(box, cred, newKey, newEnc, newSrv, hash, oldKeyHash);
             Log.Box(box, $"protocol renew ok: newKey={hash} enc=24 serverId={newSrv.Length}");

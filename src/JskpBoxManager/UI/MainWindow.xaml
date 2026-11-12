@@ -94,9 +94,9 @@
         -->
         <Grid Grid.Row="2" Margin="16,14,16,8">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="8.1*" MinWidth="520"/>
+                <ColumnDefinition Width="7.9*" MinWidth="520"/>
                 <ColumnDefinition Width="Auto"/>
-                <ColumnDefinition Width="1.9*" MinWidth="280"/>
+                <ColumnDefinition Width="2.1*" MinWidth="300"/>
             </Grid.ColumnDefinitions>
 
             <!-- 沙箱列表 -->
@@ -255,7 +255,7 @@
                                 </Style>
                             </DataGridTextColumn.ElementStyle>
                         </DataGridTextColumn>
-                        <DataGridTemplateColumn Header="运行状态" Width="96">
+                        <DataGridTemplateColumn Header="运行状态" Width="116">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <!-- 用 Grid 而不是水平 StackPanel：StackPanel 给子元素无限宽度，
@@ -274,16 +274,19 @@
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
                         <!-- 登录：108px 靠换行容纳「需要扫码（已被顶掉）」，不再为它撑宽整列 -->
-                        <DataGridTemplateColumn Header="登录" Width="108">
+                        <!--
+                          登录：84px 是比较窄的，靠换行容纳「需要扫码（已被顶掉）」这类长状态。
+                          内边距从 8,2 收到 6,2，把省下的 4px 让给文字——窄列里这 4px 很关键。
+                        -->
+                        <DataGridTemplateColumn Header="登录" Width="84">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
-                                    <!-- 去掉 HorizontalAlignment="Left"：它会让 Border 按内容自适应宽度、
-                                         永远不换行。改成 Stretch 后能按列宽约束换行。 -->
-                                    <Border Background="{Binding LoginBg}" CornerRadius="10" Padding="8,2"
+                                    <Border Background="{Binding LoginBg}" CornerRadius="9" Padding="6,2"
                                             HorizontalAlignment="Stretch" VerticalAlignment="Center" Margin="0,4">
                                         <TextBlock Text="{Binding LoginText}" Foreground="{Binding LoginFg}" FontSize="12"
                                                    TextWrapping="Wrap" VerticalAlignment="Center"
                                                    HorizontalAlignment="Center"
+                                                   LineHeight="16"
                                                    ToolTip="{Binding LoginText}"/>
                                     </Border>
                                 </DataTemplate>

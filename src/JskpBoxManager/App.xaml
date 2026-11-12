@@ -28,7 +28,15 @@
                     <ControlTemplate TargetType="Button">
                         <Border x:Name="b" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
                                 BorderThickness="1" CornerRadius="6" Padding="{TemplateBinding Padding}">
-                            <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="Center"/>
+                            <!--
+                              用 TextBlock 而不是纯 ContentPresenter：
+                              按钮文案有长有短（「🛠 高级工具（取Token / 抓包 / 解包…）」），
+                              面板变窄时会溢出被裁掉。包一层 TextBlock 才能自动换行。
+                            -->
+                            <TextBlock Text="{TemplateBinding Content}"
+                                       HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                       VerticalAlignment="Center"
+                                       TextWrapping="Wrap"/>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">

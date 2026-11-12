@@ -1,9 +1,43 @@
 <Window x:Class="JskpBoxManager.UI.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="向僵多开管家" Width="1480" Height="820" MinWidth="1180" MinHeight="620"
+        Title="向僵多开管家" Width="1680" Height="900" MinWidth="1120" MinHeight="640"
         WindowStartupLocation="CenterScreen" FontFamily="Microsoft YaHei UI" FontSize="13"
         Background="White" Icon="/app.ico">
+    <!--
+      全局 ToolTip 样式。
+      原来没有任何 ToolTip 样式，WPF 默认按内容宽度铺开、又受屏幕边缘限制，
+      长文本（「上次保活」那种带 ret=-13 全句说明的）会被压成很窄一条、或者被截断，
+      于是提示根本读不全。这里统一成固定宽度 + 自动换行。
+    -->
+    <Window.Resources>
+        <Style TargetType="ToolTip">
+            <Setter Property="MaxWidth" Value="460"/>
+            <Setter Property="MinWidth" Value="220"/>
+            <Setter Property="Padding" Value="10,8"/>
+            <Setter Property="FontSize" Value="12.5"/>
+            <Setter Property="Background" Value="#0F172A"/>
+            <Setter Property="Foreground" Value="#F1F5F9"/>
+            <Setter Property="BorderBrush" Value="#334155"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="HasDropShadow" Value="False"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToolTip">
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="6" Padding="{TemplateBinding Padding}">
+                            <TextBlock Text="{TemplateBinding Content}"
+                                       TextWrapping="Wrap" LineHeight="19"
+                                       Foreground="{TemplateBinding Foreground}"/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
@@ -32,19 +66,37 @@
             </DockPanel>
         </Border>
 
-        <!-- 提醒横幅 -->
-        <Border Grid.Row="1" x:Name="Banner" Visibility="Collapsed" Background="#FEF3C7" BorderBrush="#F59E0B" BorderThickness="0,0,0,1" Padding="18,8">
+        <!--
+          提醒横幅。
+          原来只是「一行 Wrap 文本」，长提示（比如 16 个沙箱的任务名全列一遍）会把
+          横幅撑得很高、把下方表格挤走；窗口窄的时候又会被右侧按钮压缩到只剩一两个字一行。
+          现在：文本限高约 3 行、超出滚动可鼠标滚轮翻看，按钮固定在右侧不参与换行计算。
+        -->
+        <Border Grid.Row="1" x:Name="Banner" Visibility="Collapsed" Background="#FEF3C7"
+                BorderBrush="#F59E0B" BorderThickness="0,0,0,1" Padding="18,8">
             <DockPanel>
-                <Button x:Name="BannerBtn" DockPanel.Dock="Right" Style="{StaticResource Btn}" Margin="12,0,0,0" Padding="12,4" Click="BannerBtn_Click"/>
-                <TextBlock x:Name="BannerText" TextWrapping="Wrap" VerticalAlignment="Center" Foreground="#92400E"/>
+                <Button x:Name="BannerBtn" DockPanel.Dock="Right" Style="{StaticResource Btn}"
+                        Margin="12,0,0,0" Padding="12,4" VerticalAlignment="Center" Click="BannerBtn_Click"/>
+                <ScrollViewer MaxHeight="72" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <TextBlock x:Name="BannerText" TextWrapping="Wrap" VerticalAlignment="Center"
+                               Foreground="#92400E" LineHeight="20"/>
+                </ScrollViewer>
             </DockPanel>
         </Border>
 
+        <!--
+          主体区：左侧表格 + 可拖动分隔条 + 右侧详情面板。
+          原来右面板写死 420px，窗口一变宽表格就吃掉全部富余空间、右面板还是那么窄，
+          里面的长句照样挤成一团。现在改成 GridSplitter + 比例宽度：
+            · 右面板用 3* 的比例（约占总宽 25%），窗口拉大时它跟着变宽
+            · 分隔条可手动拖动，拖动后 WPF 会把 Star 转为实际像素，之后仍随窗口缩放
+            · 设 MinWidth 兜底，避免拖到看不见
+        -->
         <Grid Grid.Row="2" Margin="16,14,16,8">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*"/>
-                <ColumnDefinition Width="16"/>
-                <ColumnDefinition Width="380"/>
+                <ColumnDefinition Width="7*" MinWidth="420"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="3*" MinWidth="320"/>
             </Grid.ColumnDefinitions>
 
             <!-- 沙箱列表 -->
@@ -74,6 +126,7 @@
                           GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="#F1F5F9" BorderBrush="{StaticResource Border}"
                           RowHeight="38" SelectionMode="Extended" SelectionUnit="FullRow" CanUserResizeRows="False"
                           Background="White" RowBackground="White" AlternatingRowBackground="White"
+                          HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
                           SelectionChanged="Grid_SelectionChanged" MouseDoubleClick="Grid_MouseDoubleClick">
                     <DataGrid.ColumnHeaderStyle>
                         <Style TargetType="DataGridColumnHeader">
@@ -107,17 +160,31 @@
                         </Style>
                     </DataGrid.CellStyle>
                     <DataGrid.Columns>
-                        <DataGridTextColumn Header="沙箱" Binding="{Binding Box}" Width="66"/>
-                        <DataGridTextColumn Header="账号备注" Binding="{Binding Note}" Width="*" MinWidth="100"/>
-                        <DataGridTemplateColumn Header="角色" Width="120">
+                        <!--
+                          列宽合计必须留出「账号备注」的空间，否则整行走横向压缩、内容被截断。
+                          窗口默认 1680 宽、右侧面板 420 + 间距 16 + 外边距 32，
+                          表格可用约 1208；下面固定列合计 1084，剩给「账号备注」约 124。
+                          最小宽度 1280 时可用约 812，会出横向滚动条（比压字好读）。
+
+                          自适应策略：
+                          · 短内容列（沙箱、攻击力、状态、登录、授权、换 key、警告）用固定像素——
+                            它们的文本长度基本不变，给多了是浪费。
+                          · 「账号备注」和「上次保活」用 Star 按比例吃掉剩余宽度——
+                            这两列内容最长且不定长，窗口拉大时应该由它们变宽。
+                          · 每列都设 MinWidth，窗口很窄时 DataGrid 出横向滚动条，
+                            而不是把列压到看不见。
+                        -->
+                        <DataGridTextColumn Header="沙箱" Binding="{Binding Box}" Width="58"/>
+                        <DataGridTextColumn Header="账号备注" Binding="{Binding Note}" Width="1.2*" MinWidth="90"/>
+                        <DataGridTemplateColumn Header="角色" Width="104">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <TextBlock Text="{Binding RoleText}" ToolTip="{Binding RoleTip}" TextTrimming="CharacterEllipsis"/>
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTextColumn Header="攻击力" Binding="{Binding AttackText}" Width="80"/>
-                        <DataGridTemplateColumn Header="运行状态" Width="140">
+                        <DataGridTextColumn Header="攻击力" Binding="{Binding AttackText}" Width="66"/>
+                        <DataGridTemplateColumn Header="运行状态" Width="110">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <StackPanel Orientation="Horizontal">
@@ -127,50 +194,62 @@
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTemplateColumn Header="登录" Width="130">
+                        <DataGridTemplateColumn Header="登录" Width="114">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <Border Background="{Binding LoginBg}" CornerRadius="10" Padding="8,2" HorizontalAlignment="Left">
-                                        <TextBlock Text="{Binding LoginText}" Foreground="{Binding LoginFg}" FontSize="12"/>
+                                        <TextBlock Text="{Binding LoginText}" Foreground="{Binding LoginFg}" FontSize="12"
+                                                   ToolTip="{Binding LoginText}"/>
                                     </Border>
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTextColumn Header="最近免扫换新" Binding="{Binding RenewText}" Width="100"/>
-                        <DataGridTemplateColumn Header="授权剩余" Width="92">
+                        <DataGridTextColumn Header="最近免扫换新" Binding="{Binding RenewText}" Width="88"/>
+                        <DataGridTemplateColumn Header="授权剩余" Width="78">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <TextBlock Text="{Binding ScanAgeText}" Foreground="{Binding ScanAgeFg}"
-                                               ToolTip="{Binding ScanAgeTip}" ToolTipService.ShowDuration="60000"/>
+                                               ToolTip="{Binding ScanAgeTip}" ToolTipService.ShowDuration="120000" ToolTipService.InitialShowDelay="250" ToolTipService.BetweenShowDelay="0"/>
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTemplateColumn Header="保活计划" Width="120">
+                        <DataGridTemplateColumn Header="保活计划" Width="104">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <TextBlock Text="{Binding Keepalive}" ToolTip="{Binding Keepalive}" TextTrimming="CharacterEllipsis"/>
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTemplateColumn Header="今日换 key" Width="86">
+                        <DataGridTemplateColumn Header="今日换 key" Width="76">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <TextBlock Text="{Binding RotationsText}" Foreground="{Binding RotationsFg}"
-                                               ToolTip="{Binding RotationsTip}" ToolTipService.ShowDuration="60000"/>
+                                               ToolTip="{Binding RotationsTip}" ToolTipService.ShowDuration="120000" ToolTipService.InitialShowDelay="250" ToolTipService.BetweenShowDelay="0"/>
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTemplateColumn Header="上次保活" Width="150">
+                        <!--
+                          上次保活：内容最长（含 ret=-13 全句说明），给最大弹性份额。
+                          窗口变宽时它和「账号备注」一起变宽，不需要横向滚动。
+                        -->
+                        <DataGridTemplateColumn Header="上次保活" Width="1.6*" MinWidth="150">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
-                                    <TextBlock Text="{Binding LastRefreshShort}" ToolTip="{Binding LastRefresh}" TextTrimming="CharacterEllipsis"/>
+                                    <TextBlock Text="{Binding LastRefreshShort, Mode=OneWay, FallbackValue=读取中}"
+                                               ToolTip="{Binding LastRefresh}"
+                                               VerticalAlignment="Center"
+                                               TextWrapping="Wrap"
+                                               ToolTipService.InitialShowDelay="250"
+                                               ToolTipService.BetweenShowDelay="0"
+                                               ToolTipService.ShowDuration="120000"/>
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTemplateColumn Header="" Width="28">
+                        <DataGridTemplateColumn Header="" Width="26">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
-                                    <TextBlock Text="⚠" Foreground="{StaticResource Warn}" ToolTip="{Binding Warning}" Visibility="{Binding WarningVisibility}"/>
+                                    <TextBlock Text="⚠" Foreground="{StaticResource Warn}" ToolTip="{Binding Warning}"
+                                               ToolTipService.ShowDuration="120000" ToolTipService.InitialShowDelay="250" ToolTipService.BetweenShowDelay="0" Visibility="{Binding WarningVisibility}"/>
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
@@ -179,6 +258,11 @@
             </DockPanel>
 
             <!-- 右侧详情 -->
+            <!-- 可拖动分隔条：左右面板之间的宽度由用户自己掌握 -->
+            <GridSplitter Grid.Column="1" Width="8" HorizontalAlignment="Center" VerticalAlignment="Stretch"
+                          Background="Transparent" ResizeBehavior="PreviousAndNext"
+                          ResizeDirection="Columns" ShowsPreview="True" Cursor="SizeWE"/>
+
             <Border Grid.Column="2" Background="{StaticResource Panel}" BorderBrush="{StaticResource Border}" BorderThickness="1" CornerRadius="8">
                 <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="16,14">
                     <StackPanel x:Name="Detail">
@@ -208,7 +292,7 @@
                                     ToolTip="隐藏 QQ 浏览器窗口、回收它的内存；不影响游戏"/>
                             <Button x:Name="BtnDeepMem" Content="↓↓  深度压缩内存（含游戏）" Style="{StaticResource Btn}" Click="DeepMem_Click"
                                     ToolTip="连游戏本体一起压工作集；数字大降但正玩会回升、提交不变。会拖断 ilink 长连接，所以常驻保活中的沙箱只压浏览器"/>
-                            <Button x:Name="BtnTools" Content="🛠  高级工具（取Token / 抓包 / 解包 / 保活…）" Style="{StaticResource Btn}" Click="Tools_Click"
+                            <Button x:Name="BtnTools" Content="🛠  高级工具（取Token / 抓包 / 解包…）" Style="{StaticResource Btn}" Click="Tools_Click"
                                     ToolTip="取业务 Token、抓 wx 请求、导 TLS 密钥、解包、Frida 观测、凭证导入导出等"/>
                             <Button x:Name="BtnScanFree" Content="⟲  免扫重试（清缓存·不重扫）" Style="{StaticResource Btn}" Click="ScanFree_Click"
                                     ToolTip="弹扫码框但其实没被顶时用：清本地会话缓存、还原金库里的免扫凭证再冷启，尽量免扫进入。若是真被顶/过期，仍会要求扫码。不会删除你的登录"/>
@@ -323,7 +407,8 @@
                             <Button DockPanel.Dock="Right" Content="打开完整日志" Style="{StaticResource LinkBtn}" Margin="0" Click="OpenLog_Click"/>
                             <TextBlock Text="最近日志" Style="{StaticResource SectionTitle}" Margin="0"/>
                         </DockPanel>
-                        <TextBox x:Name="TxtLog" IsReadOnly="True" FontFamily="Consolas, Microsoft YaHei UI" FontSize="11" Height="170"
+                        <!-- 日志框用 MinHeight + 弹性高度，窗口拉高时它跟着变高，而不是固定 220 -->
+                        <TextBox x:Name="TxtLog" IsReadOnly="True" FontFamily="Consolas, Microsoft YaHei UI" FontSize="11" MinHeight="140"
                                  TextWrapping="NoWrap" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto" Background="White"/>
                     </StackPanel>
                 </ScrollViewer>

@@ -35,9 +35,17 @@ public partial class App : Application
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
-        AppPaths.EnsureDirs();
         var args = e.Args;
         bool cli = args.Length >= 1 && args[0].Length > 0 && !args[0].StartsWith("-");
+
+        // ★ --appdir 必须在 GUI 模式下也生效。
+        //   原来只有 CLI 分支调了 ApplyAppDir，于是 `JskpBoxManager.exe --appdir D:\...`
+        //   打开界面时参数被完全忽略——界面读的是 exe 旁边的空目录，
+        //   所有列都拿不到数据（「上次保活」整列空白就是这么来的）。
+        //   调试版/bin 目录运行、以及多安装目录共存时都会踩到。
+        ApplyAppDir(args);
+        AppPaths.EnsureDirs();
+
         DispatcherUnhandledException += (_, ex) =>
         {
             Log.App((cli ? "CLI exception: " : "UI exception: ") + ex.Exception);
@@ -300,6 +308,8 @@ public partial class App : Application
             AppPaths.UseDataDir(args[i + 1]);
             return;
         }
+        // GUI 模式下 args 可能是空的、或只有 --updated-from 之类的开关，没有子命令可判断
+        if (args.Length == 0 || args[0].StartsWith("-")) return;
         var cmd = args[0].ToLowerInvariant();
         // capture/keylog/unpack/getcode 必须和界面、协议服务用同一个目录，不能跳到别的安装目录
         if (cmd is not ("hook")) return;

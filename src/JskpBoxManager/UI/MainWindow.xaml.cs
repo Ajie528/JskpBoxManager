@@ -21,6 +21,7 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         Title = $"{AppInfo.ProductName} {AppInfo.VersionLabel}";
+        FitToScreen();
         TxtVersion.Text = AppInfo.VersionLabel;
         Grid.ItemsSource = _rows;
         ChkGlobalKeep.IsChecked = Keepalive.Load().Enabled;
@@ -36,6 +37,36 @@ public partial class MainWindow : Window
     }
 
     // ---------- 启动检查 ----------
+
+    /// <summary>
+    /// 按屏幕工作区自适应窗口大小。
+    ///
+    /// 原来在 XAML 里写死 1680×900：
+    ///   · 在 1366×768 的笔记本上直接超出屏幕，底部按钮点不到；
+    ///   · 在 2560×1440 的大屏上又只占中间一小块，表格列挤在一起。
+    /// 现在取工作区的 88%（不超过 1680×900、不小于 MinWidth/MinHeight），
+    /// 并居中显示。用户之后手动拖动分隔条或改窗口大小都会保留。
+    /// </summary>
+    void FitToScreen()
+    {
+        try
+        {
+            var wa = SystemParameters.WorkArea;
+            // 88% 留出四周余量，同时不超过设计基准尺寸
+            double w = Math.Min(wa.Width * 0.88, Math.Max(Width, 1680));
+            double h = Math.Min(wa.Height * 0.88, Math.Max(Height, 900));
+            // 不能小于 XAML 里的 MinWidth / MinHeight
+            w = Math.Max(w, MinWidth);
+            h = Math.Max(h, MinHeight);
+            // 双屏/任务栏占位时保证不越界
+            w = Math.Min(w, wa.Width);
+            h = Math.Min(h, wa.Height);
+            Width = w;
+            Height = h;
+            WindowStartupLocation = WindowStartupLocation.CenterScreen;
+        }
+        catch { /* 取不到屏幕信息就用 XAML 默认值 */ }
+    }
 
     async Task StartupAsync()
     {
@@ -121,7 +152,14 @@ public partial class MainWindow : Window
         if (boxes.Count == 0) return;
         var wrong = await Task.Run(() => boxes.Where(b => !Keepalive.TaskPointsHere(b)).ToList());
         if (wrong.Count == 0) return;
-        ShowBanner($"有 {wrong.Count} 个沙箱（{string.Join("、", wrong)}）的保活计划任务没有指向本程序（可能是旧版或程序换了位置），到点不会按新版执行。",
+        // 只列前 6 个，其余用「等 N 个」概括。
+        // 原来把 16 个箱名全拼进去，一句就 200+ 字，横幅被撑成好几行、
+        // 窄窗口下更是一两个字一行，用户根本读不完。
+        var names = wrong.Count <= 6
+            ? string.Join("、", wrong)
+            : $"{string.Join("、", wrong.Take(6))} 等 {wrong.Count} 个";
+        ShowBanner($"有 {wrong.Count} 个沙箱的保活计划任务没指向本程序（{names}），"
+            + "可能是旧版留下或程序挪了位置，到点不会按新版执行。",
             "修复计划任务", async () =>
             {
                 var errors = await RunBusy("正在更新计划任务…", () => Keepalive.SyncAll(wrong));

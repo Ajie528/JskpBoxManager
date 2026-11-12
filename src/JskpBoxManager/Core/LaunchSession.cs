@@ -166,6 +166,33 @@ public sealed class LaunchSession
                 return;
             }
 
+            // ★ 按密钥年龄决定要不要预检。
+            //
+            // 预检的用途是「避免启动后等 34 秒发现凭证被清空、再白等 106 秒」。
+            // 但 AutoAuth 是轮换语义——预检成功就消耗一次换钥额度，而密钥还新的时候
+            // 它几乎必然有效，这次换钥纯属白送。实测 qb1 一天开关两次游戏就白烧
+            // 2 次 preflight 额度（7/10 里有 2 次是这么来的），逼近风控上限。
+            //
+            // 所以：密钥还新于 minAge（默认 5 小时）就跳过预检，直接用它启动。
+            // 万一这把 key 其实已经被别处顶掉，运行时启动后会立刻清空凭证，
+            // 上层 `credential cleared` 分支会自动接手走历史凭证恢复——那条路本来就在，
+            // 只是晚几十秒，比每天白烧额度划算。
+            //
+            // 密钥超过 forceHours（默认 20 小时）属于硬上限，不管门槛一律预检。
+            var pol = Keepalive.Load().For(_box);
+            double minAge = pol.EffectiveMinKeyAgeHours;
+            var keyAge = ProtocolRenew.KeyAgeHours(_box);
+            bool overdue = ProtocolRenew.KeyOverdue(_box);
+            if (!overdue && keyAge is double young && young < minAge)
+            {
+                L($"启动预检：密钥才 {young:F1} 小时（门槛 {minAge:F0} 小时）→ 跳过预检，直接用这把启动"
+                    + "（省一次换钥额度）");
+                return;
+            }
+            if (keyAge is double aged)
+                L($"启动预检：密钥已 {aged:F1} 小时（门槛 {minAge:F0} 小时）→ 值得确认一次"
+                    + (overdue ? "，且已过硬上限" : ""));
+
             L($"启动预检：问服务端这把 key 还能不能用 {live.KeyHash}");
             var r = ProtocolRenew.Renew(_box);
             if (r.Ok)
@@ -1068,8 +1095,8 @@ public sealed class LaunchSession
                     if ((DateTime.Now - lastOverdueWarn).TotalHours >= 1)
                     {
                         lastOverdueWarn = DateTime.Now;
-                        L($"看门：密钥已用 {ProtocolRenew.KeyAgeText(_box)} old (limit {ProtocolRenew.KeyMaxAgeHours}h) "
-                          + "-> will renew as soon as the game closes (not interrupting play)");
+                        L($"看门：密钥已用 {ProtocolRenew.KeyAgeText(_box)}（上限 {ProtocolRenew.KeyMaxAgeHours} 小时）"
+                          + " → 游戏一关闭就立即续期（不打断游戏）");
                     }
                 }
                 TakeRenewRequest();

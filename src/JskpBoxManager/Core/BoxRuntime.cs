@@ -65,8 +65,8 @@ public static class BoxRuntime
             return false;
         }
         Log.Box(box, mode == LaunchMode.Full
-            ? "QQBrowser start issued (" + why + ")"
-            : $"QQBrowser start issued ({why}, mode={mode})");
+            ? "QQ 浏览器已启动（" + why + "）"
+            : $"QQ 浏览器已启动（{why}，模式={mode}）");
         return true;
     }
 
@@ -163,7 +163,7 @@ public static class BoxRuntime
     /// <summary>冷启动时第一次注入常遇到 SBIE2112/2181，然后 WeChatAppEx SBIE1231。先跑一个小命令把沙箱暖起来。</summary>
     public static void Warmup(string box, bool light)
     {
-        Log.Box(box, light ? "warmup sandbox (light retry)" : "warmup sandbox (avoid SBIE2112/2181/1231)");
+        Log.Box(box, light ? "预热沙箱（轻量重试）" : "预热沙箱（规避 SBIE2112/2181/1231）");
         if (!light) WaitRpcReady(box, 60);
         WaitBoxQuiet(box, light ? 8 : 12);
         try

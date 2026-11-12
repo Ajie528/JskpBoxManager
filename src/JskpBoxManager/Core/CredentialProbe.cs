@@ -273,8 +273,28 @@ public static class CredentialProbe
         int today = RotationsToday(box);
         if (today >= quota)
         {
-            Log.Box(box, $"主动探测：今天已换 {today} 次（上限 {quota})）→ 跳过");
+            Log.Box(box, $"主动探测：今天已换 {today} 次（上限 {quota} 次）→ 跳过");
             return new ProbeResult(box, false, $"今天已换过 {today} 次 key，跳过（防触发风控）", 0, true);
+        }
+
+        // ★ 今天已经换过（探测/预检/保活/运行时自己滚）就不再为了「确认一下」再滚一次。
+        //
+        // 探测的唯一价值是「在密钥自然过期前发现问题」。但密钥一旦今天换过，它顶多
+        // 几小时大——此时再探一次，纯粹是拿一次换钥额度换一个「确实没问题」的答案，
+        // 而这恰恰是风控最在意的行为（qb4 就是被高频探测把整条链滚废的）。
+        // 真要确认，等它老过 minAge 之后那一轮自然会探。
+        if (today > 0 && keyAge is double haveAge && haveAge < 12)
+        {
+            Log.Box(box, $"主动探测：今天已换 {today} 次、密钥才 {haveAge:F1} 小时 → 不再为确认滚一次");
+            return new ProbeResult(box, false, $"今天已换过 {today} 次 key，不重复探测", 0, true);
+        }
+
+        // 当天已真正跑过保活（refresh）也不必再单独探测：保活本身就是一次完整续期，
+        // 已经起过「确认凭证可用」的作用。重复探测只是多烧一次额度。
+        if (Keepalive.RefreshServedToday(box) && keyAge is double servedAge && servedAge < 12)
+        {
+            Log.Box(box, $"主动探测：今天已跑过保活、密钥才 {servedAge:F1} 小时 → 无需再探");
+            return new ProbeResult(box, false, "今天已保活过，无需重复探测", 0, true);
         }
 
         var r = ProtocolRenew.Renew(box);

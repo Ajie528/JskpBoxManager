@@ -127,7 +127,7 @@ public static class BoxSetup
         Sandboxie.Reload();
         if (!sectionGone)
             Log.Box(box, "删除沙箱：删完配置段仍在（Sandboxie 未确认删除）");
-        Log.Box(box, sectionGone ? "remove box done" : "remove box done (section left)");
+        Log.Box(box, sectionGone ? "删除沙箱：完成" : "删除沙箱：完成（Sandboxie 配置段仍残留）");
         return sectionGone;
     }
 

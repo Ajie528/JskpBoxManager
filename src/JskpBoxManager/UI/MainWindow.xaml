@@ -94,9 +94,9 @@
         -->
         <Grid Grid.Row="2" Margin="16,14,16,8">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="7*" MinWidth="420"/>
+                <ColumnDefinition Width="8.1*" MinWidth="520"/>
                 <ColumnDefinition Width="Auto"/>
-                <ColumnDefinition Width="3*" MinWidth="320"/>
+                <ColumnDefinition Width="1.9*" MinWidth="280"/>
             </Grid.ColumnDefinitions>
 
             <!-- 沙箱列表 -->
@@ -211,6 +211,15 @@
                           · 每列都设 MinWidth，窗口很窄时 DataGrid 出横向滚动条，
                             而不是把列压到看不见。
                         -->
+                        <!--
+                          列宽设计（v1.5.47）：
+                          · 「账号备注」不再用 Star 吃弹性空间——它内容通常只有 2~5 个字，
+                            占那么宽纯属浪费。改成固定 96，超长时换行。
+                          · 「上次保活」是唯一真正不定长的列（含 ret=-13 全句说明），
+                            只有它用 Star 吃剩余宽度，其余全部固定。
+                          · 短内容列（角色/攻击力/登录/保活计划）按实际内容 + 表头给足，
+                            这些之前偏窄，导致表头被折行或内容换行。
+                        -->
                         <DataGridTextColumn Header="沙箱" Binding="{Binding Box}" Width="58">
                             <DataGridTextColumn.ElementStyle>
                                 <Style TargetType="TextBlock">
@@ -219,8 +228,7 @@
                                 </Style>
                             </DataGridTextColumn.ElementStyle>
                         </DataGridTextColumn>
-                        <!-- DataGridTextColumn 的单元格默认不换行，用 ElementStyle 打开 -->
-                        <DataGridTextColumn Header="账号备注" Binding="{Binding Note}" Width="1.2*" MinWidth="80">
+                        <DataGridTextColumn Header="账号备注" Binding="{Binding Note}" Width="152">
                             <DataGridTextColumn.ElementStyle>
                                 <Style TargetType="TextBlock">
                                     <Setter Property="TextWrapping" Value="Wrap"/>
@@ -229,7 +237,8 @@
                                 </Style>
                             </DataGridTextColumn.ElementStyle>
                         </DataGridTextColumn>
-                        <DataGridTemplateColumn Header="角色" Width="96">
+                        <!-- 角色：名字常 4~8 字（「中华丨阿杰、欧」），96 太窄导致折行，给 132 -->
+                        <DataGridTemplateColumn Header="角色" Width="152">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <TextBlock Text="{Binding RoleText}" ToolTip="{Binding RoleTip}"
@@ -237,7 +246,8 @@
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTextColumn Header="攻击力" Binding="{Binding AttackText}" Width="66">
+                        <!-- 攻击力：5~6 位数字（82086），66 太窄，给 82 -->
+                        <DataGridTextColumn Header="攻击力" Binding="{Binding AttackText}" Width="86">
                             <DataGridTextColumn.ElementStyle>
                                 <Style TargetType="TextBlock">
                                     <Setter Property="TextWrapping" Value="Wrap"/>
@@ -245,7 +255,7 @@
                                 </Style>
                             </DataGridTextColumn.ElementStyle>
                         </DataGridTextColumn>
-                        <DataGridTemplateColumn Header="运行状态" Width="104">
+                        <DataGridTemplateColumn Header="运行状态" Width="96">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <!-- 用 Grid 而不是水平 StackPanel：StackPanel 给子元素无限宽度，
@@ -263,7 +273,8 @@
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTemplateColumn Header="登录" Width="104">
+                        <!-- 登录：108px 靠换行容纳「需要扫码（已被顶掉）」，不再为它撑宽整列 -->
+                        <DataGridTemplateColumn Header="登录" Width="108">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <!-- 去掉 HorizontalAlignment="Left"：它会让 Border 按内容自适应宽度、
@@ -279,7 +290,7 @@
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
                         <!-- 「最近免扫换新」：内容过长时换行，行高随之变高 -->
-                        <DataGridTemplateColumn Header="最近免扫换新" Width="112">
+                        <DataGridTemplateColumn Header="最近免扫换新" Width="104">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <TextBlock Text="{Binding RenewText}" ToolTip="{Binding RenewText}"
@@ -290,7 +301,7 @@
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
                         <!-- 授权剩余 -->
-                        <DataGridTemplateColumn Header="授权剩余" Width="86">
+                        <DataGridTemplateColumn Header="授权剩余" Width="84">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <TextBlock Text="{Binding ScanAgeText}" Foreground="{Binding ScanAgeFg}"
@@ -299,8 +310,8 @@
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <!-- 保活计划：内容「每天 03:00·协议」较长，给足宽度让其两行内显示 -->
-                        <DataGridTemplateColumn Header="保活计划" Width="124">
+                        <!-- 保活计划：内容「每天 03:00·协议」+ 表头各占一行，给 132 保证不折行 -->
+                        <DataGridTemplateColumn Header="保活计划" Width="134">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <TextBlock Text="{Binding Keepalive}" ToolTip="{Binding Keepalive}"
@@ -309,7 +320,7 @@
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
                         <!-- 「今日换 key」：内容短，但表头较长，同样允许换行 -->
-                        <DataGridTemplateColumn Header="今日换 key" Width="96">
+                        <DataGridTemplateColumn Header="今日换 key" Width="82">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <TextBlock Text="{Binding RotationsText}" Foreground="{Binding RotationsFg}"
@@ -319,7 +330,7 @@
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
                         <!-- 上次保活：内容最长（含 ret=-13 全句说明），优先换行而不是截断 -->
-                        <DataGridTemplateColumn Header="上次保活" Width="1.6*" MinWidth="132">
+                        <DataGridTemplateColumn Header="上次保活" Width="*" MinWidth="104">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <TextBlock Text="{Binding LastRefreshShort, Mode=OneWay, FallbackValue=读取中}"
@@ -358,11 +369,14 @@
                         <Border x:Name="ProbePanel" Background="#F1F5F9" BorderBrush="{StaticResource Border}" BorderThickness="1"
                                 CornerRadius="6" Padding="10,8" Margin="0,0,0,10" Visibility="Collapsed">
                             <StackPanel>
-                                <DockPanel Margin="0,0,0,6">
-                                    <TextBlock x:Name="TxtProbeSummary" DockPanel.Dock="Right" Foreground="{StaticResource Muted}" FontSize="11"
-                                               VerticalAlignment="Center"/>
-                                    <TextBlock Text="⏱ 探测计划（每号错开）" FontSize="12" FontWeight="SemiBold"/>
-                                </DockPanel>
+                                <!--
+                                  标题和「间隔 300 分 · 抖动 ±35%」原来左右分栏，
+                                  右栏收窄后两段挤在一起会互相压字。改成上下两行：
+                                  标题一行、摘要一行（小字灰色），永不重叠。
+                                -->
+                                <TextBlock Text="⏱ 探测计划" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,2"/>
+                                <TextBlock x:Name="TxtProbeSummary" Foreground="{StaticResource Muted}" FontSize="11"
+                                           TextWrapping="Wrap" Margin="0,0,0,6"/>
                                 <ScrollViewer MaxHeight="120" VerticalScrollBarVisibility="Auto">
                                     <StackPanel x:Name="ProbeList"/>
                                 </ScrollViewer>

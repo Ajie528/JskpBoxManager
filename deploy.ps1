@@ -81,6 +81,45 @@ Get-ChildItem $Target -Filter '*.tmp' -File -ErrorAction SilentlyContinue | ForE
     Write-Host "  清掉残留 $($_.Name)（$([math]::Round($_.Length/1MB,1)) MB）"
 }
 
+# ---- 3.5 自动清理旧 exe 备份 ----
+#
+# 现状：游戏在跑时看门进程会持有旧 exe 的句柄，导致「重命名替换」部署后
+# 留下 JskpBoxManager.exe.old / .hold-xxxxxx / .bak 这类文件，每个 64 MB。
+# 之前要人工去删，容易越攒越多（实测一次攒了 3 个、190 MB）。
+#
+# 这里每次部署自动扫一遍：
+#   · 能删的直接删（释放空间）
+#   · 删不掉的（仍被运行中的进程持有）留着，但要提示用户
+# 只删这几种固定后缀模式，绝不碰 JskpBoxManager.exe 本体与其它文件。
+$patterns = @(
+    'JskpBoxManager.exe.old',
+    'JskpBoxManager.exe.bak',
+    'JskpBoxManager.exe.new',
+    'JskpBoxManager.exe.hold-*'
+)
+$freed = 0
+$locked = @()
+foreach ($pat in $patterns) {
+    Get-ChildItem $Target -Filter $pat -File -ErrorAction SilentlyContinue | ForEach-Object {
+        $size = $_.Length
+        try {
+            Remove-Item $_.FullName -Force -ErrorAction Stop
+            $freed += $size
+            Write-Host "  清理旧 exe：$($_.Name)（$([math]::Round($size/1MB,1)) MB）"
+        }
+        catch {
+            $locked += $_.Name
+        }
+    }
+}
+if ($freed -gt 0) {
+    Write-Host "  合计释放 $([math]::Round($freed/1MB,1)) MB"
+}
+if ($locked.Count -gt 0) {
+    Write-Host "  ⚠ 这些旧 exe 仍被运行中的进程占用，关掉游戏后会自动清（下次部署时）：" -ForegroundColor Yellow
+    $locked | ForEach-Object { Write-Host "      $_" -ForegroundColor Yellow }
+}
+
 # ---- 4. 校验 ----
 $exe = Get-Item $exeDst
 $sha = (Get-FileHash $exeDst -Algorithm SHA256).Hash.ToLowerInvariant()

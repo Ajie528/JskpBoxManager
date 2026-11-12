@@ -45,6 +45,10 @@ public partial class App : Application
         //   调试版/bin 目录运行、以及多安装目录共存时都会踩到。
         ApplyAppDir(args);
         AppPaths.EnsureDirs();
+        // 清理升级残留的旧 exe（.old / .bak / .hold-*，每个 64 MB）。
+        // 放在这里而不是只在 GUI 分支：看门进程（launch）活得更久，
+        // 由它们来清更及时；被占用的会留到下次，无害。
+        Updater.Cleanup();
 
         DispatcherUnhandledException += (_, ex) =>
         {

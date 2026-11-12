@@ -171,12 +171,23 @@ public static class Updater
     }
 
     /// <summary>删掉上次更新留下的旧 exe 和下载缓存（旧 exe 还被看门进程占用时下次再删）。</summary>
+    /// <summary>
+    /// 清理升级过程留下的旧 exe 与临时文件。
+    ///
+    /// 每次启动都会调用：手动部署或自动更新后可能留下
+    ///   JskpBoxManager.exe.old / .bak / .new / .hold-HHmmss
+    /// 每个 64 MB，攒几个就上百 MB。能删的删掉，删不掉的
+    /// （仍被运行中的看门进程持有）留到下次启动再试——所以这里不需要报错。
+    /// </summary>
     public static void Cleanup()
     {
         try
         {
-            foreach (var f in Directory.GetFiles(AppPaths.AppDir, "JskpBoxManager.exe*.old"))
-                try { File.Delete(f); } catch { }
+            foreach (var pat in new[] { "JskpBoxManager.exe.old", "JskpBoxManager.exe.bak",
+                                        "JskpBoxManager.exe.new", "JskpBoxManager.exe.hold-*" })
+                foreach (var f in Directory.GetFiles(AppPaths.AppDir, pat))
+                    try { File.Delete(f); } catch { }
+
             if (Directory.Exists(UpdateDir))
                 foreach (var f in Directory.GetFiles(UpdateDir))
                     try { File.Delete(f); } catch { }

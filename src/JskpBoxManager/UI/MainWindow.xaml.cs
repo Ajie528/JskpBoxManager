@@ -77,14 +77,13 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 按「表头宽度」设定列宽下限，内容靠换行自适应。
+    /// 列宽兜底：只在「表头被裁」时把列加宽，**永不缩窄 XAML 里设的值**。
     ///
-    /// 策略变更（v1.5.46）：原来是「量最宽内容来撑列宽」，结果内容一长就把表格撑到
-    /// 出现横向滚动条、后面的列被挤出视野。现在改成：
-    ///   · 列宽只保证**表头**能一行放下（表头折行很难看，也不该折）；
-    ///   · 单元格内容过长时**换行**，行高随之变高（MinRowHeight 已保证不被裁）；
-    ///   · 弹性列仍按比例分剩余空间。
-    /// 这样无论内容多长都不会横向溢出，也不会有任何文字被裁掉。
+    /// 之前（v1.5.46）这里无条件用表头宽度覆盖列宽，结果 XAML 里精心设的
+    /// 「角色 132 / 攻击力 82」全被改回 96 / 66，用户看到的仍是挤在一起的窄列。
+    /// 现在改成「只增不减」：量出表头需要多宽，只有比当前宽时才加。
+    ///
+    /// 内容靠 Wrap 换行解决，不靠撑列宽——所以这里不量内容。
     /// </summary>
     void AutoFitColumnWidths()
     {
@@ -96,18 +95,21 @@ public partial class MainWindow : Window
             {
                 var header = col.Header as string ?? "";
                 if (header.Length == 0) continue;   // ⚠ 列固定窄
+
                 double need = Math.Ceiling(MeasureText(header, bold: true) + HeaderPadding);
-                need = Math.Clamp(need, 60, 320);
 
                 if (col.Width.IsStar)
                 {
-                    // 弹性列：只保证表头放得下，宽度仍按比例伸缩
-                    col.MinWidth = need;
+                    // 弹性列：保证表头放得下即可（宽度仍按比例伸缩）
+                    if (col.MinWidth < need) col.MinWidth = need;
                 }
-                else
+                else if (col.Width.IsAbsolute)
                 {
-                    // 固定列：宽度 = 表头需要的宽度（内容靠换行）
-                    col.Width = new DataGridLength(need);
+                    // 固定列：只增不减。XAML 里设的宽度是设计值，这里只在表头放不下时才加宽。
+                    if (col.ActualWidth > 0 && col.ActualWidth < need - 0.5)
+                        col.Width = new DataGridLength(need);
+                    else if (col.ActualWidth <= 0 && col.Width.Value < need - 0.5)
+                        col.Width = new DataGridLength(need);
                 }
             }
         }
@@ -285,6 +287,10 @@ public partial class MainWindow : Window
             // 数据到位后再量一次列宽（首次量的时候 Items 还是空的）。
             // 只在启动后的前几次刷新里做，避免内容微变导致列宽反复跳动。
             if (_autoFitRuns < 2) { _autoFitRuns++; AutoFitColumnWidths(); }
+            if (Environment.GetEnvironmentVariable("JSKP_DIAG_COLS") == "1")
+                SetStatus("列宽：" + string.Join("  ",
+                    Grid.Columns.Where(c => c.Header is string h && h.Length > 0)
+                                .Select(c => $"{c.Header}={c.ActualWidth:F0}")));
         }
         catch (Exception ex)
         {
@@ -854,9 +860,9 @@ public partial class MainWindow : Window
             var known = _rows.Select(r => r.Box).ToList();
             if (known.Count > 0) CredentialProbe.ReseedSchedule(known, cfg);
             var s = CredentialProbe.Schedule();
-            TxtProbeSummary.Text = s.Length == 0
-                ? "尚未排程"
-                : $"间隔 {cfg.ProbeMinutes} 分 · 抖动 ±35%";
+                TxtProbeSummary.Text = s.Length == 0
+                    ? "尚未排程"
+                    : $"间隔 {cfg.ProbeMinutes} 分 · 抖动 ±35% · 共 {s.Length} 个号";
             ProbeList.Children.Clear();
             var now = DateTime.Now;
             foreach (var (box, due) in s)
@@ -864,10 +870,12 @@ public partial class MainWindow : Window
                 var row = new System.Windows.Controls.DockPanel { Margin = new Thickness(0, 1, 0, 1) };
                 var when = new System.Windows.Controls.TextBlock
                 {
-                    Text = due.ToString("HH:mm:ss"),
+                    // 窄面板里 HH:mm:ss 太占宽（约 62px），秒对「下次探测」没有意义，用 HH:mm
+                    Text = due.ToString("HH:mm"),
                     FontFamily = new System.Windows.Media.FontFamily("Consolas, Microsoft YaHei UI"),
                     FontSize = 11,
-                    Width = 62,
+                    MinWidth = 38,
+                    VerticalAlignment = VerticalAlignment.Center,
                 };
                 var rel = new System.Windows.Controls.TextBlock
                 {
@@ -877,7 +885,11 @@ public partial class MainWindow : Window
                         : (System.Windows.Media.Brush)FindResource("Muted"),
                     FontSize = 11,
                     TextAlignment = System.Windows.TextAlignment.Right,
-                    Width = 62,
+                    // 不再写死 62：原来「还有 1h23m」需要约 70px，被 62 裁掉了尾巴。
+                    // 改成 Auto 让它按内容取宽，并给个最小宽度保持对齐。
+                    MinWidth = 60,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Margin = new Thickness(4, 0, 0, 0),
                 };
                 System.Windows.Controls.DockPanel.SetDock(when, System.Windows.Controls.Dock.Left);
                 System.Windows.Controls.DockPanel.SetDock(rel, System.Windows.Controls.Dock.Right);
@@ -886,7 +898,8 @@ public partial class MainWindow : Window
                     Text = box,
                     FontSize = 11,
                     VerticalAlignment = VerticalAlignment.Center,
-                    Margin = new Thickness(4, 0, 4, 0),
+                    Margin = new Thickness(6, 0, 4, 0),
+                    TextTrimming = System.Windows.TextTrimming.CharacterEllipsis,
                 };
                 row.Children.Add(when);
                 row.Children.Add(rel);
@@ -900,11 +913,16 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// 倒计时的短文本。「1h23m」这种英文缩写在中英混排的日志里很突兀，
+    /// 而且比中文长，容易把窄面板挤爆。改成「1小时23分」/「57分」/「12秒」。
+    /// </summary>
     static string FormatGap(TimeSpan t)
     {
-        if (t.TotalMinutes >= 60) return $"{(int)t.TotalHours}h{t.Minutes:D2}m";
-        if (t.TotalMinutes >= 1) return $"{(int)t.TotalMinutes} 分";
-        return $"{(int)Math.Max(0, t.TotalSeconds)} 秒";
+        if (t.TotalSeconds <= 0) return "已到期";
+        if (t.TotalMinutes >= 60) return $"{(int)t.TotalHours}小时{t.Minutes}分";
+        if (t.TotalMinutes >= 1) return $"{(int)t.TotalMinutes}分";
+        return $"{(int)t.TotalSeconds}秒";
     }
 
     void SyncProtocolUi()

@@ -301,7 +301,7 @@
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
                         <!-- 「最近免扫换新」：内容过长时换行，行高随之变高 -->
-                        <DataGridTemplateColumn Header="最近免扫换新" Width="96">
+                        <DataGridTemplateColumn Header="最近免扫换新" Width="92">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <TextBlock Text="{Binding RenewText}" ToolTip="{Binding RenewText}"
@@ -312,7 +312,7 @@
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
                         <!-- 授权剩余 -->
-                        <DataGridTemplateColumn Header="授权剩余" Width="84">
+                        <DataGridTemplateColumn Header="授权剩余" Width="80">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <TextBlock Text="{Binding ScanAgeText}" Foreground="{Binding ScanAgeFg}"
@@ -322,7 +322,7 @@
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
                         <!-- 保活计划：内容「每天 03:00·协议」+ 表头各占一行，给 132 保证不折行 -->
-                        <DataGridTemplateColumn Header="保活计划" Width="112">
+                        <DataGridTemplateColumn Header="保活计划" Width="134">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <TextBlock Text="{Binding Keepalive}" ToolTip="{Binding Keepalive}"
@@ -331,7 +331,7 @@
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
                         <!-- 「今日换 key」：内容短，但表头较长，同样允许换行 -->
-                        <DataGridTemplateColumn Header="今日换 key" Width="76">
+                        <DataGridTemplateColumn Header="今日换 key" Width="72">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <TextBlock Text="{Binding RotationsText}" Foreground="{Binding RotationsFg}"
@@ -347,7 +347,7 @@
                           详细说明放在 ToolTip 里（悬停可看完整原因，含 ret=-13 全句）。
                           这样整表宽度可控，窗口才能窄下来。
                         -->
-                        <DataGridTemplateColumn Header="上次保活" Width="172">
+                        <DataGridTemplateColumn Header="上次保活" Width="160">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <TextBlock Text="{Binding LastRefreshShort, Mode=OneWay, FallbackValue=读取中}"

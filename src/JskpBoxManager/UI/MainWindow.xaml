@@ -124,29 +124,66 @@
                 </DockPanel>
                 <DataGrid x:Name="Grid" AutoGenerateColumns="False" IsReadOnly="True" HeadersVisibility="Column"
                           GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="#F1F5F9" BorderBrush="{StaticResource Border}"
-                          RowHeight="38" SelectionMode="Extended" SelectionUnit="FullRow" CanUserResizeRows="False"
+                          SelectionMode="Extended" SelectionUnit="FullRow" CanUserResizeRows="False"
                           Background="White" RowBackground="White" AlternatingRowBackground="White"
                           HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
+                          ColumnWidth="SizeToCells" CanUserResizeColumns="True"
                           SelectionChanged="Grid_SelectionChanged" MouseDoubleClick="Grid_MouseDoubleClick">
+                    <!--
+                      行高：MinRowHeight 而不是 RowHeight。
+                      RowHeight 是固定值，内容换行后第二行会被裁掉（「上次保活」就踩了这个）；
+                      MinRowHeight 让行按需变高，单行内容仍是 38 的舒适高度。
+                    -->
+                    <DataGrid.RowStyle>
+                        <Style TargetType="DataGridRow">
+                            <!-- Height=Auto + MinHeight：单行时保持 38 的舒适高度，
+                                 内容换行成多行时由 Auto 撑高（否则第二行会被裁掉）。 -->
+                            <Setter Property="Height" Value="Auto"/>
+                            <Setter Property="MinHeight" Value="38"/>
+                        </Style>
+                    </DataGrid.RowStyle>
                     <DataGrid.ColumnHeaderStyle>
                         <Style TargetType="DataGridColumnHeader">
                             <Setter Property="Background" Value="#F8FAFC"/>
-                            <Setter Property="Padding" Value="10,8"/>
+                            <Setter Property="Padding" Value="12,8"/>
                             <Setter Property="FontWeight" Value="SemiBold"/>
                             <Setter Property="Foreground" Value="#334155"/>
                             <Setter Property="BorderBrush" Value="{StaticResource Border}"/>
                             <Setter Property="BorderThickness" Value="0,0,0,1"/>
+                            <!-- 表头允许换行：列被拖窄时「今日换 key」这类长标题折行显示，而不是被裁掉 -->
+                            <Setter Property="Template">
+                                <Setter.Value>
+                                    <ControlTemplate TargetType="DataGridColumnHeader">
+                                        <Border Background="{TemplateBinding Background}"
+                                                BorderBrush="{TemplateBinding BorderBrush}"
+                                                BorderThickness="{TemplateBinding BorderThickness}"
+                                                Padding="{TemplateBinding Padding}">
+                                            <TextBlock Text="{TemplateBinding Content}"
+                                                       VerticalAlignment="Center"
+                                                       HorizontalAlignment="Left"
+                                                       TextWrapping="Wrap"/>
+                                        </Border>
+                                    </ControlTemplate>
+                                </Setter.Value>
+                            </Setter>
                         </Style>
                     </DataGrid.ColumnHeaderStyle>
                     <DataGrid.CellStyle>
                         <Style TargetType="DataGridCell">
                             <Setter Property="BorderThickness" Value="0"/>
                             <Setter Property="Padding" Value="10,0"/>
+                            <!--
+                              单元格允许内容撑高：VerticalAlignment 不能是 Center
+                              （Center 会让 ContentPresenter 只取内容的首选高度并把行高压死在 38），
+                              改成 Stretch 后，换行的多行文本才能把行高顶起来。
+                            -->
+                            <Setter Property="VerticalContentAlignment" Value="Center"/>
                             <Setter Property="Template">
                                 <Setter.Value>
                                     <ControlTemplate TargetType="DataGridCell">
                                         <Border Padding="{TemplateBinding Padding}" Background="{TemplateBinding Background}">
-                                            <ContentPresenter VerticalAlignment="Center"/>
+                                            <ContentPresenter VerticalAlignment="Center"
+                                                              HorizontalAlignment="Stretch"/>
                                         </Border>
                                     </ControlTemplate>
                                 </Setter.Value>
@@ -174,71 +211,120 @@
                           · 每列都设 MinWidth，窗口很窄时 DataGrid 出横向滚动条，
                             而不是把列压到看不见。
                         -->
-                        <DataGridTextColumn Header="沙箱" Binding="{Binding Box}" Width="58"/>
-                        <DataGridTextColumn Header="账号备注" Binding="{Binding Note}" Width="1.2*" MinWidth="90"/>
-                        <DataGridTemplateColumn Header="角色" Width="104">
+                        <DataGridTextColumn Header="沙箱" Binding="{Binding Box}" Width="58">
+                            <DataGridTextColumn.ElementStyle>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="TextWrapping" Value="Wrap"/>
+                                    <Setter Property="VerticalAlignment" Value="Center"/>
+                                </Style>
+                            </DataGridTextColumn.ElementStyle>
+                        </DataGridTextColumn>
+                        <!-- DataGridTextColumn 的单元格默认不换行，用 ElementStyle 打开 -->
+                        <DataGridTextColumn Header="账号备注" Binding="{Binding Note}" Width="1.2*" MinWidth="80">
+                            <DataGridTextColumn.ElementStyle>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="TextWrapping" Value="Wrap"/>
+                                    <Setter Property="VerticalAlignment" Value="Center"/>
+                                    <Setter Property="Margin" Value="0,4"/>
+                                </Style>
+                            </DataGridTextColumn.ElementStyle>
+                        </DataGridTextColumn>
+                        <DataGridTemplateColumn Header="角色" Width="96">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
-                                    <TextBlock Text="{Binding RoleText}" ToolTip="{Binding RoleTip}" TextTrimming="CharacterEllipsis"/>
+                                    <TextBlock Text="{Binding RoleText}" ToolTip="{Binding RoleTip}"
+                                               TextWrapping="Wrap" VerticalAlignment="Center" Margin="0,4"/>
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTextColumn Header="攻击力" Binding="{Binding AttackText}" Width="66"/>
-                        <DataGridTemplateColumn Header="运行状态" Width="110">
+                        <DataGridTextColumn Header="攻击力" Binding="{Binding AttackText}" Width="66">
+                            <DataGridTextColumn.ElementStyle>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="TextWrapping" Value="Wrap"/>
+                                    <Setter Property="VerticalAlignment" Value="Center"/>
+                                </Style>
+                            </DataGridTextColumn.ElementStyle>
+                        </DataGridTextColumn>
+                        <DataGridTemplateColumn Header="运行状态" Width="104">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
-                                    <StackPanel Orientation="Horizontal">
-                                        <Ellipse Width="9" Height="9" Fill="{Binding PhaseBrush}" Margin="0,0,7,0"/>
-                                        <TextBlock Text="{Binding PhaseText}" TextTrimming="CharacterEllipsis" ToolTip="{Binding PhaseText}"/>
-                                    </StackPanel>
+                                    <!-- 用 Grid 而不是水平 StackPanel：StackPanel 给子元素无限宽度，
+                                         文字永远不会换行；Grid 才会按列宽约束换行。 -->
+                                    <Grid VerticalAlignment="Center" Margin="0,4">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <Ellipse Grid.Column="0" Width="9" Height="9" Fill="{Binding PhaseBrush}"
+                                                 Margin="0,0,7,0" VerticalAlignment="Center"/>
+                                        <TextBlock Grid.Column="1" Text="{Binding PhaseText}" TextWrapping="Wrap"
+                                                   VerticalAlignment="Center" ToolTip="{Binding PhaseText}"/>
+                                    </Grid>
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTemplateColumn Header="登录" Width="114">
+                        <DataGridTemplateColumn Header="登录" Width="104">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
-                                    <Border Background="{Binding LoginBg}" CornerRadius="10" Padding="8,2" HorizontalAlignment="Left">
+                                    <!-- 去掉 HorizontalAlignment="Left"：它会让 Border 按内容自适应宽度、
+                                         永远不换行。改成 Stretch 后能按列宽约束换行。 -->
+                                    <Border Background="{Binding LoginBg}" CornerRadius="10" Padding="8,2"
+                                            HorizontalAlignment="Stretch" VerticalAlignment="Center" Margin="0,4">
                                         <TextBlock Text="{Binding LoginText}" Foreground="{Binding LoginFg}" FontSize="12"
+                                                   TextWrapping="Wrap" VerticalAlignment="Center"
+                                                   HorizontalAlignment="Center"
                                                    ToolTip="{Binding LoginText}"/>
                                     </Border>
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTextColumn Header="最近免扫换新" Binding="{Binding RenewText}" Width="88"/>
-                        <DataGridTemplateColumn Header="授权剩余" Width="78">
+                        <!-- 「最近免扫换新」：内容过长时换行，行高随之变高 -->
+                        <DataGridTemplateColumn Header="最近免扫换新" Width="112">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding RenewText}" ToolTip="{Binding RenewText}"
+                                               TextWrapping="Wrap" VerticalAlignment="Center" Margin="0,4"
+                                               ToolTipService.InitialShowDelay="250" ToolTipService.BetweenShowDelay="0"
+                                               ToolTipService.ShowDuration="120000"/>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+                        <!-- 授权剩余 -->
+                        <DataGridTemplateColumn Header="授权剩余" Width="86">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <TextBlock Text="{Binding ScanAgeText}" Foreground="{Binding ScanAgeFg}"
+                                               TextWrapping="Wrap" VerticalAlignment="Center" Margin="0,4"
                                                ToolTip="{Binding ScanAgeTip}" ToolTipService.ShowDuration="120000" ToolTipService.InitialShowDelay="250" ToolTipService.BetweenShowDelay="0"/>
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTemplateColumn Header="保活计划" Width="104">
+                        <!-- 保活计划：内容「每天 03:00·协议」较长，给足宽度让其两行内显示 -->
+                        <DataGridTemplateColumn Header="保活计划" Width="124">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
-                                    <TextBlock Text="{Binding Keepalive}" ToolTip="{Binding Keepalive}" TextTrimming="CharacterEllipsis"/>
+                                    <TextBlock Text="{Binding Keepalive}" ToolTip="{Binding Keepalive}"
+                                               TextWrapping="Wrap" VerticalAlignment="Center" Margin="0,4"/>
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTemplateColumn Header="今日换 key" Width="76">
+                        <!-- 「今日换 key」：内容短，但表头较长，同样允许换行 -->
+                        <DataGridTemplateColumn Header="今日换 key" Width="96">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <TextBlock Text="{Binding RotationsText}" Foreground="{Binding RotationsFg}"
+                                               TextWrapping="Wrap" VerticalAlignment="Center" Margin="0,4"
                                                ToolTip="{Binding RotationsTip}" ToolTipService.ShowDuration="120000" ToolTipService.InitialShowDelay="250" ToolTipService.BetweenShowDelay="0"/>
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <!--
-                          上次保活：内容最长（含 ret=-13 全句说明），给最大弹性份额。
-                          窗口变宽时它和「账号备注」一起变宽，不需要横向滚动。
-                        -->
-                        <DataGridTemplateColumn Header="上次保活" Width="1.6*" MinWidth="150">
+                        <!-- 上次保活：内容最长（含 ret=-13 全句说明），优先换行而不是截断 -->
+                        <DataGridTemplateColumn Header="上次保活" Width="1.6*" MinWidth="132">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <TextBlock Text="{Binding LastRefreshShort, Mode=OneWay, FallbackValue=读取中}"
                                                ToolTip="{Binding LastRefresh}"
-                                               VerticalAlignment="Center"
-                                               TextWrapping="Wrap"
+                                               TextWrapping="Wrap" VerticalAlignment="Center" Margin="0,4"
                                                ToolTipService.InitialShowDelay="250"
                                                ToolTipService.BetweenShowDelay="0"
                                                ToolTipService.ShowDuration="120000"/>

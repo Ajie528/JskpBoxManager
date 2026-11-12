@@ -3,6 +3,38 @@
 版本号规则：`主版本.次版本.修订号`。只修 bug 加修订号；加功能加次版本号；数据格式或用法有不兼容变化加主版本号。
 每次发版在最上面新增一节，并同步修改 `Directory.Build.props` 里的 `<Version>`。
 
+## [1.5.46] - 2026-11-12
+
+### 单元格文字过长时换行，行高自动变高
+
+之前单元格是「截断 + ToolTip」：文字一长就被 `TextTrimming` 切成「11-10 04:15 被顶掉…」，
+必须悬停才能看全。现在改成**一律换行**，行高跟着内容自动变高。
+
+改动：
+
+| 位置 | 原来 | 现在 |
+|------|------|------|
+| 所有单元格 TextBlock | `TextTrimming="CharacterEllipsis"` 截断 | **`TextWrapping="Wrap"` 换行 + Margin="0,4"** |
+| `DataGridTextColumn`（沙箱/备注/攻击力） | 默认不换行 | 加 **`ElementStyle`** 打开 Wrap |
+| `DataGridRow` | `MinHeight=38` | **`Height=Auto` + `MinHeight=38`**（单行仍 38，多行自动撑高） |
+| `DataGridCell` 模板 | `ContentPresenter VerticalAlignment=Center` | 保留 Center，但行高由 Auto 计算，不再压死 |
+| 表头 | `ContentPresenter` 不换行 | **`TextBlock + Wrap`**，长标题折行而非被裁 |
+| 「运行状态」列 | 水平 `StackPanel`（给子元素无限宽度，永不换行） | 改 **`Grid`**（Auto + \*），文字才能按列宽换行 |
+| 「登录」列 | `Border HorizontalAlignment=Left`（按内容自适应，永不换行） | 改 **`Stretch`**，按列宽约束换行 |
+
+### 列宽策略同步调整
+
+`AutoFitColumnWidths` 原来「量最宽内容来撑列宽」，内容一长就把表格撑出横向滚动条、
+后面的列被挤出视野（实测 1650 宽窗口需要 1150、可用仅 1111，差 39px）。
+
+现在改成：**列宽只保证「表头」一行放得下，内容靠换行**。
+这样无论内容多长都不会横向溢出，也不会有任何文字被裁掉。
+
+### 实测
+
+1650×900 与 1120×640 两种尺寸下：单元格换行正常、行高自动增高（「保活计划」折成两行）、
+表头完整、无横向滚动条、没有任何文字被截断。
+
 ## [1.5.45] - 2026-11-12
 
 ### 修复：GUI 模式下 `--appdir` 完全失效（数据全空的真因）

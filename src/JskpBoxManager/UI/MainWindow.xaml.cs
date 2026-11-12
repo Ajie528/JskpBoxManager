@@ -1,7 +1,10 @@
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Data;
 using System.Windows.Input;
+using System.Windows.Media;
 using System.Windows.Threading;
 using JskpBoxManager.Core;
 using Microsoft.Win32;
@@ -12,6 +15,7 @@ public partial class MainWindow : Window
 {
     readonly ObservableCollection<BoxRow> _rows = new();
     readonly DispatcherTimer _timer = new() { Interval = TimeSpan.FromSeconds(5) };
+    int _autoFitRuns;
     bool _refreshing;
     int _busy;
     string _detailBox;
@@ -31,7 +35,11 @@ public partial class MainWindow : Window
         if (NotifyConfig.Load().ProbeEnabled) CredentialProbe.Start();
         RefreshProbePanel();
         _timer.Tick += async (_, _) => { await RefreshAsync(); MaybeAutoTrim(); MaybeCheckNotify(); MaybeRefreshProbePanel(); };
-        Loaded += async (_, _) => await StartupAsync();
+        Loaded += async (_, _) =>
+        {
+            AutoFitColumnWidths();
+            await StartupAsync();
+        };
         Closed += (_, _) => { try { ProtocolServer.StopCurrent(); } catch { } };
         UpdateDetail(true);
     }
@@ -66,6 +74,56 @@ public partial class MainWindow : Window
             WindowStartupLocation = WindowStartupLocation.CenterScreen;
         }
         catch { /* 取不到屏幕信息就用 XAML 默认值 */ }
+    }
+
+    /// <summary>
+    /// 按「表头宽度」设定列宽下限，内容靠换行自适应。
+    ///
+    /// 策略变更（v1.5.46）：原来是「量最宽内容来撑列宽」，结果内容一长就把表格撑到
+    /// 出现横向滚动条、后面的列被挤出视野。现在改成：
+    ///   · 列宽只保证**表头**能一行放下（表头折行很难看，也不该折）；
+    ///   · 单元格内容过长时**换行**，行高随之变高（MinRowHeight 已保证不被裁）；
+    ///   · 弹性列仍按比例分剩余空间。
+    /// 这样无论内容多长都不会横向溢出，也不会有任何文字被裁掉。
+    /// </summary>
+    void AutoFitColumnWidths()
+    {
+        try
+        {
+            const double HeaderPadding = 26;   // Padding=12,8 两侧 + 余量
+
+            foreach (var col in Grid.Columns)
+            {
+                var header = col.Header as string ?? "";
+                if (header.Length == 0) continue;   // ⚠ 列固定窄
+                double need = Math.Ceiling(MeasureText(header, bold: true) + HeaderPadding);
+                need = Math.Clamp(need, 60, 320);
+
+                if (col.Width.IsStar)
+                {
+                    // 弹性列：只保证表头放得下，宽度仍按比例伸缩
+                    col.MinWidth = need;
+                }
+                else
+                {
+                    // 固定列：宽度 = 表头需要的宽度（内容靠换行）
+                    col.Width = new DataGridLength(need);
+                }
+            }
+        }
+        catch (Exception ex) { Log.App("自动列宽失败：" + ex.Message); }
+    }
+
+    /// <summary>用与表格相同的字体量一段文字的渲染宽度。</summary>
+    double MeasureText(string text, bool bold)
+    {
+        if (string.IsNullOrEmpty(text)) return 0;
+        var tf = new Typeface(Grid.FontFamily, FontStyles.Normal,
+            bold ? FontWeights.SemiBold : FontWeights.Normal, FontStretches.Normal);
+        var ft = new FormattedText(text, System.Globalization.CultureInfo.CurrentUICulture,
+            FlowDirection.LeftToRight, tf, Grid.FontSize, System.Windows.Media.Brushes.Black,
+            VisualTreeHelper.GetDpi(this).PixelsPerDip);
+        return ft.Width;
     }
 
     async Task StartupAsync()
@@ -224,6 +282,9 @@ public partial class MainWindow : Window
             }
             if (Grid.SelectedItems.Count == 0 && _rows.Count > 0) Grid.SelectedIndex = 0;
             UpdateDetail(false);
+            // 数据到位后再量一次列宽（首次量的时候 Items 还是空的）。
+            // 只在启动后的前几次刷新里做，避免内容微变导致列宽反复跳动。
+            if (_autoFitRuns < 2) { _autoFitRuns++; AutoFitColumnWidths(); }
         }
         catch (Exception ex)
         {

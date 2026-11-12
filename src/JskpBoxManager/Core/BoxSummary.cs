@@ -23,6 +23,8 @@ public sealed class BoxSummary
     public string PhaseText = "";
     public LoginLevel Login;
     public string LoginText = "";
+    /// <summary>登录状态的详细说明（悬停提示用）：文字本身只有四个字，细节放这里。</summary>
+    public string LoginTip = "";
     public string Uin = "";
     public DateTime LastRenewUtc = DateTime.MinValue;
     public string Keepalive = "";
@@ -123,7 +125,15 @@ public sealed class BoxSummary
         if ((NeedScan.Pending(box) && !NeedScan.Superseded(box, s.Live)) || revoked)
         {
             s.Login = LoginLevel.NeedScan;
-            s.LoginText = revoked ? "需要扫码（已被顶掉）" : "需要扫码";
+            // 统一显示「需要扫码」四个字：表格里这一列很窄，
+            // 「需要扫码（已被顶掉）」会被折成三行、把行高顶起来，反而更难扫读。
+            // 「是不是被顶掉 / 为什么」放到 LoginTip 里，悬停可看。
+            s.LoginText = "需要扫码";
+            var why = NeedScan.Reason(box);
+            s.LoginTip = "需要重新扫码登录。"
+                + (revoked ? "\n本地这把凭证已被服务端作废（多半是同一微信号在别处扫码顶掉）。" : "")
+                + (why.Length > 0 ? $"\n判定原因：{why}" : "")
+                + "\n点右侧「启动游戏」会弹出二维码。";
         }
         else if (s.Vault.Valid || s.Live.Valid)
         {
@@ -133,11 +143,15 @@ public sealed class BoxSummary
             {
                 s.Login = LoginLevel.Suspect;
                 s.LoginText = "疑似失效";
+                s.LoginTip = "凭证还在，但保活时服务端拒绝过授权，很可能已经不可用。\n" + s.AuthRejectAlert;
             }
             else
             {
                 s.Login = LoginLevel.Ok;
                 s.LoginText = "免扫可用";
+                s.LoginTip = "有有效凭证，启动游戏会自动免扫码进入。"
+                    + (s.KeyAgeHours is double ka ? $"\n当前密钥 {ka:F1} 小时（满 {s.ForceRenewHoursEffective:0.#} 小时强制续期）" : "")
+                    + (s.ScanDays is double sd ? $"\n扫码已 {sd:0.#} 天，授权窗口 {AuthWindowDays} 天" : "");
             }
             if (chains.TryGetValue(box, out var chain) && chain.Uin == s.Uin) s.Chain = chain;
         }
@@ -145,6 +159,7 @@ public sealed class BoxSummary
         {
             s.Login = LoginLevel.None;
             s.LoginText = "未登录";
+            s.LoginTip = "这个沙箱还没有保存任何登录凭证，启动游戏需要扫码。";
         }
 
         // 扫码授权窗口：起点优先用持久化基准（不会被日志滚动冲掉），

@@ -61,8 +61,8 @@ public partial class MainWindow : Window
         {
             var wa = SystemParameters.WorkArea;
             // 88% 留出四周余量，同时不超过设计基准尺寸
-            double w = Math.Min(wa.Width * 0.88, Math.Max(Width, 1680));
-            double h = Math.Min(wa.Height * 0.88, Math.Max(Height, 900));
+            double w = Math.Min(wa.Width * 0.88, Math.Max(Width, 1580));
+            double h = Math.Min(wa.Height * 0.88, Math.Max(Height, 880));
             // 不能小于 XAML 里的 MinWidth / MinHeight
             w = Math.Max(w, MinWidth);
             h = Math.Max(h, MinHeight);

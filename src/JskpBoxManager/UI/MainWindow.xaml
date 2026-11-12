@@ -1,7 +1,7 @@
 <Window x:Class="JskpBoxManager.UI.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="向僵多开管家" Width="1680" Height="900" MinWidth="1120" MinHeight="640"
+        Title="向僵多开管家" Width="1580" Height="880" MinWidth="1120" MinHeight="640"
         WindowStartupLocation="CenterScreen" FontFamily="Microsoft YaHei UI" FontSize="13"
         Background="White" Icon="/app.ico">
     <!--
@@ -228,7 +228,7 @@
                                 </Style>
                             </DataGridTextColumn.ElementStyle>
                         </DataGridTextColumn>
-                        <DataGridTextColumn Header="账号备注" Binding="{Binding Note}" Width="152">
+                        <DataGridTextColumn Header="账号备注" Binding="{Binding Note}" Width="132">
                             <DataGridTextColumn.ElementStyle>
                                 <Style TargetType="TextBlock">
                                     <Setter Property="TextWrapping" Value="Wrap"/>
@@ -238,7 +238,7 @@
                             </DataGridTextColumn.ElementStyle>
                         </DataGridTextColumn>
                         <!-- 角色：名字常 4~8 字（「中华丨阿杰、欧」），96 太窄导致折行，给 132 -->
-                        <DataGridTemplateColumn Header="角色" Width="152">
+                        <DataGridTemplateColumn Header="角色" Width="132">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <TextBlock Text="{Binding RoleText}" ToolTip="{Binding RoleTip}"
@@ -255,7 +255,7 @@
                                 </Style>
                             </DataGridTextColumn.ElementStyle>
                         </DataGridTextColumn>
-                        <DataGridTemplateColumn Header="运行状态" Width="116">
+                        <DataGridTemplateColumn Header="运行状态" Width="108">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <!-- 用 Grid 而不是水平 StackPanel：StackPanel 给子元素无限宽度，
@@ -278,7 +278,7 @@
                           登录：84px 是比较窄的，靠换行容纳「需要扫码（已被顶掉）」这类长状态。
                           内边距从 8,2 收到 6,2，把省下的 4px 让给文字——窄列里这 4px 很关键。
                         -->
-                        <DataGridTemplateColumn Header="登录" Width="84">
+                        <DataGridTemplateColumn Header="登录" Width="88">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <Border Background="{Binding LoginBg}" CornerRadius="9" Padding="6,2"
@@ -287,13 +287,15 @@
                                                    TextWrapping="Wrap" VerticalAlignment="Center"
                                                    HorizontalAlignment="Center"
                                                    LineHeight="16"
-                                                   ToolTip="{Binding LoginText}"/>
+                                                   ToolTip="{Binding LoginTip}"
+                                                   ToolTipService.InitialShowDelay="250"
+                                                   ToolTipService.ShowDuration="120000"/>
                                     </Border>
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
                         <!-- 「最近免扫换新」：内容过长时换行，行高随之变高 -->
-                        <DataGridTemplateColumn Header="最近免扫换新" Width="104">
+                        <DataGridTemplateColumn Header="最近免扫换新" Width="96">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <TextBlock Text="{Binding RenewText}" ToolTip="{Binding RenewText}"
@@ -314,7 +316,7 @@
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
                         <!-- 保活计划：内容「每天 03:00·协议」+ 表头各占一行，给 132 保证不折行 -->
-                        <DataGridTemplateColumn Header="保活计划" Width="134">
+                        <DataGridTemplateColumn Header="保活计划" Width="126">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <TextBlock Text="{Binding Keepalive}" ToolTip="{Binding Keepalive}"
@@ -332,8 +334,14 @@
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <!-- 上次保活：内容最长（含 ret=-13 全句说明），优先换行而不是截断 -->
-                        <DataGridTemplateColumn Header="上次保活" Width="*" MinWidth="104">
+                        <!--
+                          上次保活：按用户要求「只占表头文字的宽度」，不再当弹性列吃剩余空间。
+                          「今天 03:45 成功」这类短内容仍能一行显示；而
+                          「11-10 04:15 被顶掉·之后已换新」这类长内容会折成两三行——
+                          详细说明放在 ToolTip 里（悬停可看完整原因，含 ret=-13 全句）。
+                          这样整表宽度可控，窗口才能窄下来。
+                        -->
+                        <DataGridTemplateColumn Header="上次保活" Width="104">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <TextBlock Text="{Binding LastRefreshShort, Mode=OneWay, FallbackValue=读取中}"

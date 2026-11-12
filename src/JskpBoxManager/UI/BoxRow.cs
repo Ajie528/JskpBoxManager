@@ -18,6 +18,7 @@ public sealed class BoxRow : INotifyPropertyChanged
     public string Note => Summary?.Note is { Length: > 0 } n ? n : "（未备注）";
     public string PhaseText => Summary?.PhaseText ?? "读取中…";
     public string LoginText => Summary?.LoginText ?? "";
+    public string LoginTip => Summary?.LoginTip ?? "";
     public string Keepalive => Summary?.Keepalive ?? "";
     public string LastRefresh => Summary?.LastRefresh ?? "";
     public string LastRefreshShort => Summary?.LastRefreshShort ?? "";

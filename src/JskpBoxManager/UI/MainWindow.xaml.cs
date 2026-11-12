@@ -94,7 +94,10 @@ public partial class MainWindow : Window
             foreach (var col in Grid.Columns)
             {
                 var header = col.Header as string ?? "";
-                if (header.Length == 0) continue;   // ⚠ 列固定窄
+                if (header.Length == 0) continue;
+                // 「提示」列是弹性填充列（用来吃掉右侧剩余宽度、避免出现无名空白带），
+                // 不参与表头量宽——否则它会被撑得很大、⚠ 图标跑到最右边去。
+                if (header == "提示") continue;
 
                 double need = Math.Ceiling(MeasureText(header, bold: true) + HeaderPadding);
 

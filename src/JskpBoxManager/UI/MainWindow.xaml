@@ -122,13 +122,19 @@
                         <TextBlock Foreground="{StaticResource Muted}" FontSize="12" Text="每个沙箱登录一个微信号；按住 Ctrl / Shift 可多选后批量启动、停止或设置保活"/>
                     </StackPanel>
                 </DockPanel>
+                <!--
+                  BorderThickness 设为 0：DataGrid 自带右边框会在最后一列之后画一条竖线，
+                  配合选中行的背景色延伸，看起来像「还有一列但没有列名」。
+                  容器（DockPanel）外层自己有一圈边框，这里不需要重复画。
+                -->
                 <DataGrid x:Name="Grid" AutoGenerateColumns="False" IsReadOnly="True" HeadersVisibility="Column"
-                          GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="#F1F5F9" BorderBrush="{StaticResource Border}"
-                          SelectionMode="Extended" SelectionUnit="FullRow" CanUserResizeRows="False"
-                          Background="White" RowBackground="White" AlternatingRowBackground="White"
-                          HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
-                          ColumnWidth="SizeToCells" CanUserResizeColumns="True"
-                          SelectionChanged="Grid_SelectionChanged" MouseDoubleClick="Grid_MouseDoubleClick">
+                             GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="#F1F5F9"
+                             BorderThickness="0"
+                             SelectionMode="Extended" SelectionUnit="FullRow" CanUserResizeRows="False"
+                             Background="White" RowBackground="White" AlternatingRowBackground="White"
+                             HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
+                             CanUserResizeColumns="True"
+                             SelectionChanged="Grid_SelectionChanged" MouseDoubleClick="Grid_MouseDoubleClick">
                     <!--
                       行高：MinRowHeight 而不是 RowHeight。
                       RowHeight 是固定值，内容换行后第二行会被裁掉（「上次保活」就踩了这个）；
@@ -228,7 +234,7 @@
                                 </Style>
                             </DataGridTextColumn.ElementStyle>
                         </DataGridTextColumn>
-                        <DataGridTextColumn Header="账号备注" Binding="{Binding Note}" Width="132">
+                        <DataGridTextColumn Header="账号备注" Binding="{Binding Note}" Width="120">
                             <DataGridTextColumn.ElementStyle>
                                 <Style TargetType="TextBlock">
                                     <Setter Property="TextWrapping" Value="Wrap"/>
@@ -238,7 +244,7 @@
                             </DataGridTextColumn.ElementStyle>
                         </DataGridTextColumn>
                         <!-- 角色：名字常 4~8 字（「中华丨阿杰、欧」），96 太窄导致折行，给 132 -->
-                        <DataGridTemplateColumn Header="角色" Width="132">
+                        <DataGridTemplateColumn Header="角色" Width="120">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <TextBlock Text="{Binding RoleText}" ToolTip="{Binding RoleTip}"
@@ -255,7 +261,7 @@
                                 </Style>
                             </DataGridTextColumn.ElementStyle>
                         </DataGridTextColumn>
-                        <DataGridTemplateColumn Header="运行状态" Width="108">
+                        <DataGridTemplateColumn Header="运行状态" Width="100">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <!-- 用 Grid 而不是水平 StackPanel：StackPanel 给子元素无限宽度，
@@ -316,7 +322,7 @@
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
                         <!-- 保活计划：内容「每天 03:00·协议」+ 表头各占一行，给 132 保证不折行 -->
-                        <DataGridTemplateColumn Header="保活计划" Width="126">
+                        <DataGridTemplateColumn Header="保活计划" Width="112">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <TextBlock Text="{Binding Keepalive}" ToolTip="{Binding Keepalive}"
@@ -325,7 +331,7 @@
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
                         <!-- 「今日换 key」：内容短，但表头较长，同样允许换行 -->
-                        <DataGridTemplateColumn Header="今日换 key" Width="82">
+                        <DataGridTemplateColumn Header="今日换 key" Width="76">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <TextBlock Text="{Binding RotationsText}" Foreground="{Binding RotationsFg}"
@@ -341,7 +347,7 @@
                           详细说明放在 ToolTip 里（悬停可看完整原因，含 ret=-13 全句）。
                           这样整表宽度可控，窗口才能窄下来。
                         -->
-                        <DataGridTemplateColumn Header="上次保活" Width="104">
+                        <DataGridTemplateColumn Header="上次保活" Width="172">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <TextBlock Text="{Binding LastRefreshShort, Mode=OneWay, FallbackValue=读取中}"
@@ -353,11 +359,58 @@
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTemplateColumn Header="" Width="26">
+                        <!--
+                          警告列：原来 Header 是空的、宽 26px，看起来像「不知道为什么有个空列」。
+                          现在给出标题「提示」并加宽到 44，让 ⚠ 有足够空间显示、
+                          鼠标悬停可看完整警告内容（凭证超期、同号互顶等）。
+                          只有存在警告时才显示 ⚠，没有警告时该列是空的。
+                        -->
+                        <!--
+                          「提示」列：固定 54 放 ⚠ 图标；右侧紧接一个弹性空白列把余量吃干净。
+                          这样表格右边缘永远紧贴容器，不会出现「无标题的空白带」。
+                          空白列不画任何边框/背景，视觉上就是一片白。
+                        -->
+                        <DataGridTemplateColumn Header="提示" Width="54">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
-                                    <TextBlock Text="⚠" Foreground="{StaticResource Warn}" ToolTip="{Binding Warning}"
-                                               ToolTipService.ShowDuration="120000" ToolTipService.InitialShowDelay="250" ToolTipService.BetweenShowDelay="0" Visibility="{Binding WarningVisibility}"/>
+                                    <TextBlock Text="⚠" FontSize="14" Foreground="{StaticResource Warn}"
+                                               HorizontalAlignment="Center" VerticalAlignment="Center"
+                                               ToolTip="{Binding Warning}"
+                                               ToolTipService.ShowDuration="120000"
+                                               ToolTipService.InitialShowDelay="250"
+                                               ToolTipService.BetweenShowDelay="0"
+                                               Visibility="{Binding WarningVisibility}"/>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+                        <!--
+                          末尾填充列：吃掉右侧剩余宽度，避免出现「无标题的空白带」。
+                          让它完全不可见：Header 置空、不画边框、Cell 用透明空模板
+                          （否则 DataGrid 的横向网格线会给它画一条线）。
+                        -->
+                        <DataGridTemplateColumn Header="" Width="*" MinWidth="0" CanUserResize="False">
+                            <DataGridTemplateColumn.HeaderStyle>
+                                <Style TargetType="DataGridColumnHeader">
+                                    <Setter Property="Background" Value="#F8FAFC"/>
+                                    <Setter Property="BorderThickness" Value="0"/>
+                                </Style>
+                            </DataGridTemplateColumn.HeaderStyle>
+                            <DataGridTemplateColumn.CellStyle>
+                                <Style TargetType="DataGridCell">
+                                    <Setter Property="Background" Value="Transparent"/>
+                                    <Setter Property="BorderThickness" Value="0"/>
+                                    <Setter Property="Template">
+                                        <Setter.Value>
+                                            <ControlTemplate TargetType="DataGridCell">
+                                                <Border Background="Transparent"/>
+                                            </ControlTemplate>
+                                        </Setter.Value>
+                                    </Setter>
+                                </Style>
+                            </DataGridTemplateColumn.CellStyle>
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <Border Background="Transparent"/>
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>

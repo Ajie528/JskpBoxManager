@@ -247,7 +247,15 @@ public static class Keepalive
         // 4) 密钥太新：日常计划也让路，避免「每天固定滚一次」变成无意义的消耗
         double minAge = p.EffectiveMinKeyAgeHours;
         if (keyAge is double young && young < minAge)
+        {
+            // 间隔模式下，如果用户设的间隔比门槛还小，说明两个设置冲突了——
+            // 这种情况必须说清楚，否则用户会以为「设了 2 小时却一天都没续过」。
+            if (p.Schedule == "interval" && p.IntervalHours < minAge)
+                return WakeDecision.No($"密钥才 {young:F1} 小时（< 门槛 {minAge}h）→ 跳过"
+                    + $"；注意：你设的间隔 {p.IntervalHours}h 比「不到 N 小时别动它」({minAge}h) 还小，"
+                    + "实际会按门槛走，请在界面上把门槛调小");
             return WakeDecision.No($"key is only {young:F1}h old (< {minAge}h) -> leave it alone");
+        }
 
         // 5) 日常计划时刻：interval 模式看「距上次成功续期是否够久」，daily 模式按当天时刻 + 错峰
         var last = LastSuccessUtc(box);
@@ -297,9 +305,22 @@ public static class Keepalive
     }
 
     /// <summary>
-    /// 今天有没有真正跑过一次「保活」（refresh）——只看 rotate-log 里的原因。
+    /// 今天有没有真正跑过一次「保活」（refresh），**且那次保活是在当前这把密钥之后**。
+    ///
     /// 「refresh」是协议续期路径记的，「runtime:refresh」是冷启动路径记的；
     /// probe / preflight / runtime:game-ok 都不算，它们只是顺带换钥，不代表保活执行过。
+    ///
+    /// <para>
+    /// 为什么必须比较时间（v1.5.52 修）：原来只看「今天有没有 refresh」，
+    /// 于是 qb4 在 2026-11-13 踩了坑——
+    ///   06:52 保活 refresh 成功（换出 84b50387）
+    ///   09:17 链被作废、09:32 清除登录
+    ///   10:49 重新扫码，拿到全新的一把 cb768b70
+    ///   15:19 密钥熬过 4h 门槛 → 本该补跑保活，却因为「今天已有 refresh（06:52 那次）」
+    ///         整天判 already renewed today → 密钥一路放到 21:06 游戏关闭（10 小时）
+    ///   → 23:03 探测 -13，链再次作废
+    /// 那次 06:52 的 refresh 属于**上一把已废弃的密钥**，对当前这把毫无意义。
+    /// </para>
     /// </summary>
     internal static bool RefreshServedToday(string box)
     {
@@ -307,7 +328,12 @@ public static class Keepalive
         {
             var p = Path.Combine(AppPaths.Logs, box + ".rotate-log");
             if (!File.Exists(p)) return false;
+
+            // 当前密钥的写入时间：refresh 早于它就不算「已为这把服务过」
+            var current = CurrentKeyWriteUtc(box);
+
             var today = DateTime.Today.ToString("yyyy-MM-dd") + " ";
+            bool served = false;
             foreach (var line in File.ReadLines(p))
             {
                 if (!line.StartsWith(today, StringComparison.Ordinal)) continue;
@@ -315,11 +341,34 @@ public static class Keepalive
                 var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
                 if (parts.Length < 4) continue;
                 var why = parts[3].Trim();
-                if (why == "refresh" || why == "runtime:refresh") return true;
+                if (why != "refresh" && why != "runtime:refresh") continue;
+
+                if (current is DateTime cur)
+                {
+                    // rotate-log 记的是本地时间
+                    if (!DateTime.TryParseExact(parts[0] + " " + parts[1], "yyyy-MM-dd HH:mm:ss",
+                            System.Globalization.CultureInfo.InvariantCulture,
+                            System.Globalization.DateTimeStyles.AssumeLocal, out var at)) continue;
+                    if (at.ToUniversalTime() < cur.AddSeconds(-5)) continue;   // 属于旧密钥，不算
+                }
+                served = true;
             }
-            return false;
+            return served;
         }
         catch { return false; }
+    }
+
+    /// <summary>当前这把密钥（live 与金库中较新者）的写入时间（UTC）；没有有效凭证返回 null。</summary>
+    static DateTime? CurrentKeyWriteUtc(string box)
+    {
+        try
+        {
+            DateTime best = DateTime.MinValue;
+            foreach (var st in new[] { Ilink.Live(box), Ilink.VaultState(box) })
+                if (st.Valid && st.WriteUtc > best) best = st.WriteUtc;
+            return best == DateTime.MinValue ? null : best;
+        }
+        catch { return null; }
     }
 
     /// <summary>最近一次成功续期（以金库里最新那把密钥的写入时间为准）。</summary>

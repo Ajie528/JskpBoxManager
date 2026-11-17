@@ -67,11 +67,15 @@ public sealed class BoxRow : INotifyPropertyChanged
 
     public string ScanAgeText => Summary?.ScanAgeShort ?? "—";
     public string ScanAgeTip => Summary?.ScanAgeTip ?? "";
+    // 颜色分档要和真实语义一致：超过名义窗口但凭证还能用，只是「该找机会重扫了」，
+    // 标红会让人以为已经废了（qb8 32.1 天、qb3 30.2 天、qb11 30 天都还在正常免扫）。
+    // 真正的失效由「登录」列表达（需要扫码 / 疑似失效 / 未登录）。
     public Brush ScanAgeFg => Summary switch
     {
         null => Brushes.Gray(),
         { ScanDays: not double } => Brushes.Gray(),
-        { ScanDays: double d } when d >= BoxSummary.AuthWindowDays => Brushes.Red(),
+        { ScanDays: double d, Vault.Valid: false, Live.Valid: false } when d >= BoxSummary.AuthWindowDays => Brushes.Red(),
+        { ScanDays: double d } when d >= BoxSummary.AuthWindowDays => Brushes.Orange(),
         { ScanDays: double d } when d >= BoxSummary.RescanWarnDays => Brushes.Orange(),
         _ => Brushes.Hex("#4B5563"),
     };

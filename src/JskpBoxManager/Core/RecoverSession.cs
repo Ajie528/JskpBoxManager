@@ -19,7 +19,10 @@ public sealed class RecoverSession
         Out($"开始用历史凭证恢复 {_box} 的免扫登录…");
 
         var cands = Ilink.CredentialHistory(_box);
-        var tryList = cands.Where(c => !c.Revoked && HistoryCooldown.Allowed(_box, c.KeyHash)).ToList();
+        var allowed = cands.Where(c => !c.Revoked && HistoryCooldown.Allowed(_box, c.KeyHash)).ToList();
+        // 单轮最多试 N 把，理由同 HistoryCooldown.MaxProbesPerRound：
+        // 连续 AutoAuth 本身就是风控特征（qb4 11-13 五秒内打了 22 把）。
+        var tryList = allowed.Take(HistoryCooldown.MaxProbesPerRound).ToList();
         if (tryList.Count == 0)
         {
             var cooling = cands.Count(c => !c.Revoked && !HistoryCooldown.Allowed(_box, c.KeyHash));
@@ -29,6 +32,8 @@ public sealed class RecoverSession
             return 1;
         }
         Out($"共 {tryList.Count} 把可试（跳过 {cands.Count - tryList.Count} 把已作废/冷却中）。每把约 1~2 分钟。");
+        if (allowed.Count > tryList.Count)
+            L($"历史凭证共 {allowed.Count} 把可用，本轮只试前 {tryList.Count} 把（防止连续 AutoAuth 触发风控）");
 
         BoxRuntime.RegisterLauncher(_box, "recover");
         try
@@ -37,6 +42,7 @@ public sealed class RecoverSession
             foreach (var c in tryList)
             {
                 i++;
+                if (i > 1) Thread.Sleep(HistoryCooldown.ProbeSpacingMs);
                 Out($"[{i}/{tryList.Count}] 试 key {c.KeyShort}（{c.SavedAt:MM-dd HH:mm}{(c.IsVault ? " · 当前金库" : "")}）…");
                 BoxStatusFile.Write(_box, BoxPhase.Starting, $"恢复中：试 {c.KeyShort}（{i}/{tryList.Count}）");
 

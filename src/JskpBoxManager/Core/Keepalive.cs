@@ -204,11 +204,26 @@ public static class Keepalive
     /// 计划任务唤醒后，决定这次是否真的执行保活。
     /// 顺序即优先级：已明确需要扫码 > 失败退避 > 密钥超龄强制 > 密钥太新跳过 > 今天是否已到计划时刻。
     /// </summary>
+    /// <summary>
+    /// interval 模式的唤醒抖动容差（分钟）。
+    /// 计划任务按整点唤醒，而上次续期成功往往落在 :51、:52 这种秒数上，
+    /// 于是「6 小时」会在差几十秒时被判成"还没到"，白等一小时。
+    /// </summary>
+    const double IntervalGraceMinutes = 5;
+
     public static WakeDecision DecideWake(string box, KeepPolicy p, DateTime now)
     {
         // 1) 已经判定要重扫：别再空跑冷启动（旧逻辑也是在 Core 开头 return，这里提前省掉整个进程开销）
         if (NeedScan.Pending(box))
-            return WakeDecision.No("need-scan pending");
+        {
+            // 但凭证后来又换新了（用户手动扫码 / 在别处恢复成功）就别一直锁着。
+            // 这个判断在 RefreshSession 开头也会做，可计划任务每小时醒来时若被这里
+            // 提前挡掉，「今天要不要保活」就整天都是「需要扫码」——qb4 在 11-16
+            // 17:16 被判 -13 后，18/19/20 点的三次唤醒全部报 need-scan pending，
+            // 21:01 扫码成功后也必须等到看门循环那 30 秒的 Ilink.Save 才解除。
+            try { NeedScan.ClearIfRenewed(box); } catch { }
+            if (NeedScan.Pending(box)) return WakeDecision.No("need-scan pending");
+        }
 
         // 2) 上次失败还在退避期。但如果密钥已经过硬上限（20h），退避不能让路——
         //    等 6 小时基本等于让它自然过期，这时候必须继续试。
@@ -233,7 +248,11 @@ public static class Keepalive
         }
 
         // 3) 密钥超龄：不管计划时刻，立刻续（宁可多滚一次，也不能等它自己过期）
-        double forceHours = p.EffectiveForceRenewHours;
+        //
+        // forceHours 取「用户配置值」与该号实测可承受寿命的较小者：
+        // qb4 实测 key 只能活 7.0~7.15 小时（两次独立验证），而配置是 20 小时。
+        // 按 20 小时等，等于永远等它自然死；必须按实测值提前续。
+        double forceHours = Math.Min(p.EffectiveForceRenewHours, ProtocolRenew.EffectiveMaxAgeHours(box));
         int quota = p.EffectiveMaxRotations;
         if (keyAge is double aged && aged >= forceHours)
         {
@@ -241,7 +260,8 @@ public static class Keepalive
             // 这里不再续，改为告警——这种情况多半是密钥已经被顶，靠滚是救不回来的。
             if (CredentialProbe.RotationsToday(box) >= quota)
                 return WakeDecision.No($"key is {aged:F1}h old but already rotated {quota}x today -> stop, needs manual check");
-            return WakeDecision.Yes($"key is {aged:F1}h old (>= {forceHours}h) -> renew now");
+            return WakeDecision.Yes($"key is {aged:F1}h old (>= {forceHours:F1}h"
+                + (forceHours < p.EffectiveForceRenewHours ? "，按该号实测寿命推算" : "") + ") -> renew now");
         }
 
         // 4) 密钥太新：日常计划也让路，避免「每天固定滚一次」变成无意义的消耗
@@ -262,8 +282,16 @@ public static class Keepalive
         if (p.Schedule == "interval")
         {
             var due = (last ?? DateTime.UtcNow.AddHours(-p.IntervalHours)).AddHours(p.IntervalHours);
-            if (now.ToUniversalTime() < due)
-                return WakeDecision.No($"interval {p.IntervalHours}h not elapsed yet");
+            // 计划任务每小时醒一次，唤醒时刻相对「上次续期成功的秒数」必然有几十秒抖动。
+            // 早期实现直接 now < due，于是 16:16:51 醒来发现 due 是 16:16:52（差 1 秒）→ 跳过，
+            // 下一次唤醒要等到 17:16:51 —— 「每 6 小时」实际变成「每 7 小时」。
+            // qb4 在 2026-11-16 就是这样：10:16:52 续期成功 → 16:16:51 被"差 1 秒"挡掉
+            // → 17:16:51 才动手，此时密钥已放到 7.0 小时，服务端已经判 -13。
+            // 容差取 5 分钟：远小于最小允许间隔（1 小时），不会造成重复执行，
+            // 但足以吃掉唤醒抖动，让「间隔」真正等于用户设的值。
+            if (now.ToUniversalTime() < due.AddMinutes(-IntervalGraceMinutes))
+                return WakeDecision.No($"interval {p.IntervalHours}h not elapsed yet "
+                    + $"(还差 {(due - now.ToUniversalTime()).TotalMinutes:F0} 分钟)");
             // 每小时唤醒会让 interval 模式一天跑很多轮：必须受每日轮换上限约束，
             // 否则「每 4 小时一次」= 一天 6 次 × 各路径 = 远超风控上限。
             if (CredentialProbe.RotationsToday(box) >= quota)
@@ -349,7 +377,12 @@ public static class Keepalive
                     if (!DateTime.TryParseExact(parts[0] + " " + parts[1], "yyyy-MM-dd HH:mm:ss",
                             System.Globalization.CultureInfo.InvariantCulture,
                             System.Globalization.DateTimeStyles.AssumeLocal, out var at)) continue;
-                    if (at.ToUniversalTime() < cur.AddSeconds(-5)) continue;   // 属于旧密钥，不算
+                    // 那次 refresh 必须发生在「当前这把密钥」之后才算数。
+                    // 缓冲取 5 分钟而不是 5 秒：日志时间是落盘时刻，而密钥写入时间是
+                    // 运行时写文件时刻，两者可能差几十秒（qb4 实测 21:01:36 vs 21:01:56）。
+                    // 缓冲太小时，正好在续期后一两分钟落盘的那次 refresh 会被误判成
+                    // 「属于旧密钥」，于是当天被判定「还没保活过」而重复执行。
+                    if (at.ToUniversalTime() < cur.AddMinutes(-5)) continue;
                 }
                 served = true;
             }

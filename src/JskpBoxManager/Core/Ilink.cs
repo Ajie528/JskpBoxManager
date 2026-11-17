@@ -409,6 +409,77 @@ public static class Ilink
 
     // ---------- 作废识别 ----------
 
+    /// <summary>
+    /// 统计这个号历史上「key 签发 → 被服务端判 -13」的实际寿命（小时），只取 <paramref name="since"/> 之后的。
+    ///
+    /// <para>
+    /// 两个数据源配对：
+    /// <list type="bullet">
+    /// <item><c>rotate-log</c>：每把 key 的签发时刻。</item>
+    /// <item>沙箱日志里的「协议续期：续期标记已写入（旧 key XXX)」紧跟一行「…(code=-13)」：
+    /// 这是每把 key 被判死的**当场记录**，比事件日志完整——</item>
+    /// </list>
+    /// key-revoked 事件只有老版本写过（qb4 从 11-09 起就没再写），
+    /// 所以不能只靠事件日志。
+    /// </para>
+    ///
+    /// <para>
+    /// 用途见 <see cref="ProtocolRenew.EffectiveMaxAgeHours"/>：有的号真实寿命远短于
+    /// 默认的 20 小时上限（qb4 实测 7.0 / 7.15 小时两次），
+    /// 对它们必须按实测值来定强制续期时机，否则「等到 20 小时」等于等到它自然死。
+    /// </para>
+    /// </summary>
+    public static List<double> RevokeAges(string box, DateTime since)
+    {
+        var list = new List<double>();
+        try
+        {
+            // 1) key 签发时刻表
+            var born = new Dictionary<string, DateTime>(StringComparer.Ordinal);
+            var rot = Path.Combine(AppPaths.Logs, box + ".rotate-log");
+            if (File.Exists(rot))
+            {
+                foreach (var line in File.ReadLines(rot))
+                {
+                    var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length < 3) continue;
+                    if (!DateTime.TryParseExact(parts[0] + " " + parts[1], "yyyy-MM-dd HH:mm:ss",
+                            System.Globalization.CultureInfo.InvariantCulture,
+                            System.Globalization.DateTimeStyles.AssumeLocal, out var at)) continue;
+                    if (!born.ContainsKey(parts[2])) born[parts[2]] = at;
+                }
+            }
+            if (born.Count == 0) return list;
+
+            // 2) 从沙箱日志里找「旧 key XXX」+「code=-13」这对相邻行
+            var logPath = Path.Combine(AppPaths.Logs, box + ".log");
+            if (!File.Exists(logPath)) return list;
+            DateTime bornAt = DateTime.MinValue;
+            foreach (var line in File.ReadLines(logPath))
+            {
+                // 「2026-11-16 17:16:51 [qb4] 协议续期：续期标记已写入（旧 key 8256367304a7e664)」
+                if (line.Contains("续期标记已写入", StringComparison.Ordinal))
+                {
+                    var m = System.Text.RegularExpressions.Regex.Match(line, @"旧 key ([0-9a-f]{16})");
+                    bornAt = m.Success && born.TryGetValue(m.Groups[1].Value, out var t) ? t : DateTime.MinValue;
+                    continue;
+                }
+                if (bornAt == DateTime.MinValue) continue;
+                if (!line.Contains("code=-13", StringComparison.Ordinal)
+                    && !line.Contains("作废（-13）", StringComparison.Ordinal)) continue;
+                if (line.Length < 19
+                    || !DateTime.TryParseExact(line[..19], "yyyy-MM-dd HH:mm:ss",
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        System.Globalization.DateTimeStyles.AssumeLocal, out var dead)) continue;
+                double h = (dead - bornAt).TotalHours;
+                if (bornAt >= since && h > 0.1 && h < 72) list.Add(h);
+                bornAt = DateTime.MinValue;      // 同一把只算一次
+            }
+        }
+        catch { }
+        return list;
+    }
+
     public static bool IsRevoked(string box, string keyHash)
     {
         if (string.IsNullOrWhiteSpace(keyHash)) return false;
@@ -618,7 +689,27 @@ public static class Ilink
     {
         ProtocolRenew.DropSnapshot(box, "clear-login");
         HistoryCooldown.ClearAll(box);
-        foreach (var p in new[] { BoxPaths.CredentialDir(box), System.IO.Path.Combine(BoxPaths.WmpfVault(box), "ilink") })
-            try { if (Directory.Exists(p)) Directory.Delete(p, true); } catch { }
+        // 只清「当前凭证」相关的文件，**保留 credential\history**。
+        //
+        // 早期实现直接 Directory.Delete(credential) 整个目录，于是清除登录时
+        // 把 30 份历史快照一起删了 —— qb4 在 2026-11-14 10:40 清除登录后，
+        // 历史凭证从 22 把掉到 1 把，此后每次 -13 都只剩一把可试，
+        // 「用历史凭证免扫救回」这条路等于被自己堵死了。
+        // 历史快照只是 tdi_account.txt 的副本，不含任何当前有效凭据的安全风险，
+        // 反而是这个号最值钱的资产：新 key 换出来之前，它是唯一的恢复手段。
+        var cred = BoxPaths.CredentialDir(box);
+        foreach (var rel in new[]
+                 {
+                     "credential.json", "revoked.txt", "protocol-renewed.json",
+                     "history-cooldown.json", "auth-evidence.txt", "pending-rotated.json",
+                     "renew-attempt.json",
+                 })
+            try { File.Delete(Path.Combine(cred, rel)); } catch { }
+        try
+        {
+            if (Directory.Exists(BoxPaths.WmpfVault(box)))
+                Directory.Delete(Path.Combine(BoxPaths.WmpfVault(box), "ilink"), true);
+        }
+        catch { }
     }
 }

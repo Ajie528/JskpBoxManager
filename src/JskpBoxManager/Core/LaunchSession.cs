@@ -538,18 +538,26 @@ public sealed class LaunchSession
     bool TryHistoryRecover()
     {
         var live = Ilink.Live(_box);
-        var tryList = Ilink.CredentialHistory(_box)
+        var all = Ilink.CredentialHistory(_box)
             .Where(c => !c.Revoked)
             .Where(c => HistoryCooldown.Allowed(_box, c.KeyHash))
             .Where(c => !live.Valid || c.KeyHash != live.KeyHash)
             .ToList();
+        // 最多只打前 N 把。见 HistoryCooldown.MaxProbesPerRound 的说明：
+        // qb4 在 11-13 09:27 于 5 秒内连打 22 次 AutoAuth（全 -13），
+        // 这种突发密度本身就是风控特征，也是这个号反复被顶的推手之一。
+        var tryList = all.Take(HistoryCooldown.MaxProbesPerRound).ToList();
         if (tryList.Count == 0) return false;
+        if (all.Count > tryList.Count)
+            L($"历史凭证共 {all.Count} 把，本轮只试最近 {tryList.Count} 把"
+              + $"（防止连续 AutoAuth 触发风控，其余下次轮换后再试）");
 
         var rec = new RecoverSession(_box);
         int i = 0;
         foreach (var c in tryList)
         {
             i++;
+            if (i > 1) Thread.Sleep(HistoryCooldown.ProbeSpacingMs);
             L($"[{i}/{tryList.Count}] try historical key {c.KeyShort} ({c.SavedAt:MM-dd HH:mm}{(c.IsVault ? " · vault" : "")})");
             Phase(BoxPhase.Starting, $"正在用历史凭证恢复（{i}/{tryList.Count}）：试 {c.KeyShort}");
 
@@ -1022,6 +1030,7 @@ public sealed class LaunchSession
         var gameStartedAt = DateTime.MinValue;
         DateTime? wxNoGameSince = null;
         bool updateRestartDone = false;
+        var lastTabClean = DateTime.MinValue;
 
         while (true)
         {
@@ -1041,6 +1050,20 @@ public sealed class LaunchSession
                 try { Ilink.Save(_box, "watch"); } catch { }
                 try { NeedScan.ClearIfRenewed(_box); } catch { }
                 lastCred = DateTime.Now;
+            }
+
+            // 扫码后 post-scan 又开了一次游戏页，浏览器里会同时留着「扫码页」和「游戏页」两个标签。
+            // 两个标签都跑游戏 = 同一个微信号在同一设备上开了两条游戏会话，
+            // 服务端会按「重复登录」处理，把较早那条的授权顶掉（-13）。
+            // 启动路径（Run 里）一直有这个定时清理，看门路径以前漏了：
+            // qb4 在 2026-11-16 21:01 扫码后日志里完全没有「关闭多余标签页」，
+            // 两个游戏页并存，1 分 26 秒后游戏窗就自己消失了。
+            if (!v.HasStrictQr && (DateTime.Now - lastTabClean).TotalSeconds >= 6)
+            {
+                int n = 0;
+                try { n = Cdp.CloseExtraTabs(_box); } catch { }
+                if (n > 0) L($"看门：已关闭多余标签页 数量={n}");
+                lastTabClean = DateTime.Now;
             }
 
             if (v.HasGameWindow)
@@ -1178,7 +1201,8 @@ public sealed class LaunchSession
             }
             if (sawQr && !qrResumed)
             {
-                L("看门：扫码后二维码消失 → 重开游戏页");                Phase(BoxPhase.Starting, "已扫码，正在进入游戏…");
+                L("看门：扫码后二维码消失 → 重开游戏页");
+                Phase(BoxPhase.Starting, "已扫码，正在进入游戏…");
                 try { BoxRuntime.StartBrowser(_box, "post-scan"); } catch { }
                 qrResumed = true;
                 waitGameDeadline = DateTime.Now.AddMinutes(15);

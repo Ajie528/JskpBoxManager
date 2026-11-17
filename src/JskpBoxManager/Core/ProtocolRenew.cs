@@ -763,15 +763,61 @@ public static class ProtocolRenew
 
     /// <summary>
     /// 密钥最长能用多久就必须强制续期一次。实测免扫链约一天撞墙，留 4 小时余量。
-    /// 这是**硬约束**：不管游戏在不在跑、常驻还是普通模式，超过就必须续。
+    /// 这是**默认硬约束**：不管游戏在不在跑、常驻还是普通模式，超过就必须续。
+    ///
+    /// <para>
+    /// 但个别号的真实上限远低于 20 小时。qb4 从 2026-11-13 起实测：
+    /// 两次独立的 -13 都精确落在 key 签发后 <b>7.0 / 7.15 小时</b>
+    /// （10:16:52 签发 → 17:16:52 判死；02:21:58 签发 → 09:30:54 判死），
+    /// 而同期 qb1/qb2/qb3/qb5/qb8 的 key 放到 14~17 小时仍然有效。
+    /// 对这种号，20 小时的固定上限等于「永远等它自然死」——
+    /// 保活按 6 小时间隔跑，一旦被唤醒抖动推到第 7 小时，就正好撞上死亡线。
+    /// </para>
+    ///
+    /// <para>
+    /// 所以改成：<b>取「固定上限」与该号实测寿命的较小值</b>，
+    /// 并且强制续期提前到寿命的 70%，留出足够的余量。
+    /// 见 <see cref="EffectiveMaxAgeHours"/>。
+    /// </para>
     /// </summary>
     public const double KeyMaxAgeHours = 20;
 
-    /// <summary>这把凭证是不是已经超过硬上限，必须马上续期。</summary>
+    /// <summary>
+    /// 该号实际的密钥硬上限（小时）。
+    ///
+    /// 从 <c>rotate-log</c> + <c>key-revoked</c> 事件里统计这个号历史上
+    /// 「key 签发 → 被判 -13」的实际寿命，取最短的那次当作天花板。
+    /// 没有 -13 历史的号返回 <see cref="KeyMaxAgeHours"/>，行为完全不变。
+    ///
+    /// 只统计最近 14 天，避免很早以前的偶发事件永久压低上限。
+    /// </summary>
+    public static double EffectiveMaxAgeHours(string box)
+    {
+        try
+        {
+            var deaths = Ilink.RevokeAges(box, DateTime.Now.AddDays(-14));
+            if (deaths.Count == 0) return KeyMaxAgeHours;
+            // 取最短一次，再扣 30% 余量。7.0h 的实测 → 上限 4.9h，安全地落在死亡线之前。
+            double shortest = deaths.Min();
+            if (shortest <= 0.5 || shortest >= KeyMaxAgeHours) return KeyMaxAgeHours;
+            return Math.Max(1.0, shortest * 0.7);
+        }
+        catch { return KeyMaxAgeHours; }
+    }
+
+    /// <summary>这把凭证是不是已经超过「该号实际能承受的」硬上限，必须马上续期。</summary>
     public static bool KeyOverdue(string box)
     {
         var age = KeyAgeHours(box);
-        return age != null && age.Value >= KeyMaxAgeHours;
+        return age != null && age.Value >= EffectiveMaxAgeHours(box);
+    }
+
+    /// <summary>硬上限的简短文本（用于日志/界面），带「实测」标记时说明这是按历史推算的。</summary>
+    public static string MaxAgeText(string box)
+    {
+        double e = EffectiveMaxAgeHours(box);
+        return e >= KeyMaxAgeHours ? $"{KeyMaxAgeHours:0.#} 小时"
+                                   : $"{e:0.#} 小时（按该号实测寿命推算）";
     }
 
     /// <summary>密钥年龄简短文本，用于日志。</summary>

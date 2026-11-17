@@ -312,6 +312,17 @@ public static class CredentialProbe
         if (r.Ok)
         {
             Log.Box(box, $"主动探测：服务器确认凭证有效并已换新 key={r.NewKeyHash}");
+            // 探测成功就等于「服务端认这把凭证」，之前因为 -13 留下的 need-scan
+            // 已经没有意义了，必须立刻清掉。
+            // 以前这里不清：qb16 在 2026-11-09 05:30 被判 -13 打上标记后，
+            // probe 又在 11-16 02:40 与 16:31 连续两次成功换钥，标记却留到 21:30 手动启动，
+            // 界面整整齐齐显示了 7 天的「需要扫码」，而实际点启动是直接免扫进游戏的。
+            try
+            {
+                if (NeedScan.ClearIfRenewed(box))
+                    Log.Box(box, "主动探测：凭证已换新 → 之前「需要扫码」的标记已解除");
+            }
+            catch { }
             try { VaultSync.PushVaultToLive(box); } catch { }
             return new ProbeResult(box, true, r.Message, 0, false);
         }

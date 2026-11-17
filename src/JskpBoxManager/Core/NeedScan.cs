@@ -54,13 +54,22 @@ public static class NeedScan
         catch { return false; }
     }
 
+    /// <summary>
+    /// 拿 live 与金库中<b>较新的那份</b>判断标记是否已被取代。
+    /// 只传 live 是不够的：沙箱没在运行时 live 常常是空的或是被轮换掉的旧那把，
+    /// 而新 key 已经在金库里了。qb16 在 2026-11-09 05:30 被判 -13 后，
+    /// probe 又在 11-16 02:40 / 16:31 成功换过两把 key，标记却一直留着，
+    /// 界面因此连着 7 天显示「需要扫码」，实际启动是直接免扫进游戏的。
+    /// </summary>
     public static bool ClearIfRenewed(string box)
     {
         var live = Ilink.Live(box);
-        if (!Superseded(box, live)) return false;
+        var vault = Ilink.VaultState(box);
+        var best = vault.Valid && (!live.Valid || vault.WriteUtc > live.WriteUtc) ? vault : live;
+        if (!Superseded(box, best)) return false;
         Clear(box);
         ClearQrStreak(box);
-        Log.Box(box, $"待扫码标记已清除：新凭证写入于 {live.WriteLocal}");
+        Log.Box(box, $"待扫码标记已清除：新凭证写入于 {best.WriteLocal}");
         return true;
     }
 

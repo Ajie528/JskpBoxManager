@@ -342,6 +342,78 @@ public static class Win32
         ShowWindowAsync(h, SW_SHOW);
     }
 
+    [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] static extern bool AttachThreadInput(uint attach, uint attachTo, bool fAttach);
+    [DllImport("user32.dll")] static extern bool BringWindowToTop(IntPtr h);
+
+    const int SW_RESTORE_ = 9;
+    static readonly IntPtr HWND_TOPMOST2 = new(-1);
+    static readonly IntPtr HWND_NOTOPMOST2 = new(-2);
+
+    /// <summary>
+    /// 把窗口**可靠地**拉到前台并激活。
+    ///
+    /// <para>
+    /// 单纯调 <c>SetForegroundWindow</c> 经常无效：Windows 有「前台锁」——
+    /// 只有当前持有前台的进程才能移交前台，否则请求被静默丢弃（只闪一下任务栏图标）。
+    /// 这正是「点了窗口却被 Cursor 挡住」的原因。
+    /// </para>
+    ///
+    /// <para>
+    /// 这里按可靠性从高到低依次尝试：
+    /// <list type="number">
+    /// <item>窗口已最小化 → 先 <c>ShowWindow(SW_RESTORE)</c></item>
+    /// <item><c>AttachThreadInput</c> 挂到当前前台线程，绕过前台锁后
+    ///       <c>BringWindowToTop</c> + <c>SetForegroundWindow</c>，再解挂</item>
+    /// <item>临时置顶再取消置顶（TOPMOST 切换会让窗口跳到最前面）</item>
+    /// <item>模拟按一下 ALT 解除前台锁，再试一次</item>
+    /// </list>
+    /// </para>
+    /// </summary>
+    public static void ActivateWindow(IntPtr h)
+    {
+        if (h == IntPtr.Zero || !IsWindow(h)) return;
+        try
+        {
+            if (IsIconic(h)) ShowWindow(h, SW_RESTORE_);
+            else ShowWindow(h, SW_SHOW);
+
+            var fg = GetForegroundWindow();
+            if (fg == h) return;
+
+            // ① 挂接前台线程：最有效的一招
+            uint fgThread = fg != IntPtr.Zero ? GetWindowThreadProcessId(fg, out _) : 0;
+            uint myThread = GetWindowThreadProcessId(h, out _);
+            bool attached = false;
+            if (fgThread != 0 && myThread != 0 && fgThread != myThread)
+                attached = AttachThreadInput(fgThread, myThread, true);
+            try
+            {
+                BringWindowToTop(h);
+                SetForegroundWindow(h);
+            }
+            finally
+            {
+                if (attached) AttachThreadInput(fgThread, myThread, false);
+            }
+            if (GetForegroundWindow() == h) return;
+
+            // ② 临时置顶再取消：绕过前台锁的常见兜底
+            SetWindowPos(h, HWND_TOPMOST2, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+            SetForegroundWindow(h);
+            SetWindowPos(h, HWND_NOTOPMOST2, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+            if (GetForegroundWindow() == h) return;
+
+            // ③ 模拟 ALT：让系统认为用户有输入，从而解除前台锁
+            const byte VK_MENU = 0x12, KEYEVENTF_KEYUP = 0x02;
+            keybd_event(VK_MENU, 0, 0, IntPtr.Zero);
+            keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, IntPtr.Zero);
+            BringWindowToTop(h);
+            SetForegroundWindow(h);
+        }
+        catch { }
+    }
+
     public static void ClickScreen(int x, int y)
     {
         SetCursorPos(x, y);

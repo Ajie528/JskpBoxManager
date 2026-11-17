@@ -30,6 +30,27 @@ public static class HistoryCooldown
     /// <summary>被拒一次后安静多久（小时）。参照保活失败退避的上限，不宜太短。</summary>
     public const double DefaultHours = 6;
 
+    /// <summary>
+    /// 一轮恢复里最多发多少次历史探测。
+    ///
+    /// <para>
+    /// AutoAuth 是**轮换语义**的真请求，发一次服务端就有一次记录。qb4 在 2026-11-13 09:27
+    /// 被运行时清空凭证后，程序在 5 秒内把 22 把历史 key 全打了一遍（全 -13）；
+    /// 11-07 更有过 54 秒打 20 次的记录。这类突发密度本身就是风控要看的特征，
+    /// 而这个号正是被「越拒越试、越试越拒」喂成了每天必掉。
+    /// </para>
+    ///
+    /// <para>
+    /// 6 把是实测能覆盖「最近几次扫码/换钥」的数量：真正还有效的 key 几乎总在最前面
+    /// （金库那把 + 最近一两天换出来的 2~3 把）。再往后的都是好几天前的，
+    /// 被打通的概率极低，却要为每次尝试付一次风控代价。
+    /// </para>
+    /// </summary>
+    public const int MaxProbesPerRound = 6;
+
+    /// <summary>同一沙箱两次历史探测之间的最短间隔（毫秒）。避免 3 秒内连发一串。</summary>
+    public const int ProbeSpacingMs = 1200;
+
     static string Path_Of(string box) => Path.Combine(BoxPaths.CredentialDir(box), "history-cooldown.json");
 
     /// <summary>记一次拒绝。</summary>

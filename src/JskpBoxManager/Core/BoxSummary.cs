@@ -64,7 +64,22 @@ public sealed class BoxSummary
     // 说明我们这边的号被顶得更快（多设备互踢 / 频繁冷启），
     // 所以这里两条线一起显示：参考模型的剩余天数 + 我们自己的实测寿命。
 
-    /// <summary>参考模型的扫码授权窗口长度（天）。</summary>
+    /// <summary>
+    /// 参考模型的扫码授权窗口长度（天）。
+    ///
+    /// <para>
+    /// 这是**服务端文档/参考实现**给出的名义值，不是这台机器上的实测硬上限。
+    /// 实测已经多次超过它而凭证依然可用：
+    /// qb8 已 32.1 天、qb3 30.2 天、qb11 30 天，三个号都还在正常免扫换新。
+    /// </para>
+    ///
+    /// <para>
+    /// 所以界面上不能把这个数字当成「过期」来渲染 —— 以前到 30 天就写「已过期」，
+    /// 但用户点启动照样能免扫进游戏，看起来像程序判断错了。
+    /// 真正的判据是<b>凭证能不能用</b>（live/vault 有效且未被作废），
+    /// 这个窗口只用来提示「已经很久没重扫了，建议找机会重扫一次」。
+    /// </para>
+    /// </summary>
     public const int AuthWindowDays = 30;
     /// <summary>满这么多天开始建议重扫（参考实现取 25）。</summary>
     public const int RescanWarnDays = 25;
@@ -122,7 +137,13 @@ public sealed class BoxSummary
         }
 
         bool revoked = s.Vault.Valid && Ilink.IsRevoked(box, s.Vault.KeyHash) && !(s.Live.Valid && s.Live.KeyHash != s.Vault.KeyHash);
-        if ((NeedScan.Pending(box) && !NeedScan.Superseded(box, s.Live)) || revoked)
+        // 判「标记是否已被更新的凭证取代」时要比的是 live 与金库里**较新的那一份**。
+        // 以前只看 live：沙箱没运行时 live 常常是空的或旧的那把，于是金库里明明
+        // 已经有更新的有效凭证，标记却永远算「没被取代」。
+        // qb16 在 2026-11-09 05:30 被判 -13 后标记一直留到 11-16 21:30——
+        // 期间 probe 在 11-16 02:40、16:31 都成功换过 key，界面却一直显示「需要扫码」，
+        // 实际点启动直接免扫进游戏。
+        if ((NeedScan.Pending(box) && !NeedScan.Superseded(box, best)) || revoked)
         {
             s.Login = LoginLevel.NeedScan;
             // 统一显示「需要扫码」四个字：表格里这一列很窄，
@@ -217,7 +238,11 @@ public sealed class BoxSummary
             s.RotationsLeft = Math.Max(0, quota - used);
             if (s.Live.Valid || s.Vault.Valid) s.RotationsTodayText = $"{used}/{quota}";
             s.KeyAgeHours = ProtocolRenew.KeyAgeHours(box);
-            s.ForceRenewHoursEffective = pol.EffectiveForceRenewHours;
+            // 显示的「满 N 小时强制续」要和真正的触发条件一致：
+            // 保活按 min(用户配置, 该号实测寿命) 来判，见 Keepalive.DecideWake。
+            // qb4 实测 key 只能活 7 小时，界面上写「满 20 小时强制续」会让人以为还有余量。
+            s.ForceRenewHoursEffective =
+                Math.Min(pol.EffectiveForceRenewHours, ProtocolRenew.EffectiveMaxAgeHours(box));
         }
         catch { }
         if (lastRefresh.TryGetValue(box, out var ev)
@@ -239,10 +264,20 @@ public sealed class BoxSummary
             s.LastRefreshShort = $"{Clock(at)} {word}" + (r is not ("ok" or "in-game") && renewedAfter ? "·之后已换新" : "");
             s.LastRefresh = $"{at:MM-dd HH:mm} {word}";
             if (JsonFile.Int(ev, "authRet") is int ret && ret != 0)
-                s.LastRefresh += $"（服务器拒绝授权 ret={ret}" + (JsonFile.Str(ev, "authMsg") is { Length: > 0 } m ? $"：{m}）" : "）");
+            {
+                // 已经被更新的凭证取代时，不要把当时的原始错误文案（比如
+                // 「...需要重新扫码（服务端已明确拒绝，这把凭证需要重新扫码）」）原样搬上来：
+                // 那是**那一刻**的判断，现在早已不成立。以前详情面板里因此同时出现
+                // 「需要重新扫码」和「现在免扫正常」两句互相矛盾的话，
+                // qb16 在 2026-11-16 就是这样被误读成「GUI 还说要扫码」。
+                var msg = JsonFile.Str(ev, "authMsg");
+                s.LastRefresh += renewedAfter
+                    ? $"（当时服务器拒绝授权 ret={ret}，这把凭证已作废）"
+                    : $"（服务器拒绝授权 ret={ret}" + (msg.Length > 0 ? $"：{msg}）" : "）");
+            }
             if (renewedAfter)
                 s.LastRefresh += $"；之后 {s.LastRenewUtc.ToLocalTime():MM-dd HH:mm} 凭证已换新"
-                    + (s.Login == LoginLevel.Ok ? "，现在免扫正常" : "（但需要重新扫码）");
+                    + (s.Login == LoginLevel.Ok ? "，现在免扫正常，无需再扫码" : "（但需要重新扫码）");
         }
 
         if (revokes.TryGetValue(box, out var rev)
@@ -299,15 +334,31 @@ public sealed class BoxSummary
         };
         var known = ScanKnown ? "" : "，实际可能更早";
 
-        // 表格短文本：优先显示「还剩多少」，比「已过多少」更直观
-        ScanAgeShort = left <= 0 ? "已过期" : $"{left:0.#} 天";
+        // 表格短文本：优先显示「还剩多少」，比「已过多少」更直观。
+        //
+        // 超过 30 天**不能**写「已过期」：那只是名义窗口，实测多个号超了仍然好用
+        // （qb8 32.1 天、qb3 30.2 天、qb11 30 天都还在正常免扫）。
+        // 只要凭证本身还有效，就说明服务端没要求重扫，这时候写「已过期」
+        // 会让人以为程序判错了（实际就是这么反馈的）。
+        // 真正失效时 Login 会变成 NeedScan / None，那另有显示。
+        bool credUsable = Vault.Valid || Live.Valid;
+        ScanAgeShort = left <= 0
+            ? (credUsable ? $"超{(-left):0.#}天" : "已过期")
+            : $"{left:0.#} 天";
 
         var lines = new List<string>
         {
             $"扫码时间 {ScanUtc.ToLocalTime():yyyy-MM-dd HH:mm}（{srcText}{known}）",
-            $"已过 {days:0.#} 天，授权窗口 {AuthWindowDays} 天 → {(left > 0 ? $"还剩 {left:0.#} 天" : $"已超出 {(-left):0.#} 天")}",
+            $"已过 {days:0.#} 天，名义窗口 {AuthWindowDays} 天 → "
+                + (left > 0 ? $"还剩 {left:0.#} 天"
+                            : $"已超出 {(-left):0.#} 天"),
             $"到期时间约 {ScanUtc.ToLocalTime().AddDays(AuthWindowDays):yyyy-MM-dd HH:mm}",
         };
+        if (left <= 0)
+            lines.Add(credUsable
+                ? "说明：已超过名义窗口，但本地凭证仍然有效（免扫换新一直成功），"
+                  + "不需要因此重扫。哪天服务端真的要求扫码，登录列会直接显示「需要扫码」。"
+                : "说明：已超过名义窗口，且本地凭证已不可用。");
         if (LongestChainDays > 0)
             lines.Add($"本机最长免扫链已 {LongestChainDays:0.#} 天（实测寿命，不是理论上限）");
         if (Chain is { Renewals: > 0 } c)
@@ -316,8 +367,12 @@ public sealed class BoxSummary
             lines.Add("提示：这是推算值。下次扫码后会写入精确基准，之后一直准确。");
         ScanAgeTip = string.Join("\n", lines);
 
+        // 告警只保留「建议重扫」的语气，不再说「随时可能要求重新扫码」——
+        // 超过 30 天却一直好用的情况已经出现好几次，那种措辞会让人以为马上要挂。
         if (left <= 0)
-            ScanWindowAlert = $"扫码已 {days:0.#} 天，超出 {AuthWindowDays} 天授权窗口 {(-left):0.#} 天，随时可能要求重新扫码。";
+            ScanWindowAlert = credUsable
+                ? $"已免扫 {days:0.#} 天（超过名义窗口 {AuthWindowDays} 天 {(-left):0.#} 天），凭证仍有效。方便时重扫一次可让授权窗口重新计时。"
+                : $"扫码已 {days:0.#} 天，超出 {AuthWindowDays} 天窗口 {(-left):0.#} 天，且本地凭证已不可用。";
         else if (days >= RescanWarnDays)
             ScanWindowAlert = $"扫码已 {days:0.#} 天，进入建议重扫区（窗口 {AuthWindowDays} 天，还剩 {left:0.#} 天）。";
         if (ScanWindowAlert.Length > 0 && !ScanKnown)

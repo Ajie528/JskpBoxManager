@@ -27,10 +27,22 @@ public static class Diagnostics
             if (b.RotationsTodayText.Length > 0)
                 sb.AppendLine($"    今日换key {b.RotationsTodayText} 次"
                     + $"（密钥 {(b.KeyAgeHours is double kh ? $"{kh:F1}h" : "?")}，满 {b.ForceRenewHoursEffective:0.#}h 强制续，还剩 {b.RotationsLeft} 次额度）");
+            try
+            {
+                var ages = Ilink.RevokeAges(b.Box, DateTime.Now.AddDays(-14));
+                if (ages.Count > 0)
+                    sb.AppendLine($"    实测寿命 近 14 天被判死 {ages.Count} 次：最短 {ages.Min():F2}h / 平均 {ages.Average():F2}h"
+                        + $" → 强制续期上限定为 {ProtocolRenew.EffectiveMaxAgeHours(b.Box):F1}h");
+            }
+            catch { }
             if (b.ScanDays is double sd)
+            {
+                double left = BoxSummary.AuthWindowDays - sd;
+                bool usable = b.Vault.Valid || b.Live.Valid;
                 sb.AppendLine($"    扫码窗口 已过 {sd:0.#} 天{(b.ScanKnown ? "" : "（推算）")}"
-                    + $" → 还剩 {Math.Max(0, BoxSummary.AuthWindowDays - sd):0.#} 天"
-                    + (b.RescanSuggested ? "  ← 建议重扫" : ""));
+                    + $" → {(left > 0 ? $"还剩 {left:0.#} 天" : usable ? $"超名义窗口 {(-left):0.#} 天（凭证仍有效，不必重扫）" : $"已超窗口 {(-left):0.#} 天且凭证失效")}"
+                    + (b.RescanSuggested ? "  ← 建议找机会重扫" : ""));
+            }
             if (b.Role != null && b.Role.HasName)
                 sb.AppendLine($"    role  {b.Role.Name} 等级={b.Role.Level} 区服={b.Role.ServerName} 攻击={b.Role.Attack} 读取于={b.Role.CapturedAt:MM-dd HH:mm}");
             if (NeedScan.Pending(b.Box)) sb.AppendLine($"    need-scan {NeedScan.Reason(b.Box)}{(NeedScan.Superseded(b.Box, b.Live) ? "（已被新凭证取代）" : "")}");

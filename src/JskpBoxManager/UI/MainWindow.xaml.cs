@@ -41,7 +41,34 @@ public partial class MainWindow : Window
             await StartupAsync();
         };
         Closed += (_, _) => { try { ProtocolServer.StopCurrent(); } catch { } };
+
+        // 窗口被别的程序盖住时，点任务栏图标常常只闪一下、还是回到 Cursor 后面。
+        // 这是 Windows 的前台锁：非前台进程的激活请求会被静默丢弃。
+        // 在 StateChanged / Activated 时再补一次强制激活，确保真的拉到最前面。
+        StateChanged += (_, _) =>
+        {
+            if (WindowState != WindowState.Minimized) RevealToFront();
+        };
+        Activated += (_, _) => { _lastActivate = DateTime.Now; };
+
         UpdateDetail(true);
+    }
+
+    DateTime _lastActivate = DateTime.MinValue;
+
+    /// <summary>把本窗口可靠地拉到前台（见 Win32.ActivateWindow 的说明）。</summary>
+    void RevealToFront()
+    {
+        try
+        {
+            var h = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+            if (h == IntPtr.Zero) return;
+            Win32.ActivateWindow(h);
+            Topmost = true;          // 短暂置顶，确保真的越过其它窗口
+            Topmost = false;
+            Activate();
+        }
+        catch { }
     }
 
     // ---------- 启动检查 ----------

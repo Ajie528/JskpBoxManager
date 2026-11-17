@@ -85,8 +85,11 @@ public partial class App : Application
         bool first = AcquireGuiLock(afterUpdate ? 30 : 0);
         if (!first && !args.Contains("--snapshot"))
         {
-            Log.App("管理界面已经在运行 → 本次启动退出");
-            MessageBox.Show("管理界面已经打开了（看看任务栏）。", AppInfo.ProductName, MessageBoxButton.OK, MessageBoxImage.Information);
+            // 已经有主窗口了：把它拉到前台，而不是只弹一句「已经打开了」。
+            // 以前这里只弹 MessageBox，用户点完还是得自己去任务栏找窗口，
+            // 而窗口被别的程序（比如 Cursor、浏览器）盖住时根本找不到。
+            Log.App("管理界面已经在运行 → 激活已有窗口");
+            try { ActivateExistingGui(); } catch (Exception ex) { Log.App("激活已有窗口失败：" + ex.Message); }
             Shutdown(0);
             return;
         }
@@ -99,6 +102,44 @@ public partial class App : Application
         if (from >= 0 && from + 1 < args.Length) w.ShowUpdatedNotice(args[from + 1]);
         int snap = Array.IndexOf(args, "--snapshot");
         if (snap >= 0 && snap + 1 < args.Length) w.SnapshotAfterLoad(args[snap + 1]);
+    }
+
+    /// <summary>
+    /// 把已经在运行的主窗口拉到前台。
+    ///
+    /// 用户反馈「点了 GUI 窗口还是被 Cursor 挡住」：WPF 的窗口在被其他程序遮挡时，
+    /// 单纯 <c>Activate()</c> 常常不生效（前台锁），必须走 Win32 的强制激活。
+    /// 这里枚举本进程的可见顶层窗口，找到标题符合同一产品名的那一个再激活。
+    /// </summary>
+    static void ActivateExistingGui()
+    {
+        var pid = (uint)Environment.ProcessId;
+        IntPtr found = IntPtr.Zero;
+        Win32.EnumWindows((h, _) =>
+        {
+            try
+            {
+                Win32.GetWindowThreadProcessId(h, out uint winPid);
+                if (winPid != pid) return true;
+                if (!Win32.IsWindowVisible(h)) return true;
+                var title = Win32.Title(h);
+                if (title.Length > 0 && title.StartsWith(AppInfo.ProductName, StringComparison.Ordinal))
+                {
+                    found = h;
+                    return false;                 // 找到了就停
+                }
+            }
+            catch { }
+            return true;
+        }, IntPtr.Zero);
+
+        if (found != IntPtr.Zero)
+        {
+            Win32.ActivateWindow(found);
+            return;
+        }
+        MessageBox.Show("管理界面已经打开了（看看任务栏）。", AppInfo.ProductName,
+            MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
     /// <summary>拿单实例锁；更新后重启时旧窗口可能还没退干净，最多重试 retrySeconds 秒。</summary>

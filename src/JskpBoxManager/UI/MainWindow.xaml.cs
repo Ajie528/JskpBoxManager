@@ -34,7 +34,7 @@ public partial class MainWindow : Window
         LoadTrimConfig();
         if (NotifyConfig.Load().ProbeEnabled) CredentialProbe.Start();
         RefreshProbePanel();
-        _timer.Tick += async (_, _) => { await RefreshAsync(); MaybeAutoTrim(); MaybeCheckNotify(); MaybeRefreshProbePanel(); };
+        _timer.Tick += async (_, _) => { await RefreshAsync(); MaybeAutoTrim(); MaybeCheckNotify(); MaybeRefreshProbePanel(); KeepAboveTopmost(); };
         Loaded += async (_, _) =>
         {
             AutoFitColumnWidths();
@@ -42,19 +42,61 @@ public partial class MainWindow : Window
         };
         Closed += (_, _) => { try { ProtocolServer.StopCurrent(); } catch { } };
 
-        // 窗口被别的程序盖住时，点任务栏图标常常只闪一下、还是回到 Cursor 后面。
-        // 这是 Windows 的前台锁：非前台进程的激活请求会被静默丢弃。
-        // 在 StateChanged / Activated 时再补一次强制激活，确保真的拉到最前面。
+        // 窗口被挡住有两个独立原因，必须同时处理：
+        //
+        // ① Windows 前台锁：非前台进程的 SetForegroundWindow 会被静默丢弃，
+        //    表现是「点了只闪一下任务栏图标」。→ 见 Win32.ActivateWindow。
+        //
+        // ② 对方是置顶窗口（WS_EX_TOPMOST）。Cursor 主窗口就带着这个标志，
+        //    只要它置顶，无论怎么激活，我们的窗口都会画在它**下面**。
+        //    这时唯一有效的办法是让我们自己也置顶——两个置顶窗口之间按激活顺序排前后，
+        //    于是「谁在用谁就在最上面」。
+        //
+        // 所以策略是：窗口**获得焦点时置顶**，失去焦点时立即取消置顶。
+        // 既保证点它一定看得见，又不会长期赖在所有窗口之上。
+        Activated += (_, _) => { _lastActivate = DateTime.Now; BecomeTopmost(true); };
+        Deactivated += (_, _) => { BecomeTopmost(false); };
         StateChanged += (_, _) =>
         {
-            if (WindowState != WindowState.Minimized) RevealToFront();
+            if (WindowState == WindowState.Minimized) { BecomeTopmost(false); return; }
+            RevealToFront();
         };
-        Activated += (_, _) => { _lastActivate = DateTime.Now; };
 
         UpdateDetail(true);
     }
 
     DateTime _lastActivate = DateTime.MinValue;
+
+    /// <summary>
+    /// 窗口在前台时，确保它真的画在所有窗口之上。
+    ///
+    /// Cursor 主窗口带 <c>WS_EX_TOPMOST</c>（置顶）。用户点我们的窗口，
+    /// 激活虽然成功了，但只要我们自己不置顶，画面仍然被 Cursor 盖住——
+    /// 看起来就是「点了没反应、还是被 Cursor 挡着」。
+    ///
+    /// 这里每 5 秒跟着刷新定时器检查一次：只要本窗口仍是前台/活动状态，
+    /// 就补上置顶。切走后由 <c>Deactivated</c> 立刻撤销，不会长期赖在最上面。
+    /// </summary>
+    void KeepAboveTopmost()
+    {
+        try
+        {
+            if (!IsActive || WindowState == WindowState.Minimized) return;
+            if (!Topmost) Topmost = true;
+        }
+        catch { }
+    }
+
+    /// <summary>切换本窗口的置顶状态（用于盖过同样置顶的 Cursor 等窗口）。</summary>
+    void BecomeTopmost(bool on)
+    {
+        try
+        {
+            if (Topmost == on) return;
+            Topmost = on;
+        }
+        catch { }
+    }
 
     /// <summary>把本窗口可靠地拉到前台（见 Win32.ActivateWindow 的说明）。</summary>
     void RevealToFront()
@@ -63,9 +105,10 @@ public partial class MainWindow : Window
         {
             var h = new System.Windows.Interop.WindowInteropHelper(this).Handle;
             if (h == IntPtr.Zero) return;
+            // 先置顶再激活：顺序很重要，反过来的话激活成功的瞬间
+            // 窗口仍会被置顶的 Cursor 压住，看起来像「点了没反应」。
+            BecomeTopmost(true);
             Win32.ActivateWindow(h);
-            Topmost = true;          // 短暂置顶，确保真的越过其它窗口
-            Topmost = false;
             Activate();
         }
         catch { }

@@ -354,18 +354,24 @@ public static class Win32
     /// 把窗口**可靠地**拉到前台并激活。
     ///
     /// <para>
-    /// 单纯调 <c>SetForegroundWindow</c> 经常无效：Windows 有「前台锁」——
-    /// 只有当前持有前台的进程才能移交前台，否则请求被静默丢弃（只闪一下任务栏图标）。
-    /// 这正是「点了窗口却被 Cursor 挡住」的原因。
+    /// 单纯调 <c>SetForegroundWindow</c> 经常无效，有两个独立原因：
     /// </para>
     ///
     /// <para>
-    /// 这里按可靠性从高到低依次尝试：
+    /// <b>前台锁</b>：只有当前持有前台的进程才能移交前台，否则请求被静默丢弃
+    /// （只闪一下任务栏图标）。
+    /// <b>对方置顶</b>：如果遮挡者是 <c>WS_EX_TOPMOST</c> 窗口（Cursor 就是这样），
+    /// 那么无论激活是否成功，我们的窗口都会画在它下面——必须自己也置顶才行，
+    /// 这一层由调用方（MainWindow）负责，这里只管激活。
+    /// </para>
+    ///
+    /// <para>
+    /// 按可靠性从高到低依次尝试：
     /// <list type="number">
     /// <item>窗口已最小化 → 先 <c>ShowWindow(SW_RESTORE)</c></item>
     /// <item><c>AttachThreadInput</c> 挂到当前前台线程，绕过前台锁后
     ///       <c>BringWindowToTop</c> + <c>SetForegroundWindow</c>，再解挂</item>
-    /// <item>临时置顶再取消置顶（TOPMOST 切换会让窗口跳到最前面）</item>
+    /// <item>临时置顶（不改回，交调用方管理）跳到最前，再激活</item>
     /// <item>模拟按一下 ALT 解除前台锁，再试一次</item>
     /// </list>
     /// </para>
@@ -398,10 +404,12 @@ public static class Win32
             }
             if (GetForegroundWindow() == h) return;
 
-            // ② 临时置顶再取消：绕过前台锁的常见兜底
+            // ② 置顶 + 激活。注意这里**不**取消置顶：
+            // 若遮挡者是置顶窗口（Cursor），一取消就又会被压回去。
+            // 置顶状态由调用方在失焦时统一撤销（MainWindow 的 Deactivated）。
             SetWindowPos(h, HWND_TOPMOST2, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+            BringWindowToTop(h);
             SetForegroundWindow(h);
-            SetWindowPos(h, HWND_NOTOPMOST2, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
             if (GetForegroundWindow() == h) return;
 
             // ③ 模拟 ALT：让系统认为用户有输入，从而解除前台锁

@@ -249,11 +249,31 @@ public static class Keepalive
 
         // 3) 密钥超龄：不管计划时刻，立刻续（宁可多滚一次，也不能等它自己过期）
         //
-        // forceHours 取「用户配置值」与该号实测可承受寿命的较小者：
-        // qb4 实测 key 只能活 7.0~7.15 小时（两次独立验证），而配置是 20 小时。
-        // 按 20 小时等，等于永远等它自然死；必须按实测值提前续。
+        // forceHours 取「用户配置值」与该号实测可承受寿命的较小者。
+        // qb4 的 key 实测只能活 4.96~7.15 小时，配置却是 20 小时——
+        // 按 20 小时等等于永远等它自然死，必须按实测值提前续。
+        //
+        // ★ 这里必须**绕过 minAge 门槛**。原来第 4 步「密钥太新就别动」会把
+        //   这个判断整个废掉：qb4 配的是 minAge=5h，而实测门槛只有 3.5h，
+        //   于是 4.0h 时第 3 步不满足、第 4 步又判「太新」，
+        //   等到 5.0h 才能出手——而服务端 4.96h 就已经判死了。
+        //   两个门槛叠加，实际生效值变成了 max(forceHours, minAge) = 5h，
+        //   等于把「按实测提前续」这件事彻底抵消。
+        //   现在：只要超过 forceHours 就续，minAge 只约束「日常计划」那一档。
         double forceHours = Math.Min(p.EffectiveForceRenewHours, ProtocolRenew.EffectiveMaxAgeHours(box));
         int quota = p.EffectiveMaxRotations;
+
+        // ★ 恶性循环刹车：连续被拒 + 今天已经换太多次 → 停止干预。
+        //
+        // 这类号（qb4 就是）继续续期只会让它死得更快。实测：
+        //   10-28 扫码后链条活了 9.9 天（那时每天换 2 次）
+        //   11-16 之后链条只活 1 天、最短 key 仅 4.96 小时（那时每天换 6 次）
+        // 同一微信号、同一设备指纹、同一 IP，唯一变量就是续期频次。
+        // 停下来让服务端「忘掉」这个异常设备，比再滚一次有价值得多。
+        if (ProtocolRenew.IsOvertRotating(box))
+            return WakeDecision.No($"today rotated {CredentialProbe.RotationsToday(box)}x "
+                + "and repeatedly rejected -> pause auto-renew to stop feeding risk control");
+
         if (keyAge is double aged && aged >= forceHours)
         {
             // 但连「今天已经换到上限」都超了的话，继续滚只会把整条链判成异常。

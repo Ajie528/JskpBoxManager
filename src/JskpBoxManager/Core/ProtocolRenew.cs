@@ -785,11 +785,43 @@ public static class ProtocolRenew
     /// <summary>
     /// 该号实际的密钥硬上限（小时）。
     ///
-    /// 从 <c>rotate-log</c> + <c>key-revoked</c> 事件里统计这个号历史上
-    /// 「key 签发 → 被判 -13」的实际寿命，取最短的那次当作天花板。
+    /// <para>
+    /// 从历史里统计这个号「key 签发 → 被判 -13」的实际寿命，取最短一次当天花板。
     /// 没有 -13 历史的号返回 <see cref="KeyMaxAgeHours"/>，行为完全不变。
-    ///
     /// 只统计最近 14 天，避免很早以前的偶发事件永久压低上限。
+    /// </para>
+    ///
+    /// <para>
+    /// <b>余量必须扣掉一个完整唤醒周期。</b>
+    /// 保活任务每小时唤醒一次，「到达门槛」不等于「立刻执行」，最坏要等下一个整点。
+    /// 2026-11-17 就是被这个吃掉的：
+    /// </para>
+    /// <code>
+    /// 16:19 换出 3e582e40，历史最短 7.00h → 门槛 = 7.00 × 0.7 = 4.9h
+    /// 20:16 唤醒：age 4.0h &lt; 4.9h  → 跳过
+    /// 21:16 唤醒：age 5.0h ≥ 4.9h  → 出手，但服务端在 4.96h 就已判死
+    /// </code>
+    /// <para>
+    /// 差 2.4 分钟，却因为「唤醒间隔整整一小时」必然错过。
+    /// 所以按 <c>最短寿命 × 0.7 - 1 小时</c> 算，把最坏情况的等待也扣进去。
+    /// </para>
+    ///
+    /// <para>
+    /// <b>下限为什么是 3 小时而不是更低：</b>
+    /// AutoAuth 是轮换语义的真请求，换得太勤本身就是风控特征，而且会形成
+    /// 「越续越短」的恶性循环 —— qb4 的实测数据清清楚楚：
+    /// </para>
+    /// <code>
+    /// 10-28 扫码 → 活了 9.9 天
+    /// 11-08 扫码 → 活了 0.7 天
+    /// 11-16 扫码 → 活了 1.0 天
+    /// </code>
+    /// <para>
+    /// 同一个微信号，越到后期链条越短，唯一变化就是续期次数越来越多
+    /// （从每天 2 次涨到每天 6 次）。所以宁可把下限卡在 3 小时，
+    /// 也不能为了「多活几小时」把它推进每天 9 次的节奏。
+    /// 真正的解法是减少干预：见 <see cref="IsOvertRotating"/>。
+    /// </para>
     /// </summary>
     public static double EffectiveMaxAgeHours(string box)
     {
@@ -797,12 +829,38 @@ public static class ProtocolRenew
         {
             var deaths = Ilink.RevokeAges(box, DateTime.Now.AddDays(-14));
             if (deaths.Count == 0) return KeyMaxAgeHours;
-            // 取最短一次，再扣 30% 余量。7.0h 的实测 → 上限 4.9h，安全地落在死亡线之前。
             double shortest = deaths.Min();
             if (shortest <= 0.5 || shortest >= KeyMaxAgeHours) return KeyMaxAgeHours;
-            return Math.Max(1.0, shortest * 0.7);
+            // 30% 余量 + 扣掉一个唤醒周期（1 小时），下限 3 小时。
+            return Math.Max(3.0, shortest * 0.7 - 1.0);
         }
         catch { return KeyMaxAgeHours; }
+    }
+
+    /// <summary>
+    /// 这个号是不是已经陷入「换得太勤 → 链条越活越短」的恶性循环。
+    ///
+    /// <para>
+    /// 判据：近 7 天内发生过 3 次以上 -13，且今天的换钥次数已经超过 4 次。
+    /// 这种号的正确处置不是「再续一次」，而是<b>停下来</b> ——
+    /// 每次续期都在消耗服务端对这个设备的信任额度，越续死得越快。
+    /// </para>
+    ///
+    /// <para>
+    /// 实测依据（qb4）：
+    /// 10-28 扫码后链条活了 9.9 天，当时每天换钥 2 次；
+    /// 11-16 之后每天换到 6 次，链条只活 1 天，最短一把 key 只有 4.96 小时。
+    /// 同一微信号、同一设备指纹、同一 IP，唯一变量就是续期频次。
+    /// </para>
+    /// </summary>
+    public static bool IsOvertRotating(string box)
+    {
+        try
+        {
+            if (Ilink.RevokeAges(box, DateTime.Now.AddDays(-7)).Count < 3) return false;
+            return CredentialProbe.RotationsToday(box) > 4;
+        }
+        catch { return false; }
     }
 
     /// <summary>这把凭证是不是已经超过「该号实际能承受的」硬上限，必须马上续期。</summary>

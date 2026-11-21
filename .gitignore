@@ -23,3 +23,7 @@ update.json
 samples/*/
 # 例外：-13 拒绝响应的首次实测留档（已去掉 uin 和完整报文）
 !samples/autoauth-样本-20261110/
+
+# 临时探索目录（内存/mmtls 调研用，含进程转储等大文件，不进版本库）
+explore-mem/
+explore-*/

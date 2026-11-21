@@ -1112,17 +1112,62 @@ public sealed class LaunchSession
                 // 运行中不能用协议续期（服务端作废旧 key 后运行时会把旧值写回文件、并断掉游戏会话，见 6F），
                 // 也不能只重开 GameUrl（app session 仍有效，运行时不会发 AutoAuth，见 9A.2）。
                 // 所以这里只记警告，等游戏关掉的第一时间再续（见下方 goneTicks 分支 / 常驻循环）。
+                //
+                // ★ 但「等游戏关掉」不能无限等。qb4 是 24 小时挂机的号，
+                //   2026-11-21 就从 17h 一路放到 23.9h，中间七次保活全部跳过，
+                //   最后运行时自己判失效、清空凭证、游戏掉线。
+                //   所以超过「该号实测寿命」整整一倍还没等到游戏关，就必须主动重启一次续期。
+                //   牺牲几分钟游戏时间，换链条不断——这比直接掉线代价小得多。
                 if (ProtocolRenew.KeyOverdue(_box))
                 {
                     _renewPending = true;
+                    double hardLimit = ProtocolRenew.EffectiveMaxAgeHours(_box);
+                    double ageNow = ProtocolRenew.KeyAgeHours(_box) ?? 0;
+                    bool mustRestart = hardLimit < ProtocolRenew.KeyMaxAgeHours
+                                       && ageNow >= hardLimit * 2;
+
+                    if (mustRestart)
+                    {
+                        L($"看门：密钥已用 {ageNow:F1}h，超过该号实测寿命 {hardLimit:F1}h 的两倍，"
+                          + "等不到游戏关闭 → 主动重启续期（约 1 分钟，之后自动重进游戏）");
+                        Phase(BoxPhase.Starting, "密钥快到期，正在自动续期…");
+                        BoxRuntime.StopSoft(_box, true);
+                        Thread.Sleep(1500);
+                        BoxRuntime.StopForce(_box, false);
+                        RenewWhenStopped();
+                        // 续完把游戏重新拉起来，玩家视角只是闪了一下
+                        try
+                        {
+                            BoxRuntime.EnsureWxRuntimeInBox(_box);
+                            BoxRuntime.Warmup(_box, false);
+                            BoxRuntime.ClearCrashRestore(_box);
+                            BoxRuntime.StartBrowser(_box, "auto-renew-reopen");
+                        }
+                        catch (Exception ex) { L("自动续期后重开失败：" + ex.Message); }
+                        _renewPending = false;
+                        // 请求已由这次重启消化掉了，必须清掉：
+                        // 不清的话，重开之后 TakeRenewRequest 立刻又返回 true，会陷入「不停重启」。
+                        try { TakeRenewRequest(); } catch { }
+                        hadGame = false;
+                        goneTicks = 0;
+                        uiGoneTicks = 0;
+                        gameStartedAt = DateTime.MinValue;
+                        waitGameDeadline = DateTime.Now.AddMinutes(15);
+                        lastOverdueWarn = DateTime.MinValue;
+                        continue;
+                    }
+
                     if ((DateTime.Now - lastOverdueWarn).TotalHours >= 1)
                     {
                         lastOverdueWarn = DateTime.Now;
-                        L($"看门：密钥已用 {ProtocolRenew.KeyAgeText(_box)}（上限 {ProtocolRenew.KeyMaxAgeHours} 小时）"
+                        L($"看门：密钥已用 {ProtocolRenew.KeyAgeText(_box)}（该号上限 {hardLimit:F1}h）"
                           + " → 游戏一关闭就立即续期（不打断游戏）");
                     }
                 }
-                TakeRenewRequest();
+                // 注意：**不能**在这里 TakeRenewRequest()。
+                // 那个方法会把请求文件删掉，而现在游戏正跑着、根本没法真续期，
+                // 请求就等于被白白吃掉了（等于保活白提醒一次）。
+                // 让请求留在文件里，等游戏关闭那一支（goneTicks >= 3）自然会消费它。
                 continue;
             }
 
@@ -1417,14 +1462,28 @@ public sealed class LaunchSession
 
     /// <summary>
     /// 常驻每隔多少小时主动重开游戏做一次真实 AutoAuth（远小于免扫链约一天的寿命）。
+    ///
+    /// 与 <see cref="ResidentKeyMaxAgeHours"/> 一样要按该号实测寿命自适应：
+    /// qb4 的 key 最短只活 4.96 小时，固定等 6 小时的话，每轮都会在续期前先死掉。
+    /// 取「6 小时」与「该号上限 × 1.2」的较小值，保证总在寿命终点之前动手。
     /// </summary>
-    const double ResidentRenewHours = 6;
+    double ResidentRenewHours => Math.Min(6.0, ProtocolRenew.EffectiveMaxAgeHours(_box) * 1.2);
 
     /// <summary>
-    /// 密钥年龄到这个阈值就必须续期：实测免扫链约一天就撞墙，留 4 小时余量。
-    /// 已统一到 <see cref="ProtocolRenew.KeyMaxAgeHours"/>，这里是同一数值的别名。
+    /// 常驻模式下，密钥年龄到这个阈值就必须续期。
+    ///
+    /// <para>
+    /// 这里**不能**用固定的 <see cref="ProtocolRenew.KeyMaxAgeHours"/>（20 小时）：
+    /// 有的号实测寿命远低于它。qb4 最短一把 key 只活 4.96 小时，
+    /// 用 20 小时等于永远等它自然死——2026-11-21 就是这样把密钥放到 23.9 小时、
+    /// 最后运行时判失效、清空凭证、整条链断掉。
+    /// </para>
+    /// <para>
+    /// 改为「全局上限与该号实测寿命取较小值」，也就是走
+    /// <see cref="ProtocolRenew.EffectiveMaxAgeHours"/>。没有 -13 历史的号行为不变。
+    /// </para>
     /// </summary>
-    const double ResidentKeyMaxAgeHours = ProtocolRenew.KeyMaxAgeHours;
+    double ResidentKeyMaxAgeHours => ProtocolRenew.EffectiveMaxAgeHours(_box);
 
     /// <summary>当前这把密钥空闲多久了（小时）；没有有效凭证时返回 null。</summary>
     double? LiveKeyAgeHours() => ProtocolRenew.KeyAgeHours(_box);

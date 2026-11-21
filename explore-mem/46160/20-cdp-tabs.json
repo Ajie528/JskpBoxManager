@@ -1,0 +1,51 @@
+﻿[ {
+   "description": "",
+   "devtoolsFrontendUrl": "https://chrome-devtools-frontend.appspot.com/serve_rev/@4069b7463151939501cfbce02512621ce07c37f/inspector.html?ws=127.0.0.1:9301/devtools/page/E3FCB07525A0E53229417F1DF53678F5",
+   "faviconUrl": "https://cdn.nfa.qq.com/gmaster_prod/202607/684388356/uCClQAGb.png",
+   "id": "E3FCB07525A0E53229417F1DF53678F5",
+   "title": "QQ浏览器游戏中心",
+   "type": "page",
+   "url": "https://pcgame.qqbrowser.qq.com/main?openGameId=wx31a9c726536cdacc&openGameSource=5",
+   "webSocketDebuggerUrl": "ws://127.0.0.1:9301/devtools/page/E3FCB07525A0E53229417F1DF53678F5"
+}, {
+   "description": "",
+   "devtoolsFrontendUrl": "https://chrome-devtools-frontend.appspot.com/serve_rev/@4069b7463151939501cfbce02512621ce07c37f/inspector.html?ws=127.0.0.1:9301/devtools/page/FE7FDA62BFA4EBEA37B5A6B94BECBB76",
+   "id": "FE7FDA62BFA4EBEA37B5A6B94BECBB76",
+   "title": "AI助手",
+   "type": "page",
+   "url": "chrome://desk-search-host/",
+   "webSocketDebuggerUrl": "ws://127.0.0.1:9301/devtools/page/FE7FDA62BFA4EBEA37B5A6B94BECBB76"
+}, {
+   "description": "",
+   "devtoolsFrontendUrl": "https://chrome-devtools-frontend.appspot.com/serve_rev/@4069b7463151939501cfbce02512621ce07c37f/inspector.html?ws=127.0.0.1:9301/devtools/page/F35A0AA6A202E1E0793F14FC31789A76",
+   "id": "F35A0AA6A202E1E0793F14FC31789A76",
+   "title": "QQ浏览器新标签页",
+   "type": "background_page",
+   "url": "chrome-extension://njpimkafhijeajnkikibmjfpmehinibe/_generated_background_page.html",
+   "webSocketDebuggerUrl": "ws://127.0.0.1:9301/devtools/page/F35A0AA6A202E1E0793F14FC31789A76"
+}, {
+   "description": "",
+   "devtoolsFrontendUrl": "https://chrome-devtools-frontend.appspot.com/serve_rev/@4069b7463151939501cfbce02512621ce07c37f/inspector.html?ws=127.0.0.1:9301/devtools/page/BD93D4B4464A6A5FCC374C545B3E55AF",
+   "id": "BD93D4B4464A6A5FCC374C545B3E55AF",
+   "title": "数科网维OFD阅读器",
+   "type": "background_page",
+   "url": "chrome-extension://ljbnopkhabpeaciiihlkdmgmenpcjgfo/_generated_background_page.html",
+   "webSocketDebuggerUrl": "ws://127.0.0.1:9301/devtools/page/BD93D4B4464A6A5FCC374C545B3E55AF"
+}, {
+   "description": "",
+   "devtoolsFrontendUrl": "https://chrome-devtools-frontend.appspot.com/serve_rev/@4069b7463151939501cfbce02512621ce07c37f/inspector.html?ws=127.0.0.1:9301/devtools/page/06F7B4D5028C2876D1F991BB2DBB560D",
+   "id": "06F7B4D5028C2876D1F991BB2DBB560D",
+   "title": "翻译",
+   "type": "background_page",
+   "url": "chrome-extension://ipnlnfkgblpcjpbcfmghfldkjgipbecb/background.html",
+   "webSocketDebuggerUrl": "ws://127.0.0.1:9301/devtools/page/06F7B4D5028C2876D1F991BB2DBB560D"
+}, {
+   "description": "",
+   "devtoolsFrontendUrl": "https://chrome-devtools-frontend.appspot.com/serve_rev/@4069b7463151939501cfbce02512621ce07c37f/worker_app.html?ws=127.0.0.1:9301/devtools/page/79759B9EE4495A9D7848ACAF1A4CF042",
+   "id": "79759B9EE4495A9D7848ACAF1A4CF042",
+   "title": "Service Worker chrome-extension://aaplhnhcdcgkjbijfkjdbfmiagjojdjf/assets/background.js",
+   "type": "service_worker",
+   "url": "chrome-extension://aaplhnhcdcgkjbijfkjdbfmiagjojdjf/assets/background.js",
+   "webSocketDebuggerUrl": "ws://127.0.0.1:9301/devtools/page/79759B9EE4495A9D7848ACAF1A4CF042"
+} ]
+

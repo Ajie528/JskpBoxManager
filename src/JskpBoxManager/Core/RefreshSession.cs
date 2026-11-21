@@ -114,17 +114,21 @@ public sealed class RefreshSession
             var mode = BoxRuntime.LauncherMode(_box);
             if (mode is not ("launch" or "resident")) return false;
 
-            // 游戏正开着时看门循环本身每 30 秒就在存凭证，游戏里的会话是有效的，不必再滚一次。
-            // 只有常驻（只剩运行时、没有游戏窗）才需要按请求做真实 AutoAuth，否则密钥会一路放到自然寿命。
+            // 游戏正开着时不能做协议续期（会断掉游戏会话，见 ProtocolRenew.CheckRenewable）。
+            // 但**也不能什么都不做**：qb4 在 2026-11-21 就是这样——
+            // 游戏 24 小时挂着，每小时保活都从这里一句「会话有效，无需续期」退出，
+            // 密钥从 17h 一路放到 23.9h，最后运行时自己判失效、清空凭证、整条链断掉。
+            //
+            // 正确做法：仍然写续期请求。看门循环收到请求后会自己判断——
+            // 正常情况下它等到「游戏关闭」那一瞬间才真续；
+            // 而密钥超过实测寿命两倍时，它会主动重启游戏完成续期（见 WatchLoop 的 mustRestart 分支）。
             var phase = BoxStatusFile.Read(_box)?.Phase;
-            if (phase == BoxPhase.InGame)
-            {
-                L("保活：游戏在受看门的沙箱里运行 → 会话有效，无需续期");
-                return true;
-            }
             File.WriteAllText(AppPaths.BoxRenewRequest(_box),
                 $"requested {DateTime.Now:o} pid={Environment.ProcessId}\r\n");
-            L($"保活：已向看门进程写入续期请求（密钥年龄={ProtocolRenew.KeyAgeText(_box)})");
+            L(phase == BoxPhase.InGame
+                ? $"保活：游戏运行中不能直接续期 → 已请看门进程在安全时机续（密钥年龄={ProtocolRenew.KeyAgeText(_box)}，"
+                  + $"该号上限 {ProtocolRenew.EffectiveMaxAgeHours(_box):F1}h）"
+                : $"保活：已向看门进程写入续期请求（密钥年龄={ProtocolRenew.KeyAgeText(_box)})");
             return true;
         }
         catch { return false; }

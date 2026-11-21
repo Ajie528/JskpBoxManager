@@ -838,6 +838,26 @@ public static class ProtocolRenew
     }
 
     /// <summary>
+    /// 该号的「实测最短寿命」（小时）：历史上 key 从签发出生到被服务端判 -13 的最短时长。
+    /// 没有 -13 历史、或样本不合理时返回 <see cref="KeyMaxAgeHours"/>。
+    ///
+    /// 与 <see cref="EffectiveMaxAgeHours"/> 的区别：那个是「该主动续期的时刻」
+    /// （已经预留余量并扣掉唤醒周期），这个是「再不动手就必死的硬线」。
+    /// 看门循环用它决定「游戏一直不关时，最晚什么时候必须强行重启续期」。
+    /// </summary>
+    public static double ShortestObservedLifeHours(string box)
+    {
+        try
+        {
+            var deaths = Ilink.RevokeAges(box, DateTime.Now.AddDays(-14));
+            if (deaths.Count == 0) return KeyMaxAgeHours;
+            double shortest = deaths.Min();
+            return shortest <= 0.5 || shortest >= KeyMaxAgeHours ? KeyMaxAgeHours : shortest;
+        }
+        catch { return KeyMaxAgeHours; }
+    }
+
+    /// <summary>
     /// 这个号是不是已经陷入「换得太勤 → 链条越活越短」的恶性循环。
     ///
     /// <para>

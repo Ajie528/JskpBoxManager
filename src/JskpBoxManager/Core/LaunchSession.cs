@@ -1123,13 +1123,25 @@ public sealed class LaunchSession
                     _renewPending = true;
                     double hardLimit = ProtocolRenew.EffectiveMaxAgeHours(_box);
                     double ageNow = ProtocolRenew.KeyAgeHours(_box) ?? 0;
-                    bool mustRestart = hardLimit < ProtocolRenew.KeyMaxAgeHours
-                                       && ageNow >= hardLimit * 2;
+                    double lifeLine = ProtocolRenew.ShortestObservedLifeHours(_box);
+                    bool hasHistory = lifeLine < ProtocolRenew.KeyMaxAgeHours;
+
+                    // 「最晚必须动手」的时刻：
+                    //   · 有实测历史 → 该号实测最短寿命 × 0.85（赶在死亡线之前）
+                    //   · 无历史（普通号）→ 全局硬上限 20h 的 0.85
+                    //
+                    // 为什么不能等「hardLimit × 2」：hardLimit 已经是「该动手」的时刻了
+                    // （扣过 30% 余量 + 一个唤醒周期），再往上翻倍必然越过死亡线。
+                    // qb4 实测最短 4.96h、hardLimit 3.0h —— 若按 3.0×2=6h 才动，
+                    // 6 小时早就死了（这正是 11-21 密钥被放到 23.9h 的同一个错误）。
+                    double restartAt = hasHistory ? lifeLine * 0.85 : ProtocolRenew.KeyMaxAgeHours * 0.85;
+                    bool mustRestart = ageNow >= restartAt;
 
                     if (mustRestart)
                     {
-                        L($"看门：密钥已用 {ageNow:F1}h，超过该号实测寿命 {hardLimit:F1}h 的两倍，"
-                          + "等不到游戏关闭 → 主动重启续期（约 1 分钟，之后自动重进游戏）");
+                        L($"看门：密钥已用 {ageNow:F1}h，已到该号必须续期的时刻 {restartAt:F1}h"
+                          + $"（实测最短寿命 {lifeLine:F1}h，主动续期点 {hardLimit:F1}h 已过，等不到游戏关闭）"
+                          + " → 主动重启续期（约 1 分钟，之后自动重进游戏）");
                         Phase(BoxPhase.Starting, "密钥快到期，正在自动续期…");
                         BoxRuntime.StopSoft(_box, true);
                         Thread.Sleep(1500);

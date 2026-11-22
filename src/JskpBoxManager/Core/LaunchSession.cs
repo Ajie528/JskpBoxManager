@@ -1317,6 +1317,8 @@ public sealed class LaunchSession
 
         int failStreak = 0;
         int ilinkDownTicks = 0;
+        int renewFailStreak = 0;              // 续期连续失败次数（用于指数退避）
+        var renewSkipUntil = DateTime.MinValue; // 退避到什么时候
         var lastTrim = DateTime.MinValue;
         var lastCred = DateTime.MinValue;
         var lastLog = DateTime.MinValue;
@@ -1401,11 +1403,39 @@ public sealed class LaunchSession
 
             var keyAge = LiveKeyAgeHours();
             bool keyAging = keyAge != null && keyAge.Value >= ResidentKeyMaxAgeHours;
-            if ((DateTime.Now - lastRenew).TotalHours >= ResidentRenewHours || keyAging || TakeRenewRequest())
+            bool renewBackingOff = DateTime.Now < renewSkipUntil;
+            if (!renewBackingOff
+                && ((DateTime.Now - lastRenew).TotalHours >= ResidentRenewHours || keyAging || TakeRenewRequest()))
             {
                 if (keyAging) L($"常驻：密钥已用 {keyAge:F1}h old (limit {ResidentKeyMaxAgeHours}h) -> renew now");
                 lastRenew = DateTime.Now;
-                ResidentRenew(); // 出扫码页时不藏窗，主循环下一轮看到扫码页转入 need-scan
+                var rr = ResidentRenew(); // 出扫码页时不藏窗，主循环下一轮看到扫码页转入 need-scan
+
+                // ★ 续期失败必须退避，否则会死循环。
+                //
+                // 原来这里无条件 continue：ResidentRenew 失败后密钥年龄没变化
+                // （还是 20.5h），下一轮 keyAging 依旧为 true，立刻再触发一次续期，
+                // 又失败、又重试……2026-11-22 从 01:27 到 19:38 就这样
+                // **连续 18 小时每 2 分钟重启一次游戏**，把 qb4 彻底折腾死。
+                //
+                // 现在：失败后按指数退避（5 分钟起，最长 2 小时），
+                // 期间不再重试。真的需要扫码时会由 NeedScan 标记接管。
+                if (rr == ResidentRenewResult.Rolled)
+                {
+                    renewFailStreak = 0;
+                }
+                else if (rr == ResidentRenewResult.NeedScan)
+                {
+                    L("常驻：出现二维码 → 停止自动续期，等待人工扫码");
+                    break;      // 交给外层 need-scan 流程
+                }
+                else
+                {
+                    renewFailStreak++;
+                    double backoffMin = Math.Min(120, 5 * Math.Pow(2, Math.Min(renewFailStreak - 1, 5)));
+                    renewSkipUntil = DateTime.Now.AddMinutes(backoffMin);
+                    L($"常驻：续期未成功（连续 {renewFailStreak} 次）→ 退避 {backoffMin:F0} 分钟后再试");
+                }
                 continue;
             }
 
@@ -1470,6 +1500,10 @@ public sealed class LaunchSession
                 return false;
             }
         }
+        // 只有 break 跳出（例如「出现二维码 → 停止自动续期」）才会走到这里。
+        // 返回 false 表示「结束看门」，交给外层流程处理 need-scan。
+        L("常驻：已退出常驻循环");
+        return false;
     }
 
     /// <summary>

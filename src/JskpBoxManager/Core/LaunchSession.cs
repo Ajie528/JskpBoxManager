@@ -623,6 +623,12 @@ public sealed class LaunchSession
         bool sawApp = false, sawWx = false, gameUrlNudged = false, pageReloadDone = false;
         int mpFailTicks = 0, wxGoneAfterSeen = 0, missingAfterSeen = 0;
         DateTime? noUiSince = null, gameSince = null;
+
+        // 页面假死探测（见 HasVisibleUi 分支里的说明）：没有进展多久算卡住、重开过几次。
+        var lastPageProbe = DateTime.MinValue;
+        DateTime pageStallSince = DateTime.MinValue;
+        Cdp.PageState lastPage = null;
+        int pageProbeFails = 0, pageReopens = 0;
         // 有可用免扫凭证时，授权扫码层只是加载期过早弹出来的挡板：关掉它让 GameUrl 去自动授权。
         // 以前是原地等 60 秒就判「必须扫码」，但扫码层不下线时 ilink 根本不启动，AutoAuth 永远不会发出，
         // 等于必然失败（qb15 11-04 12:07 就是这样：手动关掉扫码框后 6 秒 AutoAuth ret=0 进游戏）。
@@ -914,6 +920,64 @@ public sealed class LaunchSession
                     noUiSince = null;
                     double uiWait = (DateTime.Now - launchStarted).TotalSeconds;
                     if (LogDue(30)) L("浏览器界面（不是扫码页）→ 等游戏...");
+
+                    // ★ 页面就绪探测：窗口标题叫「游戏中心」不代表页面真的跑起来了。
+                    //   实测 qb1 2026-11-23 09:02：readyState 永远是 interactive、load 事件从不触发、
+                    //   49 张图里 36 张 complete 永远为 false，而同一页面里 fetch 同一张 CDN 图只要 162ms
+                    //   —— 网络没慢，是这个渲染/网络服务假死了。这种页面永远不会去拉起小程序，
+                    //   以前只能干等到 90 秒判「没等到微信运行时」再冷启动，白烧一次尝试。
+                    //   现在：页面卡住（资源数/图片进度十几秒零增长）就关标签重开，比清缓存重刷快得多。
+                    if (!sawWx && !waitingQr)
+                    {
+                        if (uiWait >= 15 && (DateTime.Now - lastPageProbe).TotalSeconds >= 6)
+                        {
+                            lastPageProbe = DateTime.Now;
+                            var st = Cdp.ProbeGameCenter(_box);
+                            if (st == null)
+                            {
+                                // 探测不到**不算**卡死：标签页被切到后台时，CDP eval 会直接超时
+                                // （实测游戏窗顶到前台后对游戏中心页执行 JS，10 秒都不回），
+                                // 那种情况下页面本身可能是好的。这里只记一笔，交给下面 40/90 秒的老路径兜底。
+                                pageProbeFails++;
+                                if (pageProbeFails == 1 || pageProbeFails % 5 == 0)
+                                    L($"页面探测无响应（连续 {pageProbeFails} 次，标签页可能在后台被节流）→ 先按老流程等");
+                            }
+                            else
+                            {
+                                pageProbeFails = 0;
+                                bool progressed = lastPage != null
+                                    && (st.ResourceCount > lastPage.ResourceCount || st.ImagesUnloaded < lastPage.ImagesUnloaded);
+                                if (st.Loaded) pageStallSince = DateTime.MinValue;
+                                else if (progressed || pageStallSince == DateTime.MinValue) pageStallSince = DateTime.Now;
+                                lastPage = st;
+                            }
+                        }
+
+                        double stalledSec = pageStallSince == DateTime.MinValue ? 0 : (DateTime.Now - pageStallSince).TotalSeconds;
+                        if (stalledSec >= 14)
+                        {
+                            var stuck = lastPage?.Describe() ?? "探测不到页面状态";
+                            if (pageReopens < 2)
+                            {
+                                pageReopens++;
+                                L($"页面卡住 {stalledSec:F0} 秒没有进展（{stuck}）→ 关掉标签页重开游戏中心（第 {pageReopens}/2 次）");
+                                int closedStuck = 0;
+                                try { closedStuck = Cdp.CloseGameCenterTabs(_box); } catch { }
+                                L($"假死页已关闭 标签数={closedStuck}");
+                                pageStallSince = DateTime.MinValue;
+                                lastPage = null;
+                                pageReloadDone = true;   // 重开比 40 秒那次 CDP 刷新更强，别重复做
+                                gameUrlNudged = true;    // 也免掉 20 秒没窗口时的再次拉起
+                                launchStarted = DateTime.Now;
+                                try { BoxRuntime.StartBrowser(_box, "page-stuck"); }
+                                catch (Exception ex) { L("重开游戏中心失败：" + ex.Message); }
+                                continue;
+                            }
+                            L($"页面重开后依旧卡住（{stuck}）→ 冷启动重开");
+                            return new(false, true, false, sawQr, credCleared && !revoked);
+                        }
+                    }
+
                     if (!sawWx && !waitingQr && !pageReloadDone && uiWait >= 40)
                     {
                         L("界面 40 秒没等到微信 → CDP 刷新一次游戏中心");

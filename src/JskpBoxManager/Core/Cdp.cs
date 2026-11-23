@@ -403,21 +403,112 @@ public static class Cdp
     public static int CloseQrTabs(string box) =>
         Tabs(box).Where(t => t.Type is "" or "page" or "iframe").Where(t => t.Id.Length > 0 && IsQrTab(t.Url, t.Title)).Count(t => Close(box, t.Id));
 
-    /// <summary>游戏中心页空白/不注入微信时，Page.reload 比整箱冷启快得多。</summary>
-    public static bool ReloadGameCenter(string box)
+    /// <summary>当前的游戏中心标签页（游戏中心是拉起小游戏的唯一入口，假死时也靠它重开）。</summary>
+    public static Tab GameCenterTab(string box) =>
+        Tabs(box).FirstOrDefault(t => t.Type == "page"
+            && (t.Url.Contains("openGameId") || t.Url.Contains("pcgame.qqbrowser.qq.com"))
+            && t.Ws.StartsWith("ws://", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>关掉游戏中心标签页，让下一次 <see cref="BoxRuntime.StartBrowser"/> 重新拉起一个干净的页面。</summary>
+    public static int CloseGameCenterTabs(string box)
     {
-        var tab = Tabs(box).FirstOrDefault(t => t.Type == "page" && (t.Url.Contains("openGameId") || t.Url.Contains("pcgame.qqbrowser.qq.com")) && t.Ws.StartsWith("ws://"));
+        var tabs = Tabs(box).Where(t => t.Type is "" or "page").Where(t => t.Id.Length > 0)
+            .Where(t => t.Url.Contains("openGameId") || t.Url.Contains("pcgame.qqbrowser.qq.com")).ToList();
+        return tabs.Count(t => Close(box, t.Id));
+    }
+
+    /// <summary>游戏中心页此刻的加载状态。<see cref="Loaded"/> 才是「页面真的跑起来了」。</summary>
+    public sealed record PageState(string Url, string ReadyState, bool Loaded, int ResourceCount, int PendingResources, int Images, int ImagesUnloaded, int FrameChildren)
+    {
+        /// <summary>一行可读的状态，写日志用（不含敏感 URL 参数，只留路径前段）。</summary>
+        public string Describe()
+        {
+            var u = Url ?? "";
+            int q = u.IndexOf('?');
+            if (q > 0) u = u[..q];
+            return $"url={u} readyState={ReadyState} load={(Loaded ? "已触发" : "未触发")}"
+                 + $" 资源={ResourceCount}(待回 {PendingResources}) 图={Images - ImagesUnloaded}/{Images} 游戏框子节点={FrameChildren}";
+        }
+    }
+
+    /// <summary>
+    /// 探测游戏中心页到底加没加载完。
+    ///
+    /// 为什么需要它：<see cref="BoxView.HasVisibleUi"/> 只看窗口标题，而「标题已经叫游戏中心」
+    /// 和「页面真的跑起来了」完全是两件事。实测 qb1 2026-11-23 09:02 两次尝试都卡在这：
+    /// 页面 readyState 永远是 interactive、load 事件从不触发、49 张图里 36 张 complete 永远为 false，
+    /// 而**同一个页面里** fetch 拉同一张 CDN 图只要 162ms —— 网络没慢，是这个渲染/网络服务卡死了。
+    /// 那种页面永远不会去拉起小程序（wx31a9…），干等只会白白烧掉一次尝试。
+    ///
+    /// 返回 null = 探测不到（CDP 没起来 / 页面完全不响应），调用方按「探测失败」计数即可。
+    /// </summary>
+    public static PageState ProbeGameCenter(string box, int timeoutSec = 3)
+    {
+        var tab = GameCenterTab(box);
+        if (tab == null) return null;
+        const string expr = """
+(function(){
+  try {
+    var res = (performance.getEntriesByType('resource') || []);
+    var pending = 0;
+    for (var i = 0; i < res.length; i++) if (res[i].responseEnd === 0) pending++;
+    var imgs = document.querySelectorAll('img');
+    var unloaded = 0;
+    for (var i = 0; i < imgs.length; i++) if (!imgs[i].complete) unloaded++;
+    var f = document.getElementById('game-h5-iframe');
+    return JSON.stringify({
+      rs: document.readyState,
+      load: !!(performance.timing && performance.timing.loadEventEnd > 0),
+      res: res.length,
+      pending: pending,
+      img: imgs.length,
+      imgUnloaded: unloaded,
+      frame: f ? f.children.length : -1
+    });
+  } catch (e) { return 'ERR:' + e; }
+})()
+""";
+        using var c = CdpClient.Connect(tab.Ws, timeoutSec);
+        if (c == null) return null;
+        string raw;
+        try { raw = c.EvaluateString(expr, false, timeoutSec); }
+        catch { return null; }
+        if (string.IsNullOrWhiteSpace(raw) || !raw.TrimStart().StartsWith("{")) return null;
+        JsonObject o;
+        try { o = JsonNode.Parse(raw) as JsonObject; } catch { return null; }
+        if (o == null) return null;
+        var rs = JsonFile.Str(o, "rs");
+        bool load = JsonFile.Bool(o, "load") == true;
+        return new PageState(tab.Url, rs, load && rs == "complete",
+            JsonFile.Int(o, "res") ?? 0, JsonFile.Int(o, "pending") ?? 0,
+            JsonFile.Int(o, "img") ?? 0, JsonFile.Int(o, "imgUnloaded") ?? 0,
+            JsonFile.Int(o, "frame") ?? -1);
+    }
+
+    /// <summary>
+    /// 游戏中心页空白/不注入微信时，Page.reload 比整箱冷启快得多。
+    ///
+    /// <paramref name="ignoreCache"/> 默认 <c>false</c>：**不要**在页面假死时清缓存重刷。
+    /// qb1 2026-11-23 就吃过这个亏——卡住时 36 张图还是 pending，ignoreCache 等于把现场重置，
+    /// 又得重下一遍再等一次；普通 reload 复用已有缓存，快得多也更容易过。
+    /// 只有明确判定「缓存里的旧资源坏了」时才传 true。
+    /// </summary>
+    public static bool ReloadGameCenter(string box, bool ignoreCache = false)
+    {
+        var tab = GameCenterTab(box);
         if (tab == null) return false;
         try
         {
             using var ws = new ClientWebSocket();
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
             ws.ConnectAsync(new Uri(tab.Ws), cts.Token).GetAwaiter().GetResult();
-            var payload = Encoding.UTF8.GetBytes("{\"id\":1,\"method\":\"Page.reload\",\"params\":{\"ignoreCache\":true}}");
+            var payload = Encoding.UTF8.GetBytes(ignoreCache
+                ? "{\"id\":1,\"method\":\"Page.reload\",\"params\":{\"ignoreCache\":true}}"
+                : "{\"id\":1,\"method\":\"Page.reload\",\"params\":{}}");
             ws.SendAsync(payload, WebSocketMessageType.Text, true, cts.Token).GetAwaiter().GetResult();
             var buf = new byte[4096];
             try { ws.ReceiveAsync(buf, cts.Token).GetAwaiter().GetResult(); } catch { }
-            Log.Box(box, "CDP 刷新游戏中心页（忽略缓存）");
+            Log.Box(box, ignoreCache ? "CDP 刷新游戏中心页（忽略缓存）" : "CDP 刷新游戏中心页（复用缓存）");
             return true;
         }
         catch (Exception ex)

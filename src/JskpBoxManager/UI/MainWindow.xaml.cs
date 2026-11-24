@@ -32,9 +32,8 @@ public partial class MainWindow : Window
         SyncProtocolUi();
         SyncNotifyUi();
         LoadTrimConfig();
-        if (NotifyConfig.Load().ProbeEnabled) CredentialProbe.Start();
-        RefreshProbePanel();
-        _timer.Tick += async (_, _) => { await RefreshAsync(); MaybeAutoTrim(); MaybeCheckNotify(); MaybeRefreshProbePanel(); KeepAboveTopmost(); };
+        // 1.5.63 起不再启动「主动探测」后台线程（AutoAuthKey 实测无寿命上限，探测纯烧额度）
+        _timer.Tick += async (_, _) => { await RefreshAsync(); MaybeAutoTrim(); MaybeCheckNotify(); KeepAboveTopmost(); };
         Loaded += async (_, _) =>
         {
             AutoFitColumnWidths();
@@ -881,121 +880,12 @@ public partial class MainWindow : Window
         }
     }
 
-    DateTime _lastProbePanel = DateTime.MinValue;
-
-    /// <summary>探测计划每 30 秒刷一次即可（时间数字在动，但不必每 5 秒重绘）。</summary>
-    void MaybeRefreshProbePanel()
-    {
-        if ((DateTime.Now - _lastProbePanel).TotalSeconds < 30) return;
-        _lastProbePanel = DateTime.Now;
-        RefreshProbePanel();
-    }
-
     async void NotifyOpen_Click(object sender, RoutedEventArgs e)
     {
         var w = new NotifyWindow { Owner = this };
         w.ShowDialog();
         SyncNotifyUi();
-        if (NotifyConfig.Load().ProbeEnabled) CredentialProbe.Start(); else CredentialProbe.Stop();
-        _lastProbePanel = DateTime.MinValue;   // 设置改过，立刻重画
-        RefreshProbePanel();
         await RefreshAsync();
-    }
-
-    /// <summary>状态栏显示探测安排：每个号错开，不是同一时刻全发。</summary>
-    string ProbeScheduleText()
-    {
-        try
-        {
-            var s = CredentialProbe.Schedule();
-            if (s.Length == 0) return "";
-            var next = s.First();
-            return $"下次探测 {next.Due:HH:mm}（{next.Box}），共 {s.Length} 个号错开排队";
-        }
-        catch { return ""; }
-    }
-
-    /// <summary>渲染「探测计划」列表：每号一行，显示下次探测时间与距现在多久。</summary>
-    void RefreshProbePanel()
-    {
-        if (ProbePanel == null) return;
-        var cfg = NotifyConfig.Load();
-        if (!cfg.ProbeEnabled)
-        {
-            ProbePanel.Visibility = Visibility.Collapsed;
-            return;
-        }
-        ProbePanel.Visibility = Visibility.Visible;
-        try
-        {
-            // 只补登记新号，不清掉已有的（_rows 在构造时还是空的，
-            // 传空列表会把已排好的计划全删了，面板就永远显示「尚未排程」）
-            var known = _rows.Select(r => r.Box).ToList();
-            if (known.Count > 0) CredentialProbe.ReseedSchedule(known, cfg);
-            var s = CredentialProbe.Schedule();
-                TxtProbeSummary.Text = s.Length == 0
-                    ? "尚未排程"
-                    : $"间隔 {cfg.ProbeMinutes} 分 · 抖动 ±35% · 共 {s.Length} 个号";
-            ProbeList.Children.Clear();
-            var now = DateTime.Now;
-            foreach (var (box, due) in s)
-            {
-                var row = new System.Windows.Controls.DockPanel { Margin = new Thickness(0, 1, 0, 1) };
-                var when = new System.Windows.Controls.TextBlock
-                {
-                    // 窄面板里 HH:mm:ss 太占宽（约 62px），秒对「下次探测」没有意义，用 HH:mm
-                    Text = due.ToString("HH:mm"),
-                    FontFamily = new System.Windows.Media.FontFamily("Consolas, Microsoft YaHei UI"),
-                    FontSize = 11,
-                    MinWidth = 38,
-                    VerticalAlignment = VerticalAlignment.Center,
-                };
-                var rel = new System.Windows.Controls.TextBlock
-                {
-                    Text = due <= now ? "已到期" : $"还有 {FormatGap(due - now)}",
-                    Foreground = due <= now
-                        ? (System.Windows.Media.Brush)FindResource("Warn")
-                        : (System.Windows.Media.Brush)FindResource("Muted"),
-                    FontSize = 11,
-                    TextAlignment = System.Windows.TextAlignment.Right,
-                    // 不再写死 62：原来「还有 1h23m」需要约 70px，被 62 裁掉了尾巴。
-                    // 改成 Auto 让它按内容取宽，并给个最小宽度保持对齐。
-                    MinWidth = 60,
-                    VerticalAlignment = VerticalAlignment.Center,
-                    Margin = new Thickness(4, 0, 0, 0),
-                };
-                System.Windows.Controls.DockPanel.SetDock(when, System.Windows.Controls.Dock.Left);
-                System.Windows.Controls.DockPanel.SetDock(rel, System.Windows.Controls.Dock.Right);
-                var name = new System.Windows.Controls.TextBlock
-                {
-                    Text = box,
-                    FontSize = 11,
-                    VerticalAlignment = VerticalAlignment.Center,
-                    Margin = new Thickness(6, 0, 4, 0),
-                    TextTrimming = System.Windows.TextTrimming.CharacterEllipsis,
-                };
-                row.Children.Add(when);
-                row.Children.Add(rel);
-                row.Children.Add(name);
-                ProbeList.Children.Add(row);
-            }
-        }
-        catch (Exception ex)
-        {
-            TxtProbeSummary.Text = "读取计划失败：" + ex.Message;
-        }
-    }
-
-    /// <summary>
-    /// 倒计时的短文本。「1h23m」这种英文缩写在中英混排的日志里很突兀，
-    /// 而且比中文长，容易把窄面板挤爆。改成「1小时23分」/「57分」/「12秒」。
-    /// </summary>
-    static string FormatGap(TimeSpan t)
-    {
-        if (t.TotalSeconds <= 0) return "已到期";
-        if (t.TotalMinutes >= 60) return $"{(int)t.TotalHours}小时{t.Minutes}分";
-        if (t.TotalMinutes >= 1) return $"{(int)t.TotalMinutes}分";
-        return $"{(int)t.TotalSeconds}秒";
     }
 
     void SyncProtocolUi()

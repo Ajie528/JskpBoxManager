@@ -1252,8 +1252,8 @@ public static class ProtocolRenew
         Log.Box(box, $"协议续期失败：{why} (code={code})");
 
         // 服务端明确拒绝（-2/-13/-14）时结果是确定的，必须清掉 attempted 标记。
-        // 留着它的后果是永久的：`AttemptPending` 会一直为真，于是启动预检
-        // （PreflightCheckLiveKey）与主动探测（CredentialProbe.Probe）都永远跳过这个号，
+        // 留着它的后果是永久的：`AttemptPending` 会一直为真，于是启动前的补写检查
+        // （RecoverPendingKeyBeforeLaunch）会永远跳过这个号，
         // 「上次续期结果未知」这句话会跟到用户手动删文件为止。
         // qb4 实测：11-09 08:06 的标记一路留到 11-10，两次启动的预检都是
         // `previous renew result unknown -> skip`，这个号等于失去了自动确认能力。

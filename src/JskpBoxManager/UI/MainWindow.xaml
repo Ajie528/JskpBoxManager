@@ -430,23 +430,6 @@
                         <TextBlock x:Name="DetailTitle" FontSize="16" FontWeight="SemiBold" Text="请选择一个沙箱" TextWrapping="Wrap"/>
                         <TextBlock x:Name="DetailSub" Foreground="{StaticResource Muted}" Margin="0,2,0,12" TextWrapping="Wrap"/>
 
-                        <Border x:Name="ProbePanel" Background="#F1F5F9" BorderBrush="{StaticResource Border}" BorderThickness="1"
-                                CornerRadius="6" Padding="10,8" Margin="0,0,0,10" Visibility="Collapsed">
-                            <StackPanel>
-                                <!--
-                                  标题和「间隔 300 分 · 抖动 ±35%」原来左右分栏，
-                                  右栏收窄后两段挤在一起会互相压字。改成上下两行：
-                                  标题一行、摘要一行（小字灰色），永不重叠。
-                                -->
-                                <TextBlock Text="⏱ 探测计划" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,2"/>
-                                <TextBlock x:Name="TxtProbeSummary" Foreground="{StaticResource Muted}" FontSize="11"
-                                           TextWrapping="Wrap" Margin="0,0,0,6"/>
-                                <ScrollViewer MaxHeight="120" VerticalScrollBarVisibility="Auto">
-                                    <StackPanel x:Name="ProbeList"/>
-                                </ScrollViewer>
-                            </StackPanel>
-                        </Border>
-
                         <StackPanel x:Name="Actions">
                             <Button x:Name="BtnStart" Content="▶  启动游戏" Style="{StaticResource PrimaryBtn}" Click="Start_Click"
                                     ToolTip="在沙箱里打开游戏；有保存的登录会自动免扫码进入"/>

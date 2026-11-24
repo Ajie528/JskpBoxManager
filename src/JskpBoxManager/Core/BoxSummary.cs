@@ -35,8 +35,6 @@ public sealed class BoxSummary
     public double? KeyAgeHours;
     /// <summary>今天剩余可换次数。</summary>
     public int RotationsLeft;
-    /// <summary>该沙箱实际生效的「密钥满多少小时强制续期」。</summary>
-    public double ForceRenewHoursEffective = 20;
     /// <summary>完整说明（详情面板 / 悬停提示）。</summary>
     public string LastRefresh = "";
     /// <summary>表格里的短文本。</summary>
@@ -171,7 +169,7 @@ public sealed class BoxSummary
                 s.Login = LoginLevel.Ok;
                 s.LoginText = "免扫可用";
                 s.LoginTip = "有有效凭证，启动游戏会自动免扫码进入。"
-                    + (s.KeyAgeHours is double ka ? $"\n当前密钥 {ka:F1} 小时（满 {s.ForceRenewHoursEffective:0.#} 小时强制续期）" : "")
+                    + (s.KeyAgeHours is double ka ? $"\n当前密钥 {ka:F1} 小时（密钥无寿命上限，不再强制续期）" : "")
                     + (s.ScanDays is double sd ? $"\n扫码已 {sd:0.#} 天，授权窗口 {AuthWindowDays} 天" : "");
             }
             if (chains.TryGetValue(box, out var chain) && chain.Uin == s.Uin) s.Chain = chain;
@@ -238,11 +236,6 @@ public sealed class BoxSummary
             s.RotationsLeft = Math.Max(0, quota - used);
             if (s.Live.Valid || s.Vault.Valid) s.RotationsTodayText = $"{used}/{quota}";
             s.KeyAgeHours = ProtocolRenew.KeyAgeHours(box);
-            // 显示的「满 N 小时强制续」要和真正的触发条件一致：
-            // 保活按 min(用户配置, 该号实测寿命) 来判，见 Keepalive.DecideWake。
-            // qb4 实测 key 只能活 7 小时，界面上写「满 20 小时强制续」会让人以为还有余量。
-            s.ForceRenewHoursEffective =
-                Math.Min(pol.EffectiveForceRenewHours, ProtocolRenew.EffectiveMaxAgeHours(box));
         }
         catch { }
         if (lastRefresh.TryGetValue(box, out var ev)

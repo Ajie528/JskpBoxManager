@@ -27,3 +27,6 @@ samples/*/
 # 临时探索目录（内存/mmtls 调研用，含进程转储等大文件，不进版本库）
 explore-mem/
 explore-*/
+
+# 沙箱排查时的现场备份（含浏览器 exe 等大文件）
+backup-qb*/

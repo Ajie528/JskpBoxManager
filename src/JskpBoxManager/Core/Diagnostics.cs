@@ -26,7 +26,7 @@ public static class Diagnostics
             if (b.Chain != null) sb.AppendLine($"    免扫链 {b.Chain.Text}");
             if (b.RotationsTodayText.Length > 0)
                 sb.AppendLine($"    今日换key {b.RotationsTodayText} 次"
-                    + $"（密钥 {(b.KeyAgeHours is double kh ? $"{kh:F1}h" : "?")}，满 {b.ForceRenewHoursEffective:0.#}h 强制续，还剩 {b.RotationsLeft} 次额度）");
+                    + $"（密钥 {(b.KeyAgeHours is double kh ? $"{kh:F1}h" : "?")}，无强制续期，还剩 {b.RotationsLeft} 次额度）");
             try
             {
                 var ages = Ilink.RevokeAges(b.Box, DateTime.Now.AddDays(-14));

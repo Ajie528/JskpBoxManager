@@ -3,6 +3,97 @@
 版本号规则：`主版本.次版本.修订号`。只修 bug 加修订号；加功能加次版本号；数据格式或用法有不兼容变化加主版本号。
 每次发版在最上面新增一节，并同步修改 `Directory.Build.props` 里的 `<Version>`。
 
+## [1.5.63] - 2026-11-24
+
+### 删除两个「白烧换钥额度」的主动续期路径
+
+起因是一次实测，结论推翻了程序的核心假设（详见 `docs\免扫寿命实测-20261124.md`）：
+
+**AutoauthKey 没有寿命上限。** 用各号 `credential\history` 里最老的快照逐一真实发送
+AutoAuth（cmdid 3198），8 个样本的结果：
+
+| 号 | 存放时长 | 响应头返回 uin | 结果 |
+|---|---|---|---|
+| 宿主机 | **97 天** | 正确 | ✅ `code=0` |
+| qb3 / qb2 / qb9 / qb8 | 19 天 | 正确 | ✅ `code=0` |
+| qb10 | 17 天 | 正确 | ✅ `code=0` |
+| qb1 | 15 天 | 正确 | ✅ `code=0` |
+| qb4 | 10 天 | **0** | ❌ `code=-13` |
+
+**97 天的 key 活着，10 天的 key 死了**——存放时长和有效性无关。唯一失效的 qb4
+是**整个号被服务端废掉**（响应头连 uin 都认不出来，且它所有历史 key 一并失效）。
+
+既然不续期也不会过期，那些「为了确认而主动换钥」的动作就是纯消耗：
+AutoAuth 是轮换语义，额度用多了本身就是风控特征（qb4 就是这么死的）。
+
+### 删除 1：启动预检换钥
+
+`PreflightCheckLiveKey()` 原本在每次启动前用协议问服务端「这把 key 还能不能用」，
+成功则换一把新 key 再启动。现在改成 `RecoverPendingKeyBeforeLaunch()`，
+**只保留「补写上次没落盘的新 key」这一条救命逻辑**，不再主动换钥。
+
+凭证失效的检测并没有消失，只是换了更准的路径：启动后若服务端不认这把 key，
+运行时会自己清空凭证，`WaitForGame` 的 `CredentialCleared` 分支会立刻接手，
+用协议逐把探测历史凭证（每把 0.5 秒）——比预检更强，因为预检只能验一把。
+
+### 删除 2：常驻每 6 小时重开游戏
+
+`EnterResident` 里的定时判定整个去掉：
+
+```csharp
+// 删掉的
+var keyAge = LiveKeyAgeHours();
+bool keyAging = keyAge != null && keyAge.Value >= ResidentKeyMaxAgeHours;
+if (... || (DateTime.Now - lastRenew).TotalHours >= ResidentRenewHours || keyAging || TakeRenewRequest())
+```
+
+常驻期间**不再主动重开游戏**。这是全流程里风险最高的动作：qb4 在 2026-11-22
+因 1.5.60 的死循环单日重开 513 次，30 小时后被 -13 永久废号。
+而且每 6 小时重开一次会让玩家的游戏窗闪一下，体验很差。
+
+现在常驻只剩两条续期触发，都不主动打服务端：
+- 保活计划任务写来的续期请求（`TakeRenewRequest`）——外部驱动，节奏可控
+- 游戏自然关闭后，看门分支的 `goneTicks >= 3` 里做一次协议续期（零风险时机）
+
+### 删除 3：主动探测（第三处「为了确认而换钥」）
+
+`CredentialProbe` 原本有一套后台调度：每 `probeMinutes`（默认 120，你配置的 300）分钟
+连服务器发一次 AutoAuth 确认凭证是否有效。**它同样会真实换 key。**
+
+实测数据（过去 3 天）：
+
+| 号 | 探测记录 | 真正换钥 |
+|---|---|---|
+| qb1 | 9 次 | 1 次 |
+| qb10 | 12 次 | 3 次 |
+| qb12 | 6 次 | 1 次 |
+| qb15 | 11 次 | 5 次 |
+
+已整体删除：`Start/Stop/Loop/Probe/Schedule/ReseedSchedule/NextProbeAt/LastState`
+等调度与探测方法，以及 `--probe` 命令行参数。
+
+**保留**记账部分（`RotationsToday` / `RecordRotationPublic` / `RotationsBudgetExhausted`），
+因为保活任务靠它判断「今天是否已经换够」，这是防止把授权链滚废的保险。
+
+### GUI 同步清理
+
+| 位置 | 处理 |
+|---|---|
+| 主界面 `ProbePanel`（⏱ 探测计划 面板） | 整块删除 |
+| `MaybeRefreshProbePanel` / `RefreshProbePanel` / `ProbeScheduleText` / `FormatGap` | 删除（仅被面板使用） |
+| 设置页「主动探测（提前发现过期）」+ 勾选框 + 间隔输入 | 删除 |
+| 设置页「轮换额度」区块 | 保留，文案改为「只有保活任务和游戏自然关闭时才会换」 |
+| 提示「满 X 小时强制续期」 | 改为「密钥无寿命上限，仅保活时才会换新」 |
+| `ForceRenewHoursEffective` 字段 | 删除（已无实际用途） |
+| `notify.json` 的 `probeEnabled` / `probeMinutes` | 不再读写（旧文件里残留无影响） |
+
+### 保留
+
+- **每天最多 1 次协议续期**（保活任务）：不重开游戏，纯网络请求约 0.7 秒，风险最低
+- **失败指数退避**（1.5.61 引入）：防高频打死号的唯一保险
+- 死代码清理：`ResidentRenewHours`、`ResidentKeyMaxAgeHours`、`LiveKeyAgeHours`
+  三个成员已无引用，一并删除
+
 ## [1.5.62] - 2026-11-23
 
 ### 修复：游戏中心页假死时白等 90 秒，把启动拖成三连败

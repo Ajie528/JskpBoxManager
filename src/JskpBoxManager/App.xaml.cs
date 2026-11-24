@@ -540,38 +540,6 @@ public partial class App : Application
             return 2;
         }
         var boxes = Sandboxie.QueryBoxes();
-        if (args.Contains("--probe"))
-        {
-            if (args.Contains("--schedule"))
-            {
-                CredentialProbe.ReseedSchedule(boxes, cfg);
-                var s = CredentialProbe.Schedule();
-                if (s.Length == 0) Console("还没有探测计划（先启用主动探测并保存一次）");
-                else
-                {
-                    Console($"探测计划（间隔 {cfg.ProbeMinutes} 分钟，每号错开 + ±35% 随机抖动）：");
-                    DateTime? prev = null;
-                    foreach (var (b, due) in s)
-                    {
-                        var gap = prev == null ? "" : $"  (+{Math.Round((due - prev.Value).TotalMinutes, 1)} 分)";
-                        Console($"  {b,-6} 下次 {due:MM-dd HH:mm:ss}{gap}");
-                        prev = due;
-                    }
-                }
-                return 0;
-            }
-            int ok = 0, bad = 0, skip = 0;
-            foreach (var b in boxes)
-            {
-                var r = CredentialProbe.Probe(b, cfg);
-                if (r.Skipped) { skip++; Console($"{b}  跳过：{r.Message}"); }
-                else if (r.Ok) { ok++; Console($"{b}  有效（已换新 key）"); }
-                else if (r.Rejected) { bad++; Console($"{b}  已失效：{r.Message}"); }
-                else { bad++; Console($"{b}  探测失败：{r.Message}"); }
-            }
-            Console($"探测完成：{ok} 有效，{bad} 失效/失败，{skip} 跳过");
-            return bad > 0 ? 1 : 0;
-        }
 
         var r2 = Notifier.Check(boxes, cfg);
         if (r2.Overdue == 0)

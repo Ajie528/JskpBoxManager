@@ -56,9 +56,9 @@ public sealed class BoxRow : INotifyPropertyChanged
                 ? $"今天已换 {t} 次 key（上限见右）"
                 : "今天还没换过 key");
             if (s.KeyAgeHours is double h)
-                lines.Add($"当前密钥 {h:F1} 小时（满 {s.ForceRenewHoursEffective:0.#} 小时强制续期）");
+                lines.Add($"当前密钥 {h:F1} 小时（密钥无寿命上限，仅保活时才会换新）");
             if (s.RotationsLeft == 0)
-                lines.Add("今日额度已用完：不再轮换，等明天。频繁轮换会被服务端整链判废。");
+                lines.Add("今日额度已用完：今天不再轮换，等明天。频繁轮换会被服务端整链判废。");
             else lines.Add($"今天还能换 {s.RotationsLeft} 次");
             lines.Add("可在右侧「静默保活 → 轮换额度」里改每天最多换几次。");
             return string.Join("\n", lines);

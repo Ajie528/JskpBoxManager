@@ -118,105 +118,35 @@ public sealed class LaunchSession
     }
 
     /// <summary>
-    /// 启动前预检：用协议确认 live 这把 key 服务端还认不认（纯网络 0.1 秒，不动文件）。
+    /// 启动前预检：只做「补写上次没落盘的新 key」这件事。
     ///
-    /// 目的：避免「启动 → 等 34 秒 → 凭证被清空 → 再等 106 秒」这种白跑。
-    ///   · 认可   → 服务端会顺带回一把新 key，直接写入（停箱状态），然后正常启动
-    ///   · -13    → 这把废了，用历史凭证逐把协议探测，找到一个能用的就换上去
-    ///   · 网络错 → 不折腾，照常启动（可能只是临时连不上）
-    ///
-    /// 只在沙箱已停、且 live 凭证有效时执行。开关由 notify.json 的 probeEnabled 控制，
-    /// 关掉就不预检（有些人不希望启动时多一次网络请求）。
+    /// <para>
+    /// ★ 1.5.63 起删除了「问服务端这把 key 还能不能用」的换钥探测。
+    /// 原因（2026-11-24 实测，见 docs\免扫寿命实测-20261124.md）：
+    /// AutoAuthKey 没有寿命上限——宿主机账号放着 97 天零活动、qb3 等号 19 天前的旧 key，
+    /// 实测全部 `code=0` 仍然有效。既然不续期也不会过期，启动时每换一次 key
+    /// 就是白白消耗一次轮换额度，而 AutoAuth 是轮换语义，额度用多了本身就是风控特征
+    /// （qb4 就是这么被废的：11-22 单日 513 次重开，之后所有历史 key 一并 -13）。
+    /// </para>
+    /// <para>
+    /// 真正需要的检测仍然存在，只是不主动换钥：
+    /// 启动后如果服务端不认这把 key，运行时会自己清空凭证，`WaitForGame` 的
+    /// `CredentialCleared` 分支会立刻接手，用协议逐个探测历史凭证恢复。
+    /// 那条路本来就快（每把 0.5 秒），比启动前预检更准——预检只能验一把。
+    /// </para>
     /// </summary>
-    void PreflightCheckLiveKey()
+    void RecoverPendingKeyBeforeLaunch()
     {
         try
         {
-            // ★ 最优先：上次换钥后没落盘的凭证先补写。
+            // ★ 唯一保留的逻辑：上次换钥后没落盘的凭证先补写。
             //   那种情况下服务端已经是新 key 了，而本地还是旧的——直接启动必然失败。
-            if (ProtocolRenew.HasPending(_box))
-            {
-                L("启动预检：发现上次残留的待写新 key → 优先补写");
-                if (ProtocolRenew.RecoverPending(_box))
-                    L("启动预检：新 key 已补写，沙箱与金库都等于服务端下发的那把");
-                else
-                    L("启动预检：暂时没法补写新 key（沙箱在忙？）→ 停箱后再试");
-            }
-
-            var cfg = NotifyConfig.Load();
-            if (!cfg.ProbeEnabled) return;
-            if (Sandboxie.Pids(_box).Count > 0) return;
-
-            var live = Ilink.Live(_box);
-            if (!live.Valid)
-            {
-                L("启动预检：沙箱凭证无效 → 跳过（交给金库/历史凭证流程）");
-                return;
-            }
-            if (ProtocolRenew.AttemptPending(_box))
-            {
-                L("启动预检：上次续期结果未知 → 跳过");
-                return;
-            }
-            // 预检会真实换一把 key，别把每天的额度用在频繁启动上
-            int today = CredentialProbe.RotationsToday(_box);
-            if (today >= CredentialProbe.MaxRotationsPerDay)
-            {
-                L($"启动预检：今天已换 {today} 次 → 跳过预检，按原样启动");
-                return;
-            }
-
-            // ★ 按密钥年龄决定要不要预检。
-            //
-            // 预检的用途是「避免启动后等 34 秒发现凭证被清空、再白等 106 秒」。
-            // 但 AutoAuth 是轮换语义——预检成功就消耗一次换钥额度，而密钥还新的时候
-            // 它几乎必然有效，这次换钥纯属白送。实测 qb1 一天开关两次游戏就白烧
-            // 2 次 preflight 额度（7/10 里有 2 次是这么来的），逼近风控上限。
-            //
-            // 所以：密钥还新于 minAge（默认 5 小时）就跳过预检，直接用它启动。
-            // 万一这把 key 其实已经被别处顶掉，运行时启动后会立刻清空凭证，
-            // 上层 `credential cleared` 分支会自动接手走历史凭证恢复——那条路本来就在，
-            // 只是晚几十秒，比每天白烧额度划算。
-            //
-            // 密钥超过 forceHours（默认 20 小时）属于硬上限，不管门槛一律预检。
-            var pol = Keepalive.Load().For(_box);
-            double minAge = pol.EffectiveMinKeyAgeHours;
-            var keyAge = ProtocolRenew.KeyAgeHours(_box);
-            bool overdue = ProtocolRenew.KeyOverdue(_box);
-            if (!overdue && keyAge is double young && young < minAge)
-            {
-                L($"启动预检：密钥才 {young:F1} 小时（门槛 {minAge:F0} 小时）→ 跳过预检，直接用这把启动"
-                    + "（省一次换钥额度）");
-                return;
-            }
-            if (keyAge is double aged)
-                L($"启动预检：密钥已 {aged:F1} 小时（门槛 {minAge:F0} 小时）→ 值得确认一次"
-                    + (overdue ? "，且已过硬上限" : ""));
-
-            L($"启动预检：问服务端这把 key 还能不能用 {live.KeyHash}");
-            var r = ProtocolRenew.Renew(_box);
-            if (r.Ok)
-            {
-                CredentialProbe.RecordRotationPublic(_box, r.NewKeyHash, "preflight");
-                try { VaultSync.PushVaultToLive(_box); } catch { }
-                L($"启动预检：key 有效并已换新 → {r.NewKeyHash}（将用它启动）");
-                return;
-            }
-            if (r.Rejected)
-            {
-                L($"启动预检：key {live.KeyHash} 被拒（{r.Code}）→ 用协议逐个探测历史凭证");
-                Phase(BoxPhase.Starting, "凭证已失效，正在用协议找可用的历史凭证…");
-                if (TryHistoryRecover())
-                {
-                    L("启动预检：找到可用的历史 key → 用它启动");
-                    NeedScan.Clear(_box);
-                    NeedScan.ClearQrStreak(_box);
-                    return;
-                }
-                L("启动预检：历史 key 都不可用 → 照常启动（会停在扫码页）");
-                return;
-            }
-            L($"启动预检：探测失败（{r.Message}）→ 照常启动");
+            if (!ProtocolRenew.HasPending(_box)) return;
+            L("启动预检：发现上次残留的待写新 key → 优先补写");
+            if (ProtocolRenew.RecoverPending(_box))
+                L("启动预检：新 key 已补写，沙箱与金库都等于服务端下发的那把");
+            else
+                L("启动预检：暂时没法补写新 key（沙箱在忙？）→ 停箱后再试");
         }
         catch (Exception ex) { L("启动预检出错：" + ex.Message); }
     }
@@ -300,10 +230,9 @@ public sealed class LaunchSession
             // 启动前准备刚把沙箱里更新的凭证收进金库，标记可能就此过时（同上，不能等到进游戏才清）
             try { NeedScan.ClearIfRenewed(_box); } catch { }
 
-            // 启动前预检：用协议快速问一下服务器「live 这把 key 还能不能用」（0.1 秒）。
-            // 能用就直接启动，省掉「启动 34 秒 → 被清空 → 再等 106 秒」的白跑。
-            // 不能用就先在停箱状态下换好 key，再启动一次成功。
-            PreflightCheckLiveKey();
+            // 1.5.63 起不再在启动前换钥（AutoAuthKey 实测无寿命上限，换钥纯烧额度）。
+            // 只补写上次没落盘的新 key —— 那种情况下服务端已经是新的，本地还是旧的，直接启动必然失败。
+            RecoverPendingKeyBeforeLaunch();
         }
 
     bool opened = false, waitingQrAtEnd = false, didVaultRestore = false, forceFullWarmup = false;
@@ -1386,20 +1315,9 @@ public sealed class LaunchSession
         var lastTrim = DateTime.MinValue;
         var lastCred = DateTime.MinValue;
         var lastLog = DateTime.MinValue;
-        // 常驻期间要周期性做一次真实 AutoAuth 把密钥往前滚，否则只存 psk、密钥一路放到自然寿命就弹码
-        // （qb4 在 1.5.3 上就是这样：11-03 11:23 进常驻，此后从不滚 key，11-04 08:40 弹扫码）。
-        // 计时从「密钥实际写入时间」起算：从游戏里滚出来的新钥匙不必刚进常驻就再滚一次。
+        // 1.5.63 起不再周期性滚 key（AutoAuthKey 实测无寿命上限）。
+        // 只在外部请求续期时才动，见主循环里的 TakeRenewRequest 分支。
         var lastRenew = DateTime.Now;
-        try
-        {
-            var st = Ilink.Live(_box);
-            if (st.Valid && st.WriteUtc != DateTime.MinValue)
-            {
-                var age = DateTime.UtcNow - st.WriteUtc;
-                if (age > TimeSpan.Zero) lastRenew = DateTime.Now - age;
-            }
-        }
-        catch { }
         bool sawQr = false;
 
         while (true)
@@ -1465,33 +1383,28 @@ public sealed class LaunchSession
                 Phase(BoxPhase.Resident, "常驻保活中（轻量）");
             }
 
-            var keyAge = LiveKeyAgeHours();
-            bool keyAging = keyAge != null && keyAge.Value >= ResidentKeyMaxAgeHours;
-            bool renewBackingOff = DateTime.Now < renewSkipUntil;
-            if (!renewBackingOff
-                && ((DateTime.Now - lastRenew).TotalHours >= ResidentRenewHours || keyAging || TakeRenewRequest()))
+            // ★ 1.5.63 起删除「常驻每 6 小时重开游戏滚 key」。
+            //
+            // 原因（详见 docs\免扫寿命实测-20261124.md）：
+            //  - AutoAuthKey 实测无寿命上限：宿主机账号放 97 天零活动、qb3 等号 19 天前的
+            //    旧 key，真实发 AutoAuth 全部 `code=0` 仍然有效。既然不续也不会过期，
+            //    周期性重开游戏就是纯浪费，还会打扰玩家（每 6 小时闪一次）。
+            //  - 重开游戏是**最高风险动作**：qb4 在 2026-11-22 因 1.5.60 的死循环，
+            //    单日重开 513 次，30 小时后该号被服务端 -13 彻底废掉，
+            //    连它 10 天前的老 key 一并失效（响应头 uin 返回 0）。
+            //
+            // 现在只剩两条真正的续期触发路径，且都不主动打服务端：
+            //   · 保活计划任务写来的续期请求（TakeRenewRequest）——外部驱动，节奏可控
+            //   · 游戏自然关闭后，看门分支的 goneTicks>=3 里做一次协议续期（零风险时机）
+            if (TakeRenewRequest())
             {
-                if (keyAging) L($"常驻：密钥已用 {keyAge:F1}h old (limit {ResidentKeyMaxAgeHours}h) -> renew now");
                 lastRenew = DateTime.Now;
-                var rr = ResidentRenew(); // 出扫码页时不藏窗，主循环下一轮看到扫码页转入 need-scan
-
-                // ★ 续期失败必须退避，否则会死循环。
-                //
-                // 原来这里无条件 continue：ResidentRenew 失败后密钥年龄没变化
-                // （还是 20.5h），下一轮 keyAging 依旧为 true，立刻再触发一次续期，
-                // 又失败、又重试……2026-11-22 从 01:27 到 19:38 就这样
-                // **连续 18 小时每 2 分钟重启一次游戏**，把 qb4 彻底折腾死。
-                //
-                // 现在：失败后按指数退避（5 分钟起，最长 2 小时），
-                // 期间不再重试。真的需要扫码时会由 NeedScan 标记接管。
-                if (rr == ResidentRenewResult.Rolled)
-                {
-                    renewFailStreak = 0;
-                }
+                var rr = ResidentRenew();
+                if (rr == ResidentRenewResult.Rolled) renewFailStreak = 0;
                 else if (rr == ResidentRenewResult.NeedScan)
                 {
                     L("常驻：出现二维码 → 停止自动续期，等待人工扫码");
-                    break;      // 交给外层 need-scan 流程
+                    break;
                 }
                 else
                 {
@@ -1571,34 +1484,6 @@ public sealed class LaunchSession
     }
 
     /// <summary>
-    /// 常驻每隔多少小时主动重开游戏做一次真实 AutoAuth（远小于免扫链约一天的寿命）。
-    ///
-    /// 与 <see cref="ResidentKeyMaxAgeHours"/> 一样要按该号实测寿命自适应：
-    /// qb4 的 key 最短只活 4.96 小时，固定等 6 小时的话，每轮都会在续期前先死掉。
-    /// 取「6 小时」与「该号上限 × 1.2」的较小值，保证总在寿命终点之前动手。
-    /// </summary>
-    double ResidentRenewHours => Math.Min(6.0, ProtocolRenew.EffectiveMaxAgeHours(_box) * 1.2);
-
-    /// <summary>
-    /// 常驻模式下，密钥年龄到这个阈值就必须续期。
-    ///
-    /// <para>
-    /// 这里**不能**用固定的 <see cref="ProtocolRenew.KeyMaxAgeHours"/>（20 小时）：
-    /// 有的号实测寿命远低于它。qb4 最短一把 key 只活 4.96 小时，
-    /// 用 20 小时等于永远等它自然死——2026-11-21 就是这样把密钥放到 23.9 小时、
-    /// 最后运行时判失效、清空凭证、整条链断掉。
-    /// </para>
-    /// <para>
-    /// 改为「全局上限与该号实测寿命取较小值」，也就是走
-    /// <see cref="ProtocolRenew.EffectiveMaxAgeHours"/>。没有 -13 历史的号行为不变。
-    /// </para>
-    /// </summary>
-    double ResidentKeyMaxAgeHours => ProtocolRenew.EffectiveMaxAgeHours(_box);
-
-    /// <summary>当前这把密钥空闲多久了（小时）；没有有效凭证时返回 null。</summary>
-    double? LiveKeyAgeHours() => ProtocolRenew.KeyAgeHours(_box);
-
-    /// <summary>
     /// 取一次保活计划任务留下的续期请求（logs\qbN.renew）：有就删掉并返回 true。
     /// 计划任务拿不到沙箱锁时会写这个文件，让常驻进程代替它做一次真实 AutoAuth。
     /// </summary>
@@ -1650,12 +1535,18 @@ public sealed class LaunchSession
     }
 
     /// <summary>
-    /// 常驻真实续期：重开游戏让运行时发一次 AutoAuth，把 AutoAuthKey 往前滚并存金库，再藏回去。
-    /// 关游戏窗时 app 会话本就会超时，真正决定能不能免扫重进的是这把 key 还在不在寿命内——所以常驻必须周期性真滚它，而不是只存 psk。
+    /// 常驻按需续期：重开游戏让运行时发一次 AutoAuth，把 AutoAuthKey 往前滚并存金库，再藏回去。
+    ///
+    /// <para>
+    /// 1.5.63 起**不再周期性调用**，只在外部显式请求时才走（保活计划任务写来的续期请求）。
+    /// 实测 AutoAuthKey 没有寿命上限（宿主机账号放 97 天零活动仍有效，见
+    /// docs\免扫寿命实测-20261124.md），所以没必要定期重开游戏打扰玩家——
+    /// 而重开本身是全流程里风险最高的动作（qb4 单日 513 次重开后被 -13 永久废号）。
+    /// </para>
     /// </summary>
     ResidentRenewResult ResidentRenew()
     {
-        L("常驻：周期性续期 → 重开游戏以滚动 AutoAuthKey");
+        L("常驻：按需续期 → 重开游戏以滚动 AutoAuthKey");
         Phase(BoxPhase.Resident, "常驻续期中…");
         var frozen = Ilink.Live(_box).KeyHash;
         try { BoxRuntime.StartBrowser(_box, "resident-renew"); }

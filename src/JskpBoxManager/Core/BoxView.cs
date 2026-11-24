@@ -286,6 +286,17 @@ public sealed class BoxView
     /// <summary>
     /// 隐藏 QQ 浏览器窗口和空白微信壳，只留游戏窗和输入法窗。
     /// 绝不关闭 QQ 浏览器（会话挂在浏览器上，关了游戏会掉线），也不 WM_CLOSE 微信壳（会连游戏一起关）。
+    ///
+    /// <para>
+    /// ★ 只处理**当前可见**的窗口。以前这里会连已隐藏的 <c>Chrome_WidgetWin*</c> 一起重新
+    /// <c>ForceHide</c> 并计数，于是看门循环每 30 秒都刷一行「隐藏窗口数=5」——
+    /// 实测 qb1 2026-11-24 有 30 个顶层窗口、其中 28 个早已隐藏，那 13 个隐藏的
+    /// <c>Chrome_WidgetWin*</c> 每次都被重复 hide 一遍。隐藏是幂等的，重复做没有收益，
+    /// 只会污染日志、并在 SBIE2203 期间多打一遍窗口枚举。
+    /// </para>
+    /// <para>
+    /// 真正值得周期性做的只有「杀渲染进程」「压工作集」，那两件保留原来的定时节奏。
+    /// </para>
     /// </summary>
     public int HideBrowserKeepGame(bool gameRunning)
     {
@@ -294,27 +305,22 @@ public sealed class BoxView
         foreach (var w in Windows)
         {
             if (w.Hwnd == game || Titles.IsGame(w.Title)) continue;
-            if (!gameRunning && (!w.Visible || Win32.IsIconic(w.Hwnd) || Titles.IsStrictQr(w.Title))) continue;
+            // 已隐藏/已最小化的不用再藏一遍（这就是以前每轮重复计数的来源）
+            if (!w.Visible) continue;
+            if (!gameRunning && (Win32.IsIconic(w.Hwnd) || Titles.IsStrictQr(w.Title))) continue;
             if (Titles.IsIme(w.Title, w.Class, w.Proc)) continue;
             bool isQq = IsQq(w.Proc), isWx = IsWx(w.Proc);
             bool wxShell = isWx && (string.IsNullOrWhiteSpace(w.Title) || Titles.IsWeChatShell(w.Title));
             if (gameRunning && wxShell)
             {
-                if (w.Class.Contains("Chrome_WidgetWin") || string.IsNullOrWhiteSpace(w.Title) || Titles.IsWeChatShell(w.Title))
-                {
-                    Win32.ForceHide(w.Hwnd);
-                    hidden++;
-                }
+                Win32.ForceHide(w.Hwnd);
+                hidden++;
                 continue;
             }
             bool junk = Titles.IsJunk(w.Title, w.Class);
             if (!(junk || isQq || (isWx && string.IsNullOrWhiteSpace(w.Title)))) continue;
             if (isQq && Titles.IsRestorePage(w.Title)) Win32.PostMessage(w.Hwnd, Win32.WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
-            if (isQq && gameRunning)
-            {
-                if (!w.Class.Contains("Chrome_WidgetWin") && !w.Visible) continue;
-                Win32.ForceHideBrowserChrome(w.Hwnd);
-            }
+            if (isQq && gameRunning) Win32.ForceHideBrowserChrome(w.Hwnd);
             else Win32.ForceHide(w.Hwnd);
             hidden++;
         }

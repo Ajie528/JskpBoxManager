@@ -130,6 +130,45 @@ public static class BoxRuntime
         Log.Box(box, "已把微信运行时从主机复制进沙箱");
     }
 
+    /// <summary>
+    /// 检查 Sandboxie 服务进程是否已经泄漏。
+    ///
+    /// <para>
+    /// 2026-11-25 排查发现：SbieSvc 连续运行 16 天后涨到 **200MB / 65 线程**（正常 20MB / &lt;10），
+    /// 之后沙箱内进程创建子进程时 RpcSs 调用超时，Chromium 建不出 renderer/network/gpu，
+    /// 页面只剩空壳（主进程活着、CDP 通、但 JS 不执行），游戏中心永远调不起小程序，
+    /// 同时 Sandboxie 刷 `SBIE2203 RPCSS_SXS`。详见 `docs\SBIE2203-真因-SbieSvc资源耗尽.md`。
+    /// </para>
+    /// <para>
+    /// 这个检查只读 <c>Get-Process</c>，不需要管理员权限，用于在日志里提前告警——
+    /// 程序自己修不了（重启服务要提权），但至少能让用户知道「该重启电脑了」，
+    /// 而不是对着一个永远进不去的游戏中心反复点启动。
+    /// </para>
+    /// </summary>
+    /// <returns>返回告警文本；健康时返回 null。</returns>
+    public static string CheckSbieHealth(string box)
+    {
+        try
+        {
+            var svc = Process.GetProcessesByName("SbieSvc")
+                .OrderByDescending(p => p.WorkingSet64)
+                .FirstOrDefault();
+            if (svc == null) return null;
+            long mb = svc.WorkingSet64 / 1048576;
+            int threads;
+            try { threads = svc.Threads.Count; } catch { threads = 0; }
+            // 阈值取得比较宽松：正常 13~20MB / 4~8 线程。
+            // 超过 100MB 或 40 线程就告警——到这一步已经开始出现子进程创建失败。
+            if (mb < 100 && threads < 40) return null;
+            var tip = $"SbieSvc 已涨到 {mb}MB / {threads} 线程（正常 20MB 以内），"
+                    + "这是 Sandboxie 服务泄漏，会导致沙箱内建不出浏览器子进程、卡在游戏中心。"
+                    + "建议重启电脑（重启服务需要管理员权限）。";
+            Log.Box(box, "⚠ Sandboxie 服务异常：" + tip);
+            return tip;
+        }
+        catch { return null; }
+    }
+
     /// <summary>开机后 SbieSvc 虽已运行，RPC 仍可能长时间超时（SBIE2203）。用 listpids 探测，连续两次够快才算就绪。禁止用 /reload 催服务。</summary>
     public static bool WaitRpcReady(string box, int timeoutSec)
     {
@@ -164,6 +203,8 @@ public static class BoxRuntime
     public static void Warmup(string box, bool light)
     {
         Log.Box(box, light ? "预热沙箱（轻量重试）" : "预热沙箱（规避 SBIE2112/2181/1231）");
+        // 先看 Sandboxie 服务本身健不健康：泄漏到一定程度时下面这些预热全都会白做
+        CheckSbieHealth(box);
         if (!light) WaitRpcReady(box, 60);
         WaitBoxQuiet(box, light ? 8 : 12);
         try

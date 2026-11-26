@@ -3,6 +3,217 @@
 版本号规则：`主版本.次版本.修订号`。只修 bug 加修订号；加功能加次版本号；数据格式或用法有不兼容变化加主版本号。
 每次发版在最上面新增一节，并同步修改 `Directory.Build.props` 里的 `<Version>`。
 
+## [1.5.67] - 2026-11-26
+
+### 游戏包收包改为「游戏关闭时」做，取消播放期间的定时收包
+
+原来看门循环里每小时跑一次 `LivePackageNewerThanVault` + `HarvestGamePackage`
+（1.5.65 从 10 分钟放宽到 60 分钟，但仍是定时做）。
+
+现在整个删掉，只在**游戏关闭时**收一次——那时进程已退出，
+不会和运行中的浏览器抢 I/O，也不会在玩家游戏时造成卡顿。
+
+收包时机由 `StopSoft(box, saveLogin: true)` 承担，那里本来就有
+「先判断指纹、有热更新才收」的保护，不会做无用功。
+
+**依据**：收包要遍历金库和沙箱两侧的游戏包目录（qb1 各约 2 万文件 / 4.4GB），
+每次都是重 I/O，全部经过 Sandboxie 的路径重定向层。
+
+### 尝试并**放弃**：自动清理「卡在 Sandboxie 里的残留进程」
+
+原本想解决的问题：2026-11-26 那天 qb1 反复启动失败，
+观察到 22 个 QQBrowser + 4 个孤儿 `SandboxieCrypto` 卡在驱动里，
+`Start.exe /terminate` 对它们无效，手动全部杀掉后 qb1 立刻恢复正常（19 秒进游戏）。
+
+于是实现了 `Sandboxie.FindZombies` + `BoxRuntime.CleanupZombies`，
+判据是「加载了 SbieDll + 不在 listpids 列表里 = 僵尸」。
+
+**实测发现这个判据不成立**：
+
+```
+qb1 正在游戏中（日志有 role read attack=82855）
+Start.exe /box:qb1 /listpids → 返回空（连续 3 次，各 56~73 ms）
+```
+
+**`listpids` 在沙箱确实有进程时也会返回空**，所以它无法区分
+「沙箱真空」和「API 坏了」。按这个判据清理会把**正在玩的进程全部误杀**。
+
+代码保留但标了 `[Obsolete]`，`Warmup` 里不再调用。
+
+### 关于「qb1 卡在游戏中心」这个故障
+
+**根因仍未查清。** 这个版本只包含确定有效的改进，没有针对它的修复。
+
+本版确定有效的部分：
+- 1.5.65 的指纹优化（`LivePackageNewerThanVault` 从 2.7 秒降到约 10 毫秒，实测 100+ 倍）
+- 本版取消播放期间收包，进一步减少沙箱 I/O
+
+未验证的部分（1.5.66 引入，本次均未触发）：
+- `CheckSbieHealth` 自动重启 SbieSvc（阈值 250MB）
+- 解压豁免（`UnzipWorkers` 检测）
+
+诊断过程与三次误判的完整记录见 `docs\SBIE2203-真因-SbieSvc资源耗尽.md`。
+
+## [1.5.66] - 2026-11-26
+
+### 改成以管理员身份运行，自动重启被拖垮的 SbieSvc
+
+承接 1.5.65。那一版把「每 10 分钟扫 2 万文件」的性能问题修掉了（指纹从 2.7 秒降到 10 毫秒），
+但**已经涨上去的 SbieSvc 内存不会自己降回来**，qb1 依然启动不了。这一版解决那个问题。
+
+#### 为什么程序必须提权
+
+实测普通权限（`R7000P\Ajie`，在 Administrators 组但未提权）对 SbieSvc 完全无能力：
+
+```
+sc stop SbieSvc        → Access is denied (5)
+net stop SbieSvc       → Access is denied (5)
+OpenProcess(0x0500)    → Win32Error = 5      ← 想 EmptyWorkingSet 也做不到
+```
+
+原因在服务 ACL：
+
+```
+(A;;CCLCSWRPWPDTLOCRRC;;;SY)          LocalSystem      有 RP/WP ✓
+(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)  Administrators   有 RP/WP ✓
+(A;;CCLCSWLOCRRC;;;IU)                Interactive用户  无 RP/WP ✗
+```
+
+`RP` = 启动服务，`WP` = 停止服务。普通登录用户这两项都没有。
+
+**而且释放内存这条路根本不存在**：实测把 16 个沙箱全部停掉（进程数 0）后静置 30 秒，
+`SbieSvc` 的 WorkingSet 仍是 177MB 纹丝不动——它是已分配且不归还的内存。
+
+#### 改了什么
+
+**1. manifest 改 `requireAdministrator`**
+
+首次启动会弹 UAC 确认，勾选「始终以管理员身份运行」后不再询问。
+
+**2. 启动前自动检测 + 重启 SbieSvc**
+
+`BoxRuntime.CheckSbieHealth` 现在不只是告警，而是会动手：
+
+```
+内存 < 250MB           → 什么都不做
+内存 ≥ 250MB + 已提权 + 没有沙箱在跑 → 自动重启 SbieSvc，降到基线
+内存 ≥ 250MB + 已提权 + 有沙箱在跑   → 只告警（重启会杀掉它们）
+内存 ≥ 250MB + 未提权               → 只告警，提示重启电脑
+```
+
+新增 `Sandboxie.RestartService()`：`sc stop` → 等真的停 → `sc start` → 等真的起，
+每步都有超时和状态校验，不靠返回码判断（`sc stop` 常因依赖服务返回非 0 但实际在停）。
+
+**3. 计划任务改为 `RunLevel=HighestAvailable`**
+
+这是**必须的连带修改**，否则保活会静默失效：
+
+主 exe 变成 `requireAdministrator` 后，一个 `LeastPrivilege` 的计划任务去启动它会
+被 UAC 直接拦掉。而保活本身也确实需要管理员——`RefreshSession` 里大量调用
+`BoxRuntime.StopForce()` 停沙箱，走的是 `Sandboxie.Terminate`，同样需要管理员。
+
+实测普通权限**无法创建** `HighestAvailable` 任务（Access is denied），
+所以任务重建只能在提权上下文里做——正好由 manifest 提供。
+
+**4. 修复计划任务的迁移判断**
+
+`TaskPointsHere` 原来只比 exe 路径，不检查权限级别。更麻烦的是实测发现
+**16 个老任务的 XML 里根本没有 `<RunLevel>` 元素**（v1.5.37 之前创建的），
+Windows 按默认 `LeastPrivilege` 处理。
+
+所以判断逻辑改成「必须有 `RunLevel` 且必须等于 `HighestAvailable`」，
+缺元素也算不符合——否则这些任务永远不会被迁移，升级后保活全部静默失败。
+
+#### 验证情况
+
+- ✅ 普通权限对 SbieSvc 无操作能力（实测三种方式全部 Access denied）
+- ✅ 停掉所有沙箱后内存不回落（实测静置 30 秒纹丝不动）
+- ✅ 普通权限无法创建 `HighestAvailable` 任务（实测 Access is denied）
+- ✅ 16 个老任务的 XML 缺 `<RunLevel>`（实测）
+- ⚠️ **自动重启 SbieSvc 的完整流程未实测**：需要提权会话，当前开发环境是非提权 shell。
+  首次以管理员启动时应留意日志里的 `Sandboxie 服务占用 XXXMB 偏高 → 自动重启 SbieSvc`。
+
+#### 使用上的变化
+
+- 每次打开管家会弹 UAC（可勾选「始终」免掉）
+- 计划任务会在首次以管理员启动时自动重建为 `HighestAvailable`
+- 如果 SbieSvc 被拖垮，程序会自己重启它，不再需要手动重启电脑
+
+## [1.5.65] - 2026-11-26
+
+### 修复：游戏包指纹检查把 SbieSvc 拖垮，导致启动卡在游戏中心
+
+承接 1.5.64。那一版把原因归结为「SbieSvc 长时间运行后泄漏」，**结论错了两处**，
+本版用实测数据重新定位并修复。
+
+#### 1.5.64 的两处错误判断
+
+| 判断 | 实际 |
+|---|---|
+| 内存 200MB 是泄漏 | ❌ 内存会回落到 10MB，是波动缓存不是单调泄漏 |
+| 65 线程是异常（正常 <10） | ❌ 重启后立刻 65 线程、一整天不变，这是 5.74.1 的常态 |
+| 需要跑 16 天才出问题 | ❌ 11-25 11:39 重启后，22 小时就复现 |
+| 告警阈值 100MB / 40 线程 | ❌ 两个指标都会误报 |
+
+#### 真正的根因：`Fingerprint` 的全量文件枚举
+
+`VaultSync.Fingerprint` 为了「取最新 30 个文件的时间」，实现是：
+
+```csharp
+EnumerateFiles("*", Deep).OrderByDescending(f => f.LastWriteTime).Take(30)
+```
+
+**要把 2 万个文件全部枚举并排序**，只为了拿 30 个。而 `GameCacheDirs` 更糟：
+用 `EnumerateDirectories("__GAME_FILE_CACHE", Deep)` 递归扫遍整个根目录去找那 1 个目录，
+在 qb1 金库上实测要 **1110ms**（遍历了 4 万个文件）。
+
+实测 `LivePackageNewerThanVault`（调两次 `Fingerprint`）单次耗时：
+
+| 路径 | 找目录 | 枚举+排序 | launch.config | 合计 |
+|---|---|---|---|---|
+| qb1-live | 229ms | 443ms | 149ms | **821ms** |
+| qb1-vault | 1110ms | 370ms | 421ms | **1901ms** |
+
+单次约 **2.7 秒**。而看门循环每 10 分钟调一次，qb12 整夜挂着游戏（00:00–08:42，8.7 小时）
+就是几十次，全部经过 Sandboxie 的路径重定向层 → SbieSvc 内存涨到 172MB →
+沙箱内建子进程时 RpcSs 超时（SBIE2203）→ qb1 的浏览器建不出 renderer → 卡在游戏中心。
+
+**这也解释了为什么重启电脑只管 22 小时**：qb12 一挂上游戏，泄漏就重新开始。
+
+#### 修复 1：`Fingerprint` 改成记忆化 + 浅层采样
+
+- **缓存目录记忆化**：`GameCacheDirs` 的结果按根目录记住，找到一次就不重扫
+  （缓存目录位置在一个游戏版本周期内不会变）。
+- **浅层采样代替全递归**：利用「目录的 `LastWriteTime` 只在直接子项增删时变化」
+  这个事实，先看目录时间戳，只在前 2 层取样（最多 400 项）就够。
+  热更新必然新增/替换文件 → 父目录时间必然变，判据够用。
+- **`launch.config` 按已知层级找**：它只在 `Applet\<hash>\` 下，不做全递归。
+
+实测提升（新旧算法 `Newest` 结果完全一致，逻辑等价）：
+
+| 路径 | 旧 | 新（首次） | 新（记忆化） | 提升 |
+|---|---|---|---|---|
+| qb12-live | 656ms | 37ms | **4ms** | 164× |
+| qb12-vault | 418ms | 13ms | **4ms** | 104× |
+| qb1-live | 685ms | 16ms | **5ms** | 137× |
+| qb1-vault | 705ms | 17ms | **4ms** | 176× |
+
+`LivePackageNewerThanVault` 从 **2.7 秒降到约 10 毫秒**。
+
+#### 修复 2：收包检查间隔 10 分钟 → 60 分钟
+
+热更新不是实时性要求很高的东西，一小时检查一次完全够用。
+即使指纹算法已经快了 100 多倍，减少调用次数仍然是划算的。
+
+#### 修复 3：`CheckSbieHealth` 换掉错误判据
+
+- 去掉线程数判断（65 是常态，没有区分度）。
+- 内存阈值从 100MB 提到 **250MB**（正常波动能到 50MB，100MB 会误报）。
+  健康状态 10~20MB，被拖垮时 172MB+，250MB 是安全线。
+- 告警文案改成「被拖垮」而非「泄漏」，并说明真正原因是高频大目录遍历。
+
+这个告警现在只作兜底——主因已经从源头修掉了。
+
 ## [1.5.64] - 2026-11-25
 
 ### 新增：启动前检查 Sandboxie 服务是否已泄漏

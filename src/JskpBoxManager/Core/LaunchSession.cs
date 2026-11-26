@@ -558,6 +558,12 @@ public sealed class LaunchSession
         DateTime pageStallSince = DateTime.MinValue;
         Cdp.PageState lastPage = null;
         int pageProbeFails = 0, pageReopens = 0;
+
+        // 解压豁免：游戏包解压期间（Unzipper 进程存在）暂停一切超时/刷新判定。
+        // 见 HasVisibleUi 分支里的详细说明。
+        bool _unzipNoted = false;
+        var _unzipNotedAt = DateTime.MinValue;
+        var _unzipSince = DateTime.Now;
         // 有可用免扫凭证时，授权扫码层只是加载期过早弹出来的挡板：关掉它让 GameUrl 去自动授权。
         // 以前是原地等 60 秒就判「必须扫码」，但扫码层不下线时 ilink 根本不启动，AutoAuth 永远不会发出，
         // 等于必然失败（qb15 11-04 12:07 就是这样：手动关掉扫码框后 6 秒 AutoAuth ret=0 进游戏）。
@@ -850,6 +856,50 @@ public sealed class LaunchSession
                     double uiWait = (DateTime.Now - launchStarted).TotalSeconds;
                     if (LogDue(30)) L("浏览器界面（不是扫码页）→ 等游戏...");
 
+                    // ★ 解压豁免（必须放在最前面，覆盖后面所有超时/刷新/假死判定）。
+                    //
+                    //   游戏包有 4421MB / 23443 个文件，首次加载或有热更新时，Chromium 会
+                    //   为每个解压任务 spawn 一个 Unzipper utility 进程，峰值同时 27~33 个。
+                    //   每个都要向 SandboxieRpcSs 注册 RPC，而它只有 7~8 个线程 → 通道被挤爆
+                    //   → 连输入法和 Start.exe 都刷 SBIE2203，浏览器主线程等 IPC → 页面极慢。
+                    //
+                    //   这个过程本身正常且会自愈：实测 27 → 23 → 5 → 1 约 30 秒收敛，
+                    //   之后 renderer 从 0 涨到 21 个，页面正常。
+                    //
+                    //   所以解压期间**不能**刷新页面（打断下载）、**不能**关标签重开、
+                    //   **不能**冷启动重开 —— 每一个都会删掉解压进度，下次从头再来，死循环。
+                    int unzipWorkers = v.UnzipWorkers;
+                    if (unzipWorkers > 0)
+                    {
+                        if (!_unzipNoted || (DateTime.Now - _unzipNotedAt).TotalSeconds >= 30)
+                        {
+                            _unzipNoted = true;
+                            _unzipNotedAt = DateTime.Now;
+                            L($"检测到游戏包解压中（Unzipper 进程 {unzipWorkers} 个）→ 暂停超时判定，等它解完"
+                                + "（此时页面慢是正常的，强杀会丢失解压进度）");
+                            Phase(BoxPhase.Starting, $"正在解压游戏包（{unzipWorkers} 个任务）…");
+                        }
+                        // 重置所有计时器与探测状态，让解压结束后的判定从干净状态开始
+                        launchStarted = DateTime.Now;
+                        pageReloadDone = false;
+                        pageStallSince = DateTime.MinValue;
+                        lastPage = null;
+                        pageProbeFails = 0;
+                        pageReopens = 0;
+                        if ((DateTime.Now - _unzipSince).TotalSeconds >= 900)
+                        {
+                            L("解压已持续 15 分钟仍未结束 → 判定异常，冷启动重开");
+                            return new(false, true, false, sawQr, credCleared && !revoked);
+                        }
+                        continue;
+                    }
+                    if (_unzipNoted)
+                    {
+                        _unzipNoted = false;
+                        _unzipSince = DateTime.Now;
+                        L("游戏包解压结束 → 恢复正常超时判定");
+                    }
+
                     // ★ 页面就绪探测：窗口标题叫「游戏中心」不代表页面真的跑起来了。
                     //   实测 qb1 2026-11-23 09:02：readyState 永远是 interactive、load 事件从不触发、
                     //   49 张图里 36 张 complete 永远为 false，而同一页面里 fetch 同一张 CDN 图只要 162ms
@@ -925,6 +975,15 @@ public sealed class LaunchSession
 
                 noUiSince ??= DateTime.Now;
                 double noUi = (DateTime.Now - noUiSince.Value).TotalSeconds;
+                // 解压期间也别催窗口：Unzipper 占满 RpcSs 时主进程创建窗口会很慢
+                int noUiUnzip = v.UnzipWorkers;
+                if (noUiUnzip > 0)
+                {
+                    if (LogDue(60)) L($"解压中（Unzipper {noUiUnzip} 个）→ 窗口创建会延迟，继续等");
+                    noUiSince = DateTime.Now;
+                    launchStarted = DateTime.Now;
+                    continue;
+                }
                 if (!gameUrlNudged && noUi >= 20)
                 {
                     L("QQ 进程起来了但 20 秒没窗口 → 显示浏览器并重开游戏页");
@@ -1015,7 +1074,6 @@ public sealed class LaunchSession
         int goneTicks = 0, uiGoneTicks = 0;
         var lastCred = DateTime.MinValue;
         var lastKeep = DateTime.MinValue;
-        var lastPkg = DateTime.Now;
         var lastOverdueWarn = DateTime.MinValue;
         var lastLog = DateTime.MinValue;
         var updateSince = DateTime.MinValue;
@@ -1095,11 +1153,12 @@ public sealed class LaunchSession
                     v.HideBrowserKeepGame(true);
                     lastKeep = DateTime.Now;
                 }
-                if ((DateTime.Now - lastPkg).TotalMinutes >= 10)
-                {
-                    lastPkg = DateTime.Now;
-                    try { if (VaultSync.LivePackageNewerThanVault(_box)) VaultSync.HarvestGamePackage(_box); } catch { }
-                }
+                // 1.5.67：删掉播放期间的定时收包（原来是每小时一次）。
+                // 收包要遍历金库和沙箱两侧的游戏包目录（qb1 各 2 万个文件、4.4GB），
+                // 每次都是重 I/O，全部经过 Sandboxie 的路径重定向层。
+                // 热更新只要在**游戏关闭时**收一次就够了——那时进程已退出，
+                // 不会和运行中的浏览器抢 I/O，也不会在玩家游戏时造成卡顿。
+                // 收包时机见下方 goneTicks >= 3 分支和 StopSoft。
 
                 // 密钥到硬上限：游戏正在跑时**不打断玩家**。
                 // 运行中不能用协议续期（服务端作废旧 key 后运行时会把旧值写回文件、并断掉游戏会话，见 6F），

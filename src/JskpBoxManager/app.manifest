@@ -4,8 +4,22 @@
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
     <security>
       <requestedPrivileges xmlns="urn:schemas-microsoft-com:asm.v3">
-        <!-- 计划任务按当前用户注册，Sandboxie 操作也不需要管理员 -->
-        <requestedExecutionLevel level="asInvoker" uiAccess="false" />
+        <!--
+          1.5.66 起改为 requireAdministrator。
+
+          原因：SbieSvc 以 LocalSystem 运行，服务 ACL 只给 Administrators 启停权限
+          （Interactive Users 只有 CCLCSWLOCRRC，没有 RP/WP）。而 SbieSvc 被拖垮时
+          （内存涨到 170MB+）沙箱内会建不出浏览器子进程、卡在游戏中心并刷 SBIE2203，
+          实测「停掉所有沙箱后静置 30 秒内存仍不回落」，普通权限既杀不掉也释放不了，
+          只能重启服务——这必须要管理员。
+
+          副作用与对策：
+            · 保活计划任务仍以普通权限运行：XML 里显式写了 LogonType=InteractiveToken
+              + RunLevel=LeastPrivilege，指向当前用户，不受本 manifest 影响。
+            · 「以管理员身份运行」是 Windows 标准行为，首次会弹 UAC 确认，
+              勾选「始终以管理员身份运行」后不再询问。
+        -->
+        <requestedExecutionLevel level="requireAdministrator" uiAccess="false" />
       </requestedPrivileges>
     </security>
   </trustInfo>

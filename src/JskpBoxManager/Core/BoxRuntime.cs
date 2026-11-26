@@ -131,42 +131,126 @@ public static class BoxRuntime
     }
 
     /// <summary>
-    /// 检查 Sandboxie 服务进程是否已经泄漏。
+    /// 检查 Sandboxie 服务是否被拖垮；如果被拖垮且当前有管理员权限，**自动重启服务把它降回基线**。
     ///
     /// <para>
-    /// 2026-11-25 排查发现：SbieSvc 连续运行 16 天后涨到 **200MB / 65 线程**（正常 20MB / &lt;10），
-    /// 之后沙箱内进程创建子进程时 RpcSs 调用超时，Chromium 建不出 renderer/network/gpu，
-    /// 页面只剩空壳（主进程活着、CDP 通、但 JS 不执行），游戏中心永远调不起小程序，
-    /// 同时 Sandboxie 刷 `SBIE2203 RPCSS_SXS`。详见 `docs\SBIE2203-真因-SbieSvc资源耗尽.md`。
+    /// **注意：这个检查与「qb1 卡在游戏中心」那个故障无关。**
+    /// 2026-11-26 实测：SbieSvc 重启到 12MB 全新状态后，故障照样复现；
+    /// 而后来真正修好它的是「清空卡在驱动里的残留进程」。
+    /// 这里保留的只是针对「服务内存异常膨胀」这一独立问题的兜底。
     /// </para>
     /// <para>
-    /// 这个检查只读 <c>Get-Process</c>，不需要管理员权限，用于在日志里提前告警——
-    /// 程序自己修不了（重启服务要提权），但至少能让用户知道「该重启电脑了」，
-    /// 而不是对着一个永远进不去的游戏中心反复点启动。
+    /// **判据只有内存一项，阈值 250MB。** 这是 2026-11-26 用实测数据定的，
+    /// 1.5.64 的第一版判据（内存 >100MB 或 线程 >40）是错的：
+    /// </para>
+    /// <list type="bullet">
+    /// <item>线程数没有区分度：重启后立刻就是 65 线程、一整天不变，这是 5.74.1 的常态。</item>
+    /// <item>内存 100MB 阈值太低：正常波动就能到 50MB，会误报。</item>
+    /// <item>实测健康 → 恶化的分界：重启后 10~18MB，qb12 整夜跑游戏后涨到 172MB。</item>
+    /// </list>
+    /// <para>
+    /// **为什么必须重启服务而不是等它自己降**：实测把 16 个沙箱全停（进程数 0）后
+    /// 静置 30 秒，WorkingSet 仍是 177MB 纹丝不动——这是已分配不归还的内存。
     /// </para>
     /// </summary>
-    /// <returns>返回告警文本；健康时返回 null。</returns>
+    /// <returns>返回给用户看的说明；健康时返回 null。</returns>
     public static string CheckSbieHealth(string box)
     {
         try
         {
-            var svc = Process.GetProcessesByName("SbieSvc")
-                .OrderByDescending(p => p.WorkingSet64)
-                .FirstOrDefault();
-            if (svc == null) return null;
-            long mb = svc.WorkingSet64 / 1048576;
-            int threads;
-            try { threads = svc.Threads.Count; } catch { threads = 0; }
-            // 阈值取得比较宽松：正常 13~20MB / 4~8 线程。
-            // 超过 100MB 或 40 线程就告警——到这一步已经开始出现子进程创建失败。
-            if (mb < 100 && threads < 40) return null;
-            var tip = $"SbieSvc 已涨到 {mb}MB / {threads} 线程（正常 20MB 以内），"
-                    + "这是 Sandboxie 服务泄漏，会导致沙箱内建不出浏览器子进程、卡在游戏中心。"
-                    + "建议重启电脑（重启服务需要管理员权限）。";
-            Log.Box(box, "⚠ Sandboxie 服务异常：" + tip);
-            return tip;
+            long mb = Sandboxie.ServiceMemoryMb();
+            if (mb < 250) return null;
+
+            var head = $"SbieSvc 已涨到 {mb}MB（重启后正常 10~20MB），这会拖垮沙箱："
+                     + "浏览器建不出子进程、卡在游戏中心，并刷 SBIE2203。";
+
+            if (!Sandboxie.IsElevated)
+            {
+                Log.Box(box, "⚠ " + head + " 当前不是管理员，无法自动重启服务 → 请重启电脑。");
+                return head + " 当前不是管理员，无法自动重启服务 → 请重启电脑。";
+            }
+
+            // 停服务会杀掉所有沙箱内进程，先确认没有沙箱在跑
+            int running = 0;
+            try
+            {
+                foreach (var b in Sandboxie.QueryBoxes())
+                    if (Sandboxie.Pids(b).Count > 0) running++;
+            }
+            catch { }
+            if (running > 0)
+            {
+                Log.Box(box, "⚠ " + head + $" 但有 {running} 个沙箱还在跑，暂不重启服务（会杀掉它们）。");
+                return head + $" 但有 {running} 个沙箱还在跑，暂不重启服务（会杀掉它们）。";
+            }
+
+            Log.Box(box, $"Sandboxie 服务占用 {mb}MB 偏高 → 自动重启 SbieSvc 降回基线");
+            BoxStatusFile.Write(box, BoxPhase.Starting, "正在重置 Sandboxie 服务…");
+            var err = Sandboxie.RestartService();
+            if (err != null)
+            {
+                Log.Box(box, "⚠ 自动重启 SbieSvc 失败：" + err + " → 请手动重启电脑");
+                return head + " 自动重启失败：" + err + " → 请重启电脑。";
+            }
+
+            // 重启后等一下让它把运行时库加载完
+            Thread.Sleep(2000);
+            long after = Sandboxie.ServiceMemoryMb();
+            Log.Box(box, $"SbieSvc 已重启：{mb}MB → {after}MB");
+            return null;   // 修好了就不必打扰用户
         }
-        catch { return null; }
+        catch (Exception ex)
+        {
+            Log.Box(box, "检查 Sandboxie 服务健康度出错：" + ex.Message);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 清理「实际在沙箱里、但 Sandboxie 已经不认」的残留进程。
+    ///
+    /// <para>
+    /// ★★ **已停用（2026-11-26）**，只保留代码供参考，`Warmup` 里不再调用。
+    /// </para>
+    /// <para>
+    /// **为什么停用**：设计这个函数的依据是「listpids 返回空 = Sandboxie 看不见任何进程」，
+    /// 但实测发现——**qb1 正在游戏中（日志有 `role read attack=82855`）时，
+    /// `Start.exe /box:qb1 /listpids` 照样稳定返回空**。也就是说
+    /// 「listpids 返回空」根本不能区分「沙箱真空」和「沙箱有进程但 API 坏了」。
+    /// 按这个判据去清理，会把正在运行的游戏进程全部误杀。
+    /// </para>
+    /// <para>
+    /// 当时确实观察到 22 个 QQBrowser + 4 个孤儿 SandboxieCrypto，
+    /// 手动杀掉后 qb1 恢复正常（19 秒进游戏）。但**无法证明那些是「僵尸」还是
+    /// 「正常运行的进程」**——同一时刻 qb1 正被看门进程管理着。
+    /// 这个因果没搞清楚之前，自动清理是危险的。
+    /// </para>
+    /// </summary>
+    [Obsolete("判据不可靠（listpids 在沙箱有进程时也可能返回空），会误杀运行中的游戏。勿启用。")]
+    public static int CleanupZombies(string box)
+    {
+        try
+        {
+            // 先看本沙箱有没有活着的进程（listpids 权威）
+            var own = Sandboxie.Pids(box);
+            if (own.Count > 0) return 0;
+
+            var zombies = Sandboxie.FindZombies(box, own);
+            if (zombies.Count == 0) return 0;
+
+            Log.Box(box, $"发现 {zombies.Count} 个卡在 Sandboxie 里的僵尸进程（listpids 看不见它们）"
+                + "→ 清理。这会让后续启动不再报 SBIE2203、不再卡在游戏中心");
+            int killed = Sandboxie.KillZombies(zombies);
+            // 给驱动一点时间回收句柄
+            Thread.Sleep(1500);
+            Log.Box(box, $"僵尸进程清理完成：杀掉 {killed}/{zombies.Count} 个");
+            return killed;
+        }
+        catch (Exception ex)
+        {
+            Log.Box(box, "清理僵尸进程出错：" + ex.Message);
+            return 0;
+        }
     }
 
     /// <summary>开机后 SbieSvc 虽已运行，RPC 仍可能长时间超时（SBIE2203）。用 listpids 探测，连续两次够快才算就绪。禁止用 /reload 催服务。</summary>

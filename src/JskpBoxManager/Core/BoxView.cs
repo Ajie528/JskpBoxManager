@@ -137,6 +137,39 @@ public sealed class BoxView
         }
     }
 
+    /// <summary>
+    /// 当前有多少个 Chromium 解压子进程（<c>--utility-sub-type=unzip.mojom.Unzipper</c>）。
+    ///
+    /// <para>
+    /// **为什么需要它**（2026-11-26 实测）：游戏包有 4421MB / 23443 个文件，
+    /// 首次加载或有热更新时，Chromium 会为每个解压任务 spawn 一个 Unzipper utility 进程，
+    /// 峰值同时存在 **27~33 个**。每个都要向 <c>SandboxieRpcSs</c> 注册 RPC，
+    /// 而它只有 7~8 个线程 → 通道被挤爆 → 连输入法和 Start.exe 都刷 SBIE2203，
+    /// 浏览器主线程等 IPC 响应 → 页面加载极慢。
+    /// </para>
+    /// <para>
+    /// 这个过程本身是**正常的、会自愈的**：实测 27 → 23 → 5 → 1 约 30 秒收敛，
+    /// 之后 renderer 从 0 涨到 21 个，页面正常。所以启动流程遇到它时**不该判超时重开**——
+    /// 强制停箱会删掉解压进度，下次从头再来，形成死循环。
+    /// </para>
+    /// </summary>
+    public int UnzipWorkers
+    {
+        get
+        {
+            int n = 0;
+            foreach (var (pid, (name, cmd)) in Cmds)
+                if (name.Equals("QQBrowser.exe", StringComparison.OrdinalIgnoreCase)
+                    && cmd.Contains("unzip.mojom.Unzipper", StringComparison.OrdinalIgnoreCase))
+                    n++;
+            return n;
+        }
+    }
+
+    /// <summary>是否有解压任务正在跑（游戏包正在解压/校验）。</summary>
+    public bool IsUnzipping => UnzipWorkers > 0;
+
+
     public bool HasVisibleUi
     {
         get

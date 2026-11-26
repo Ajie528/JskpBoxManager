@@ -458,10 +458,40 @@ public static class Keepalive
         return m.Success ? SecurityElement.FromString("<x>" + m.Groups[1].Value + "</x>")?.Text ?? m.Groups[1].Value : "";
     }
 
+    /// <summary>读计划任务的 RunLevel（LeastPrivilege / HighestAvailable）。任务不存在返回 null。</summary>
+    public static string TaskRunLevel(string box)
+    {
+        var (code, output) = ProcessUtil.Run(Schtasks, new[] { "/Query", "/TN", TaskName(box), "/XML" }, 20000);
+        if (code != 0) return null;
+        var m = Regex.Match(output, @"<RunLevel>(.*?)</RunLevel>", RegexOptions.Singleline);
+        return m.Success ? m.Groups[1].Value.Trim() : "";
+    }
+
+    /// <summary>任务需要的 RunLevel（1.5.66 起主 exe 是 requireAdministrator，任务必须提权跑）。</summary>
+    const string RequiredRunLevel = "HighestAvailable";
+
+    /// <summary>
+    /// 计划任务是否正确指向本程序、且权限级别足够。
+    ///
+    /// <para>
+    /// 1.5.66 起除了比 exe 路径，还要看 <c>RunLevel</c>：主 exe 的 manifest 是
+    /// <c>requireAdministrator</c>，若任务仍是 <c>LeastPrivilege</c>，Windows 会拒绝启动它
+    /// （UAC 拦截），保活静默失败且日志里看不出原因。
+    /// </para>
+    /// <para>
+    /// **注意 **缺 `<RunLevel>` 元素的情况**：实测 16 个老任务（v1.5.37 之前创建的）
+    /// 的 XML 里根本没有这一项，Windows 按默认 <c>LeastPrivilege</c> 处理。
+    /// 所以这里必须把「读不到」也判成不符合——否则这些任务永远不会被迁移，
+    /// 升级到 requireAdministrator 之后保活会全部静默失败。
+    /// </para>
+    /// </summary>
     public static bool TaskPointsHere(string box)
     {
         var cmd = TaskCommand(box);
-        return cmd != null && string.Equals(cmd.Trim('"'), AppInfo.ExePath, StringComparison.OrdinalIgnoreCase);
+        if (cmd == null) return false;
+        if (!string.Equals(cmd.Trim('"'), AppInfo.ExePath, StringComparison.OrdinalIgnoreCase)) return false;
+        var rl = TaskRunLevel(box);
+        return rl != null && rl.Equals(RequiredRunLevel, StringComparison.OrdinalIgnoreCase);
     }
 
     public static string SyncTask(string box, KeepConfig cfg)
@@ -473,6 +503,17 @@ public static class Keepalive
         }
         var p = cfg.For(box);
         var user = SecurityElement.Escape(Environment.UserDomainName + "\\" + Environment.UserName);
+        // 1.5.66：RunLevel 从 LeastPrivilege 改为 HighestAvailable。
+        //
+        // 改的原因是主 exe 的 manifest 变成了 requireAdministrator（为了能重启 SbieSvc）。
+        // 如果任务仍是 LeastPrivilege，计划任务以普通权限启动一个 requireAdministrator 的 exe
+        // 会被 UAC 直接拦掉、任务静默失败——保活整条链就断了。
+        //
+        // 而保活本身也确实需要管理员：RefreshSession 里大量调用 BoxRuntime.StopForce()
+        // 停沙箱，那走的是 Sandboxie.Terminate，服务 ACL 只给 Administrators 这个权限。
+        //
+        // HighestAvailable + 当前用户（已在 Administrators 组）→ 任务以提权方式运行，
+        // 不弹 UAC，也不需要存密码。
         // v1.5.37：一律改成「每小时唤醒一次」，由 DecideWake 在沙箱侧判断该不该真续。
         // 这样一次临时失败可以在退避后几小时内补上，而不是等到明天；
         // 真正的上游请求频次没有变松（受退避、密钥年龄、计划时刻三重约束）。
@@ -482,7 +523,7 @@ public static class Keepalive
 <Task version=""1.2"" xmlns=""http://schemas.microsoft.com/windows/2004/02/mit/task"">
   <RegistrationInfo><Description>{SecurityElement.Escape(AppInfo.ProductName)} 静默保活 {box}</Description></RegistrationInfo>
   <Triggers>{trigger}</Triggers>
-  <Principals><Principal id=""Author""><UserId>{user}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
+  <Principals><Principal id=""Author""><UserId>{user}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>HighestAvailable</RunLevel></Principal></Principals>
   <Settings>
     <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
     <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
